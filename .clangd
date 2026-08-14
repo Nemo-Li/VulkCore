@@ -1,0 +1,4 @@
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - "-std=c++20"
