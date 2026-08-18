@@ -9,6 +9,38 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Vulkan REQUIRED)
 
+find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
+
+set(VULKCORE_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/src")
+set(VULKCORE_SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(GLOB VULKCORE_SHADER_SOURCES CONFIGURE_DEPENDS
+    "${VULKCORE_SHADER_SOURCE_DIR}/*.vert"
+    "${VULKCORE_SHADER_SOURCE_DIR}/*.frag"
+    "${VULKCORE_SHADER_SOURCE_DIR}/*.comp"
+)
+
+if(NOT VULKCORE_SHADER_SOURCES)
+    message(FATAL_ERROR "No GLSL shader sources were found in ${VULKCORE_SHADER_SOURCE_DIR}.")
+endif()
+
+set(VULKCORE_SHADER_BINARIES)
+foreach(SHADER_SOURCE IN LISTS VULKCORE_SHADER_SOURCES)
+    get_filename_component(SHADER_FILE_NAME "${SHADER_SOURCE}" NAME)
+    set(SHADER_BINARY "${VULKCORE_SHADER_BINARY_DIR}/${SHADER_FILE_NAME}.spv")
+
+    add_custom_command(
+        OUTPUT "${SHADER_BINARY}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VULKCORE_SHADER_BINARY_DIR}"
+        COMMAND "${VULKCORE_GLSLC_EXECUTABLE}" -O "${SHADER_SOURCE}" -o "${SHADER_BINARY}"
+        DEPENDS "${SHADER_SOURCE}"
+        COMMENT "Compiling shader ${SHADER_FILE_NAME}"
+        VERBATIM
+    )
+    list(APPEND VULKCORE_SHADER_BINARIES "${SHADER_BINARY}")
+endforeach()
+
+add_custom_target(VulkCoreShaders ALL DEPENDS ${VULKCORE_SHADER_BINARIES})
+
 # Prefer the CMake package exported by the dependency, then fall back to
 # pkg-config for environments where only the package metadata is installed.
 find_package(glfw3 3.3 CONFIG QUIET)
@@ -53,6 +85,24 @@ endif()
 
 add_executable(VulkCore
     src/main.cpp
+    src/Application.cpp
+    src/Renderer/Buffer.cpp
+    src/Renderer/Renderer.cpp
+    src/Renderer/SwapChain.cpp
+    src/Renderer/VulkanContext.cpp
+    src/Utils/FileUtils.cpp
+)
+
+add_dependencies(VulkCore VulkCoreShaders)
+
+target_include_directories(VulkCore
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_definitions(VulkCore
+    PRIVATE
+        VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
 )
 
 target_link_libraries(VulkCore
