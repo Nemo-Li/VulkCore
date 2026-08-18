@@ -27,6 +27,7 @@ private:
     void createRenderPass();
     void createGraphicsPipeline();
     void createVertexBuffer();
+    void createIndexBuffer();
     void createCommandBuffers();
     void createSyncObjects();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -43,6 +44,7 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
     std::unique_ptr<Buffer> vertexBuffer_;
+    std::unique_ptr<Buffer> indexBuffer_;
 
     std::vector<VkCommandBuffer> commandBuffers_;
     std::vector<VkSemaphore> imageAvailableSemaphores_;

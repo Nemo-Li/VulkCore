@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -37,10 +38,16 @@ struct Vertex {
     }
 };
 
-inline const std::array<Vertex, 3> kTriangleVertices = {{
-    {{0.0f, -0.5f}, {1.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+inline const std::array<Vertex, 4> kRectangleVertices = {{
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 0.0f}}
+}};
+
+inline const std::array<uint16_t, 6> kRectangleIndices = {{
+    0, 1, 2,
+    2, 3, 0
 }};
 
 } // namespace VulkCore
