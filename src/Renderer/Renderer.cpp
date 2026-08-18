@@ -30,6 +30,7 @@ Renderer::Renderer(GLFWwindow* window) {
     createGraphicsPipeline();
     swapChain_->createFramebuffers(renderPass_);
     createVertexBuffer();
+    createIndexBuffer();
     createCommandBuffers();
     createSyncObjects();
 }
@@ -41,6 +42,7 @@ Renderer::~Renderer() {
 
     context_->waitIdle();
     swapChain_->cleanupFramebuffers();
+    indexBuffer_.reset();
     vertexBuffer_.reset();
 
     for (size_t i = 0; i < imageAvailableSemaphores_.size(); ++i) {
@@ -230,7 +232,7 @@ void Renderer::createGraphicsPipeline() {
 }
 
 void Renderer::createVertexBuffer() {
-    const VkDeviceSize bufferSize = sizeof(kTriangleVertices[0]) * kTriangleVertices.size();
+    const VkDeviceSize bufferSize = sizeof(kRectangleVertices[0]) * kRectangleVertices.size();
 
     Buffer stagingBuffer(
         *context_,
@@ -238,7 +240,7 @@ void Renderer::createVertexBuffer() {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    stagingBuffer.upload(kTriangleVertices.data(), bufferSize);
+    stagingBuffer.upload(kRectangleVertices.data(), bufferSize);
 
     vertexBuffer_ = std::make_unique<Buffer>(
         *context_,
@@ -247,6 +249,25 @@ void Renderer::createVertexBuffer() {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
     context_->copyBuffer(stagingBuffer.handle(), vertexBuffer_->handle(), bufferSize);
+}
+
+void Renderer::createIndexBuffer() {
+    const VkDeviceSize bufferSize = sizeof(kRectangleIndices[0]) * kRectangleIndices.size();
+    Buffer indexStagingBuffer(
+        *context_,
+        bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    indexStagingBuffer.upload(kRectangleIndices.data(), bufferSize);
+
+    indexBuffer_ = std::make_unique<Buffer>(
+        *context_,
+        bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    );
+    context_->copyBuffer(indexStagingBuffer.handle(), indexBuffer_->handle(), bufferSize);
 }
 
 void Renderer::createCommandBuffers() {
@@ -320,7 +341,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     const VkBuffer buffers[] = {vertexBuffer_->handle()};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-    vkCmdDraw(commandBuffer, static_cast<uint32_t>(kTriangleVertices.size()), 1, 0, 0);
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(kRectangleIndices.size()), 1, 0, 0, 0);
 
     vkCmdEndRenderPass(commandBuffer);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
