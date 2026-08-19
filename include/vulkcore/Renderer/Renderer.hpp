@@ -37,7 +37,7 @@ private:
     void createMeshData();
     void createVertexBuffer();
     void createIndexBuffer();
-    void createTexture();
+    void createMaterialTextures();
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
@@ -64,8 +64,8 @@ private:
     float modelScale_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
-    uint32_t indexCount_ = 0;
-    std::unique_ptr<Texture> texture_;
+    std::vector<std::unique_ptr<Texture>> materialTextures_;
+    std::unique_ptr<Texture> fallbackTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
@@ -78,6 +78,9 @@ private:
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
     bool showImGuiDemo_ = false;
+    bool autoRotate_ = false;
+    glm::vec3 modelTranslation_{0.0f};
+    glm::vec3 modelRotationDegrees_{0.0f};
     float rotationSpeedDegrees_ = 12.0f;
 };
 
