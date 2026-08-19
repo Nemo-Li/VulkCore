@@ -192,7 +192,6 @@ target_include_directories(VulkCore
 target_compile_definitions(VulkCore
     PRIVATE
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
-        VULKCORE_TEXTURE_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/vulkcore_demo_texture.png\"
         VULKCORE_MODEL_PATH=\"${VULKCORE_MODEL_PATH}\"
 )
 

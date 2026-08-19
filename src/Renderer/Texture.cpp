@@ -1,5 +1,6 @@
 #include "vulkcore/Renderer/Texture.hpp"
 
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -28,8 +29,72 @@ Texture::Texture(VulkanContext& context, const std::filesystem::path& path)
         );
     }
 
-    const VkDeviceSize imageSize =
-        static_cast<VkDeviceSize>(width) * static_cast<VkDeviceSize>(height) * 4;
+    uploadRgbaPixels(pixels.get(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+}
+
+Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData)
+    : context_(context) {
+    if (encodedData.empty() || encodedData.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("embedded texture data is empty or too large");
+    }
+
+    int width = 0;
+    int height = 0;
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+        stbi_load_from_memory(
+            encodedData.data(),
+            static_cast<int>(encodedData.size()),
+            &width,
+            &height,
+            nullptr,
+            STBI_rgb_alpha
+        ),
+        &stbi_image_free
+    );
+    if (!pixels || width <= 0 || height <= 0) {
+        const char* reason = stbi_failure_reason();
+        throw std::runtime_error(
+            "failed to decode embedded texture: " +
+            std::string(reason == nullptr ? "unknown stb_image error" : reason)
+        );
+    }
+
+    uploadRgbaPixels(pixels.get(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+}
+
+Texture::Texture(
+    VulkanContext& context,
+    const std::vector<std::uint8_t>& rgbaPixels,
+    std::uint32_t width,
+    std::uint32_t height
+)
+    : context_(context) {
+    if (width == 0 || height == 0) {
+        throw std::runtime_error("raw texture dimensions must be non-zero");
+    }
+    const std::uint64_t pixelCount = static_cast<std::uint64_t>(width) * height;
+    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4 ||
+        rgbaPixels.size() < static_cast<std::size_t>(pixelCount) * 4) {
+        throw std::runtime_error("raw texture data has invalid dimensions");
+    }
+
+    uploadRgbaPixels(rgbaPixels.data(), width, height);
+}
+
+void Texture::uploadRgbaPixels(
+    const std::uint8_t* pixels,
+    std::uint32_t width,
+    std::uint32_t height
+) {
+    if (pixels == nullptr || width == 0 || height == 0) {
+        throw std::runtime_error("texture pixels and dimensions must be valid");
+    }
+
+    const std::uint64_t pixelCount = static_cast<std::uint64_t>(width) * height;
+    if (pixelCount > std::numeric_limits<VkDeviceSize>::max() / 4) {
+        throw std::runtime_error("texture is too large");
+    }
+    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(pixelCount) * 4;
 
     try {
         Buffer stagingBuffer(
@@ -38,18 +103,14 @@ Texture::Texture(VulkanContext& context, const std::filesystem::path& path)
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
-        stagingBuffer.upload(pixels.get(), imageSize);
+        stagingBuffer.upload(pixels, imageSize);
 
-        createImage(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        createImage(width, height);
         transitionImageLayout(
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         );
-        copyBufferToImage(
-            stagingBuffer.handle(),
-            static_cast<uint32_t>(width),
-            static_cast<uint32_t>(height)
-        );
+        copyBufferToImage(stagingBuffer.handle(), width, height);
         transitionImageLayout(
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL

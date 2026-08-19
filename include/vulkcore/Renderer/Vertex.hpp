@@ -13,6 +13,7 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 texCoord;
+    glm::vec4 color;
 
     static VkVertexInputBindingDescription bindingDescription() {
         VkVertexInputBindingDescription description{};
@@ -22,8 +23,8 @@ struct Vertex {
         return description;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 3> descriptions{};
+    static std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 4> descriptions{};
 
         descriptions[0].binding = 0;
         descriptions[0].location = 0;
@@ -40,15 +41,20 @@ struct Vertex {
         descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
         descriptions[2].offset = offsetof(Vertex, texCoord);
 
+        descriptions[3].binding = 0;
+        descriptions[3].location = 3;
+        descriptions[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        descriptions[3].offset = offsetof(Vertex, color);
+
         return descriptions;
     }
 };
 
 inline const std::array<Vertex, 4> kRectangleVertices = {{
-    {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
-    {{-0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}}
+    {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},
+    {{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},
+    {{-0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}}
 }};
 
 inline const std::array<uint32_t, 6> kRectangleIndices = {{

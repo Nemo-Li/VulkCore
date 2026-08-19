@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -12,6 +13,13 @@ class VulkanContext;
 class Texture {
 public:
     Texture(VulkanContext& context, const std::filesystem::path& path);
+    Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData);
+    Texture(
+        VulkanContext& context,
+        const std::vector<std::uint8_t>& rgbaPixels,
+        std::uint32_t width,
+        std::uint32_t height
+    );
     ~Texture();
 
     Texture(const Texture&) = delete;
@@ -21,6 +29,7 @@ public:
     VkSampler sampler() const;
 
 private:
+    void uploadRgbaPixels(const std::uint8_t* pixels, std::uint32_t width, std::uint32_t height);
     void createImage(uint32_t width, uint32_t height);
     void createImageView();
     void createSampler();

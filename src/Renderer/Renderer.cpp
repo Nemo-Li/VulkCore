@@ -6,6 +6,7 @@
 #include <array>
 #include <algorithm>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -28,6 +29,15 @@
 
 namespace VulkCore {
 
+namespace {
+
+struct MaterialPushConstants {
+    glm::vec4 baseColor;
+    std::uint32_t hasTexture = 0;
+};
+
+} // namespace
+
 Renderer::Renderer(GLFWwindow* window)
     : startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
@@ -47,7 +57,7 @@ Renderer::Renderer(GLFWwindow* window)
     createMeshData();
     createVertexBuffer();
     createIndexBuffer();
-    createTexture();
+    createMaterialTextures();
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -65,7 +75,8 @@ Renderer::~Renderer() {
     shutdownImGui();
     swapChain_->cleanupFramebuffers();
     uniformBuffers_.clear();
-    texture_.reset();
+    materialTextures_.clear();
+    fallbackTexture_.reset();
     indexBuffer_.reset();
     vertexBuffer_.reset();
 
@@ -167,22 +178,44 @@ void Renderer::buildImGuiFrame() {
 
     ImGui::Begin("VulkCore Main Screen", nullptr, kMainWindowFlags);
     ImGui::SetCursorPos(ImVec2(16.0f, 16.0f));
-    ImGui::BeginChild("SceneControls", ImVec2(280.0f, 0.0f), true);
+    ImGui::BeginChild("SceneControls", ImVec2(300.0f, 0.0f), true);
     ImGui::TextUnformatted("VulkCore");
     ImGui::TextDisabled("Vulkan scene rendered with Dear ImGui UI");
     ImGui::Separator();
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
-    ImGui::SliderFloat("Rotation speed", &rotationSpeedDegrees_, 0.0f, 60.0f, "%.1f deg/s");
-    ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
+    ImGui::SeparatorText("Transform Debug");
+    ImGui::DragFloat3(
+        "Position (X/Y/Z)",
+        &modelTranslation_.x,
+        0.01f,
+        -10.0f,
+        10.0f,
+        "%.2f"
+    );
+    ImGui::DragFloat3(
+        "Rotation (X/Y/Z)",
+        &modelRotationDegrees_.x,
+        1.0f,
+        -360.0f,
+        360.0f,
+        "%.1f deg"
+    );
+    if (ImGui::Button("Reset transform")) {
+        modelTranslation_ = glm::vec3(0.0f);
+        modelRotationDegrees_ = glm::vec3(0.0f);
+    }
+    // ImGui::Checkbox("Auto rotate Z", &autoRotate_);
+    // ImGui::DragFloat("Auto rotation speed", &rotationSpeedDegrees_, 0.1f, 0.0f, 60.0f, "%.1f deg/s");
+    // ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
     ImGui::EndChild();
     ImGui::End();
 
-    if (showImGuiDemo_) {
-        ImGui::ShowDemoWindow(&showImGuiDemo_);
-    }
+    // if (showImGuiDemo_) {
+    //     ImGui::ShowDemoWindow(&showImGuiDemo_);
+    // }
 
     ImGui::Render();
 }
@@ -375,6 +408,12 @@ void Renderer::createGraphicsPipeline() {
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(MaterialPushConstants);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     if (vkCreatePipelineLayout(context_->device(), &pipelineLayoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS) {
         vkDestroyShaderModule(context_->device(), fragShaderModule, nullptr);
         vkDestroyShaderModule(context_->device(), vertShaderModule, nullptr);
@@ -418,6 +457,8 @@ void Renderer::createMeshData() {
     if (std::string_view(kModelPath).empty()) {
         meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
         meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
+        meshData_.materials.emplace_back();
+        meshData_.parts.push_back({0, static_cast<uint32_t>(meshData_.indices.size()), 0});
         modelCenter_ = glm::vec3(0.0f);
         modelScale_ = 1.0f;
         return;
@@ -471,7 +512,6 @@ void Renderer::createIndexBuffer() {
         throw std::runtime_error("mesh has no indices");
     }
 
-    indexCount_ = static_cast<uint32_t>(meshData_.indices.size());
     const VkDeviceSize bufferSize = sizeof(meshData_.indices[0]) * meshData_.indices.size();
     Buffer indexStagingBuffer(
         *context_,
@@ -490,8 +530,48 @@ void Renderer::createIndexBuffer() {
     context_->copyBuffer(indexStagingBuffer.handle(), indexBuffer_->handle(), bufferSize);
 }
 
-void Renderer::createTexture() {
-    texture_ = std::make_unique<Texture>(*context_, std::filesystem::path(kTexturePath));
+void Renderer::createMaterialTextures() {
+    materialTextures_.resize(meshData_.materials.size());
+    bool needsFallbackTexture = false;
+
+    for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
+        const MaterialData& material = meshData_.materials[materialIndex];
+        try {
+            if (!material.embeddedTexture.empty()) {
+                if (material.embeddedTexture.compressed) {
+                    materialTextures_[materialIndex] = std::make_unique<Texture>(
+                        *context_,
+                        material.embeddedTexture.data
+                    );
+                } else {
+                    materialTextures_[materialIndex] = std::make_unique<Texture>(
+                        *context_,
+                        material.embeddedTexture.data,
+                        material.embeddedTexture.width,
+                        material.embeddedTexture.height
+                    );
+                }
+            } else if (!material.texturePath.empty()) {
+                materialTextures_[materialIndex] = std::make_unique<Texture>(
+                    *context_,
+                    material.texturePath
+                );
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "warning: failed to load FBX material texture for material "
+                      << materialIndex << ": " << error.what() << '\n';
+            materialTextures_[materialIndex].reset();
+        }
+
+        if (!materialTextures_[materialIndex]) {
+            needsFallbackTexture = true;
+        }
+    }
+
+    if (needsFallbackTexture || materialTextures_.empty()) {
+        const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
+        fallbackTexture_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1);
+    }
 }
 
 void Renderer::createUniformBuffers() {
@@ -509,17 +589,19 @@ void Renderer::createUniformBuffers() {
 }
 
 void Renderer::createDescriptorPool() {
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+    const uint32_t descriptorCount = kMaxFramesInFlight * materialCount;
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = kMaxFramesInFlight;
+    poolSizes[0].descriptorCount = descriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = kMaxFramesInFlight;
+    poolSizes[1].descriptorCount = descriptorCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = kMaxFramesInFlight;
+    poolInfo.maxSets = descriptorCount;
 
     if (vkCreateDescriptorPool(context_->device(), &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
@@ -527,54 +609,68 @@ void Renderer::createDescriptorPool() {
 }
 
 void Renderer::createDescriptorSets() {
-    std::vector<VkDescriptorSetLayout> layouts(kMaxFramesInFlight, descriptorSetLayout_);
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+    const uint32_t descriptorSetCount = kMaxFramesInFlight * materialCount;
+    std::vector<VkDescriptorSetLayout> layouts(descriptorSetCount, descriptorSetLayout_);
 
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool_;
-    allocInfo.descriptorSetCount = kMaxFramesInFlight;
+    allocInfo.descriptorSetCount = descriptorSetCount;
     allocInfo.pSetLayouts = layouts.data();
 
-    descriptorSets_.resize(kMaxFramesInFlight);
+    descriptorSets_.resize(descriptorSetCount);
     if (vkAllocateDescriptorSets(context_->device(), &allocInfo, descriptorSets_.data()) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate descriptor sets!");
     }
 
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = uniformBuffers_[i]->handle();
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(UniformBufferObject);
+        for (uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
+            const std::size_t descriptorSetIndex =
+                static_cast<std::size_t>(i) * materialCount + materialIndex;
+            const Texture* texture = materialTextures_[materialIndex].get();
+            if (texture == nullptr) {
+                texture = fallbackTexture_.get();
+            }
+            if (texture == nullptr) {
+                throw std::runtime_error("FBX material has no usable texture or fallback texture");
+            }
 
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = texture_->imageView();
-        imageInfo.sampler = texture_->sampler();
+            VkDescriptorBufferInfo bufferInfo{};
+            bufferInfo.buffer = uniformBuffers_[i]->handle();
+            bufferInfo.offset = 0;
+            bufferInfo.range = sizeof(UniformBufferObject);
 
-        std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[0].dstSet = descriptorSets_[i];
-        descriptorWrites[0].dstBinding = 0;
-        descriptorWrites[0].dstArrayElement = 0;
-        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrites[0].descriptorCount = 1;
-        descriptorWrites[0].pBufferInfo = &bufferInfo;
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = texture->imageView();
+            imageInfo.sampler = texture->sampler();
 
-        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[1].dstSet = descriptorSets_[i];
-        descriptorWrites[1].dstBinding = 1;
-        descriptorWrites[1].dstArrayElement = 0;
-        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrites[1].descriptorCount = 1;
-        descriptorWrites[1].pImageInfo = &imageInfo;
+            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[0].dstBinding = 0;
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorCount = 1;
+            descriptorWrites[0].pBufferInfo = &bufferInfo;
 
-        vkUpdateDescriptorSets(
-            context_->device(),
-            static_cast<uint32_t>(descriptorWrites.size()),
-            descriptorWrites.data(),
-            0,
-            nullptr
-        );
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &imageInfo;
+
+            vkUpdateDescriptorSets(
+                context_->device(),
+                static_cast<uint32_t>(descriptorWrites.size()),
+                descriptorWrites.data(),
+                0,
+                nullptr
+            );
+        }
     }
 }
 
@@ -589,11 +685,20 @@ void Renderer::updateUniformBuffer() {
     const glm::mat4 modelNormalization =
         glm::scale(glm::mat4(1.0f), glm::vec3(modelScale_)) *
         glm::translate(glm::mat4(1.0f), -modelCenter_);
-    ubo.model = glm::rotate(
-        glm::mat4(1.0f),
-        elapsedSeconds * glm::radians(rotationSpeedDegrees_),
-        glm::vec3(0.0f, 0.0f, 1.0f)
-    ) * modelNormalization;
+
+    glm::vec3 rotationDegrees = modelRotationDegrees_;
+    if (autoRotate_) {
+        rotationDegrees.z += elapsedSeconds * rotationSpeedDegrees_;
+    }
+
+    const glm::mat4 rotation =
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.z), glm::vec3(0.0f, 0.0f, 1.0f)) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.y), glm::vec3(0.0f, 1.0f, 0.0f)) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    ubo.model = glm::translate(glm::mat4(1.0f), modelTranslation_) *
+        rotation *
+        modelNormalization;
     ubo.view = glm::lookAt(
         glm::vec3(3.5f, 3.5f, 2.8f),
         glm::vec3(0.0f, 0.0f, 0.0f),
@@ -675,17 +780,6 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
 
-    vkCmdBindDescriptorSets(
-        commandBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipelineLayout_,
-        0,
-        1,
-        &descriptorSets_[currentFrame_],
-        0,
-        nullptr
-    );
-
     const VkExtent2D extent = swapChain_->extent();
     VkViewport viewport{};
     viewport.width = static_cast<float>(extent.width);
@@ -702,7 +796,39 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(commandBuffer, indexCount_, 1, 0, 0, 0);
+
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+    for (const MeshPart& part : meshData_.parts) {
+        if (part.materialIndex >= materialCount || part.indexCount == 0) {
+            continue;
+        }
+
+        const std::size_t descriptorSetIndex =
+            static_cast<std::size_t>(currentFrame_) * materialCount + part.materialIndex;
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_,
+            0,
+            1,
+            &descriptorSets_[descriptorSetIndex],
+            0,
+            nullptr
+        );
+
+        MaterialPushConstants materialPushConstants{};
+        materialPushConstants.baseColor = meshData_.materials[part.materialIndex].baseColor;
+        materialPushConstants.hasTexture = materialTextures_[part.materialIndex] != nullptr ? 1u : 0u;
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            VK_SHADER_STAGE_FRAGMENT_BIT,
+            0,
+            sizeof(MaterialPushConstants),
+            &materialPushConstants
+        );
+        vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+    }
 
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
