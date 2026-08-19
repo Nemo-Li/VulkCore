@@ -96,6 +96,7 @@ ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区
 位置、旋转和缩放参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。
 右侧层级中的节点可以选中，3D 视图会为该节点及其子节点整体显示黄色 AABB 立方体边框；
 节点本身显示其直接 Mesh 数量，但不会再额外展开 `Mesh 0` 子项。
+选中节点后，左侧 Selected Node 区域可以启用该节点绕自身模型坐标系 X/Y/Z 轴的旋转动画，分别设置初始角度和角速度；已启用的节点动画会在切换选择后继续运行，嵌套节点按层级坐标系叠加。节点动画配置也会写入 `vulkcore.ini`。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。

@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <iosfwd>
 #include <memory>
 #include <vector>
 
@@ -39,7 +40,15 @@ private:
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
-    void selectModelNode(const ModelNode& node);
+    void selectModelNode(ModelNode& node);
+    glm::mat4 nodeAnimationTransform(const ModelNode& node, float elapsedSeconds) const;
+    glm::mat4 animationTransformForNode(
+        const ModelNode& node,
+        std::uint32_t targetNodeId,
+        float elapsedSeconds,
+        const glm::mat4& parentAnimation,
+        bool& found
+    ) const;
     void createRenderPass();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
@@ -53,7 +62,7 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void updateUniformBuffer();
-    void drawModelHierarchy(const ModelNode& node);
+    void drawModelHierarchy(ModelNode& node);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -95,7 +104,7 @@ private:
     glm::vec3 modelTranslation_{0.0f};
     glm::vec3 modelRotationDegrees_{0.0f};
     float rotationSpeedDegrees_ = 12.0f;
-    const ModelNode* selectedModelNode_ = nullptr;
+    ModelNode* selectedModelNode_ = nullptr;
     std::array<Vertex, 24> boundingBoxVertices_{};
 };
 
