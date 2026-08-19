@@ -11,8 +11,47 @@ find_package(Vulkan REQUIRED)
 
 find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
 
+# Assimp is used for importing model geometry. Prefer an installed package so
+# local package managers can provide a shared build; FetchContent keeps a fresh
+# checkout buildable when Assimp is not installed on the host.
+find_package(assimp CONFIG QUIET)
+if(NOT TARGET assimp::assimp)
+    include(FetchContent)
+
+    set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT ON CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        assimp
+        GIT_REPOSITORY https://github.com/assimp/assimp.git
+        GIT_TAG v6.0.5
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(assimp)
+endif()
+
+if(TARGET assimp::assimp)
+    set(VULKCORE_ASSIMP_TARGET assimp::assimp)
+elseif(TARGET assimp)
+    set(VULKCORE_ASSIMP_TARGET assimp)
+else()
+    message(FATAL_ERROR "Assimp was not found or could not be built.")
+endif()
+
 set(VULKCORE_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/src")
 set(VULKCORE_SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(VULKCORE_DEFAULT_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/mill-scene.fbx")
+set(VULKCORE_MODEL_PATH "${VULKCORE_DEFAULT_MODEL_PATH}" CACHE FILEPATH "Model path; FBX files are supported")
+if(NOT VULKCORE_MODEL_PATH)
+    set(VULKCORE_MODEL_PATH "${VULKCORE_DEFAULT_MODEL_PATH}" CACHE FILEPATH "Model path; FBX files are supported" FORCE)
+endif()
 file(GLOB VULKCORE_SHADER_SOURCES CONFIGURE_DEPENDS
     "${VULKCORE_SHADER_SOURCE_DIR}/*.vert"
     "${VULKCORE_SHADER_SOURCE_DIR}/*.frag"
@@ -92,6 +131,7 @@ add_executable(VulkCore
     src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
     src/Utils/FileUtils.cpp
+    src/Utils/ModelLoader.cpp
     src/Utils/StbImage.cpp
 )
 
@@ -107,6 +147,7 @@ target_compile_definitions(VulkCore
     PRIVATE
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
         VULKCORE_TEXTURE_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/vulkcore_demo_texture.png\"
+        VULKCORE_MODEL_PATH=\"${VULKCORE_MODEL_PATH}\"
 )
 
 target_link_libraries(VulkCore
@@ -114,6 +155,7 @@ target_link_libraries(VulkCore
         Vulkan::Vulkan
         ${VULKCORE_GLFW_TARGET}
         ${VULKCORE_GLM_TARGET}
+        ${VULKCORE_ASSIMP_TARGET}
 )
 
 if(MSVC)
