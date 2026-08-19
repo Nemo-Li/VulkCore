@@ -31,6 +31,8 @@ private:
     void initializeImGui();
     void shutdownImGui();
     void buildImGuiFrame();
+    void loadTransformSettings();
+    void saveTransformSettings() const;
     void createRenderPass();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
@@ -44,6 +46,7 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void updateUniformBuffer();
+    void drawModelHierarchy(const ModelNode& node) const;
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -62,6 +65,7 @@ private:
     MeshData meshData_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
+    float modelScaleFactor_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
     std::vector<std::unique_ptr<Texture>> materialTextures_;

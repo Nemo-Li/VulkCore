@@ -5,9 +5,13 @@
 
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <stdexcept>
 #include <string_view>
 
@@ -36,7 +40,35 @@ struct MaterialPushConstants {
     std::uint32_t hasTexture = 0;
 };
 
+constexpr float kMinimumModelScaleFactor = 0.1f;
+constexpr float kMaximumModelScaleFactor = 3.0f;
+
 } // namespace
+
+void Renderer::drawModelHierarchy(const ModelNode& node) const {
+    const bool hasChildren = !node.children.empty();
+    std::string label = node.name.empty() ? "<unnamed>" : node.name;
+    if (node.meshCount > 0) {
+        label += "  [" + std::to_string(node.meshCount) +
+            (node.meshCount == 1 ? " mesh]" : " meshes]");
+    }
+
+    ImGui::PushID(&node);
+    if (!hasChildren) {
+        ImGui::TreeNodeEx(
+            label.c_str(),
+            ImGuiTreeNodeFlags_Leaf |
+                ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                ImGuiTreeNodeFlags_SpanAvailWidth
+        );
+    } else if (ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        for (const ModelNode& child : node.children) {
+            drawModelHierarchy(child);
+        }
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
 
 Renderer::Renderer(GLFWwindow* window)
     : startTime_(std::chrono::steady_clock::now()) {
@@ -55,6 +87,7 @@ Renderer::Renderer(GLFWwindow* window)
     createGraphicsPipeline();
     swapChain_->createFramebuffers(renderPass_);
     createMeshData();
+    loadTransformSettings();
     createVertexBuffer();
     createIndexBuffer();
     createMaterialTextures();
@@ -71,6 +104,7 @@ Renderer::~Renderer() {
         return;
     }
 
+    saveTransformSettings();
     context_->waitIdle();
     shutdownImGui();
     swapChain_->cleanupFramebuffers();
@@ -159,6 +193,78 @@ void Renderer::shutdownImGui() {
     imguiInitialized_ = false;
 }
 
+void Renderer::loadTransformSettings() {
+    const std::filesystem::path configPath(kConfigPath);
+    std::ifstream file(configPath);
+    if (!file.is_open()) {
+        return;
+    }
+
+    glm::vec3 translation = modelTranslation_;
+    glm::vec3 rotationDegrees = modelRotationDegrees_;
+    float scaleFactor = modelScaleFactor_;
+    bool valid = true;
+    std::string key;
+    while (file >> key) {
+        if (key == "position") {
+            if (!(file >> translation.x >> translation.y >> translation.z)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "rotation_degrees") {
+            if (!(file >> rotationDegrees.x >> rotationDegrees.y >> rotationDegrees.z)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "scale") {
+            if (!(file >> scaleFactor)) {
+                valid = false;
+                break;
+            }
+        } else {
+            std::string ignoredLine;
+            std::getline(file, ignoredLine);
+        }
+    }
+
+    const bool finiteValues =
+        std::isfinite(translation.x) && std::isfinite(translation.y) &&
+        std::isfinite(translation.z) && std::isfinite(rotationDegrees.x) &&
+        std::isfinite(rotationDegrees.y) && std::isfinite(rotationDegrees.z) &&
+        std::isfinite(scaleFactor);
+    if (!valid || !finiteValues) {
+        std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
+                  << configPath.string() << "'\n";
+        return;
+    }
+
+    modelTranslation_ = translation;
+    modelRotationDegrees_ = rotationDegrees;
+    modelScaleFactor_ = std::clamp(
+        scaleFactor,
+        kMinimumModelScaleFactor,
+        kMaximumModelScaleFactor
+    );
+}
+
+void Renderer::saveTransformSettings() const {
+    const std::filesystem::path configPath(kConfigPath);
+    std::ofstream file(configPath, std::ios::trunc);
+    if (!file.is_open()) {
+        std::cerr << "warning: failed to save VulkCore transform settings to '"
+                  << configPath.string() << "'\n";
+        return;
+    }
+
+    file << "# VulkCore transform settings\n"
+         << std::setprecision(9)
+         << "position " << modelTranslation_.x << ' '
+         << modelTranslation_.y << ' ' << modelTranslation_.z << "\n"
+         << "rotation_degrees " << modelRotationDegrees_.x << ' '
+         << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
+         << "scale " << modelScaleFactor_ << "\n";
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -177,14 +283,19 @@ void Renderer::buildImGuiFrame() {
         ImGuiWindowFlags_NoBackground;
 
     ImGui::Begin("VulkCore Main Screen", nullptr, kMainWindowFlags);
-    ImGui::SetCursorPos(ImVec2(16.0f, 16.0f));
-    ImGui::BeginChild("SceneControls", ImVec2(300.0f, 0.0f), true);
+    constexpr float kPanelMargin = 16.0f;
+    constexpr float kLeftPanelWidth = 300.0f;
+    constexpr float kRightPanelWidth = 360.0f;
+
+    ImGui::SetCursorPos(ImVec2(kPanelMargin, kPanelMargin));
+    ImGui::BeginChild("SceneControls", ImVec2(kLeftPanelWidth, 0.0f), true);
     ImGui::TextUnformatted("VulkCore");
     ImGui::TextDisabled("Vulkan scene rendered with Dear ImGui UI");
     ImGui::Separator();
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
     ImGui::SeparatorText("Transform Debug");
+    bool shouldSaveTransformSettings = false;
     ImGui::DragFloat3(
         "Position (X/Y/Z)",
         &modelTranslation_.x,
@@ -193,6 +304,7 @@ void Renderer::buildImGuiFrame() {
         10.0f,
         "%.2f"
     );
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
     ImGui::DragFloat3(
         "Rotation (X/Y/Z)",
         &modelRotationDegrees_.x,
@@ -201,15 +313,45 @@ void Renderer::buildImGuiFrame() {
         360.0f,
         "%.1f deg"
     );
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat(
+        "Model Scale",
+        &modelScaleFactor_,
+        kMinimumModelScaleFactor,
+        kMaximumModelScaleFactor,
+        "%.2fx"
+    );
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
     if (ImGui::Button("Reset transform")) {
         modelTranslation_ = glm::vec3(0.0f);
         modelRotationDegrees_ = glm::vec3(0.0f);
+        modelScaleFactor_ = 1.0f;
+        shouldSaveTransformSettings = true;
+    }
+    if (shouldSaveTransformSettings) {
+        saveTransformSettings();
     }
     // ImGui::Checkbox("Auto rotate Z", &autoRotate_);
     // ImGui::DragFloat("Auto rotation speed", &rotationSpeedDegrees_, 0.1f, 0.0f, 60.0f, "%.1f deg/s");
     // ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
+    ImGui::EndChild();
+
+    ImGui::SetCursorPos(ImVec2(
+        std::max(kPanelMargin, ImGui::GetWindowWidth() - kRightPanelWidth - kPanelMargin),
+        kPanelMargin
+    ));
+    ImGui::BeginChild("ModelHierarchy", ImVec2(kRightPanelWidth, 0.0f), true);
+    ImGui::TextUnformatted("Model Hierarchy");
+    ImGui::TextDisabled("FBX internal node tree");
+    ImGui::Separator();
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!meshData_.hierarchy.name.empty()) {
+        drawModelHierarchy(meshData_.hierarchy);
+    } else {
+        ImGui::TextDisabled("No model hierarchy available");
+    }
     ImGui::EndChild();
     ImGui::End();
 
@@ -459,6 +601,8 @@ void Renderer::createMeshData() {
         meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
         meshData_.materials.emplace_back();
         meshData_.parts.push_back({0, static_cast<uint32_t>(meshData_.indices.size()), 0});
+        meshData_.hierarchy.name = "Rectangle";
+        meshData_.hierarchy.meshCount = 1;
         modelCenter_ = glm::vec3(0.0f);
         modelScale_ = 1.0f;
         return;
@@ -683,7 +827,10 @@ void Renderer::updateUniformBuffer() {
     // to the origin first and then scaled; T * S would leave the center in
     // model units and move this scene outside the camera frustum.
     const glm::mat4 modelNormalization =
-        glm::scale(glm::mat4(1.0f), glm::vec3(modelScale_)) *
+        glm::scale(
+            glm::mat4(1.0f),
+            glm::vec3(modelScale_ * std::max(modelScaleFactor_, kMinimumModelScaleFactor))
+        ) *
         glm::translate(glm::mat4(1.0f), -modelCenter_);
 
     glm::vec3 rotationDegrees = modelRotationDegrees_;
