@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -25,11 +26,16 @@ public:
 
 private:
     void createRenderPass();
+    void createDescriptorSetLayout();
     void createGraphicsPipeline();
     void createVertexBuffer();
     void createIndexBuffer();
+    void createUniformBuffers();
+    void createDescriptorPool();
+    void createDescriptorSets();
     void createCommandBuffers();
     void createSyncObjects();
+    void updateUniformBuffer();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -37,14 +43,19 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
+    std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;
 
     VkRenderPass renderPass_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
+    std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptorSets_;
 
     std::vector<VkCommandBuffer> commandBuffers_;
     std::vector<VkSemaphore> imageAvailableSemaphores_;
