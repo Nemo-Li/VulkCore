@@ -7,6 +7,7 @@ layout(location = 2) in vec4 fragVertexColor;
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 
 layout(push_constant) uniform MaterialPushConstants {
+    mat4 nodeTransform;
     vec4 baseColor;
     uint hasTexture;
 } material;

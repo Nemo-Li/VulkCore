@@ -29,6 +29,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace VulkCore {
@@ -36,8 +37,10 @@ namespace VulkCore {
 namespace {
 
 struct MaterialPushConstants {
+    glm::mat4 nodeTransform{1.0f};
     glm::vec4 baseColor;
     std::uint32_t hasTexture = 0;
+    std::array<std::uint32_t, 3> padding{};
 };
 
 constexpr float kMinimumModelScaleFactor = 0.1f;
@@ -48,11 +51,100 @@ constexpr std::array<std::uint32_t, 24> kBoundingBoxEdges = {
     0, 4, 1, 5, 2, 6, 3, 7
 };
 
+ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
+    if (node.nodeId == nodeId) {
+        return &node;
+    }
+    for (ModelNode& child : node.children) {
+        if (ModelNode* result = findModelNodeById(child, nodeId); result != nullptr) {
+            return result;
+        }
+    }
+    return nullptr;
+}
+
+bool hasNodeAnimationSettings(const ModelNode& node) {
+    return node.rotationAnimationEnabled ||
+        node.rotationAnimationInitialDegrees != glm::vec3(0.0f) ||
+        node.rotationAnimationSpeedDegrees != glm::vec3(0.0f);
+}
+
+void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
+    if (hasNodeAnimationSettings(node)) {
+        file << "node_animation " << node.nodeId << ' '
+             << (node.rotationAnimationEnabled ? 1 : 0) << ' '
+             << node.rotationAnimationInitialDegrees.x << ' '
+             << node.rotationAnimationInitialDegrees.y << ' '
+             << node.rotationAnimationInitialDegrees.z << ' '
+             << node.rotationAnimationSpeedDegrees.x << ' '
+             << node.rotationAnimationSpeedDegrees.y << ' '
+             << node.rotationAnimationSpeedDegrees.z << "\n";
+    }
+    for (const ModelNode& child : node.children) {
+        saveNodeAnimationSettings(file, child);
+    }
+}
+
 } // namespace
 
-void Renderer::selectModelNode(const ModelNode& node) {
+void Renderer::selectModelNode(ModelNode& node) {
     selectedModelNode_ = &node;
     updateBoundingBoxVertices();
+}
+
+glm::mat4 Renderer::nodeAnimationTransform(
+    const ModelNode& node,
+    float elapsedSeconds
+) const {
+    if (!node.rotationAnimationEnabled) {
+        return glm::mat4(1.0f);
+    }
+
+    const glm::vec3 rotationDegrees = node.rotationAnimationInitialDegrees +
+        node.rotationAnimationSpeedDegrees * elapsedSeconds;
+    const glm::mat4 rotation =
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.z), glm::vec3(0.0f, 0.0f, 1.0f)) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.y), glm::vec3(0.0f, 1.0f, 0.0f)) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // The flattened vertex buffer is in model-root coordinates. Conjugating
+    // the local rotation by the node's global transform makes the selected
+    // node's own coordinate system the animation frame.
+    return node.globalTransform * rotation * glm::inverse(node.globalTransform);
+}
+
+glm::mat4 Renderer::animationTransformForNode(
+    const ModelNode& node,
+    std::uint32_t targetNodeId,
+    float elapsedSeconds,
+    const glm::mat4& parentAnimation,
+    bool& found
+) const {
+    glm::mat4 accumulatedAnimation = parentAnimation;
+    if (node.rotationAnimationEnabled) {
+        // Parent animation is applied after child-local animation, so the
+        // matrices are accumulated in hierarchy order from root to leaf.
+        accumulatedAnimation *= nodeAnimationTransform(node, elapsedSeconds);
+    }
+
+    if (node.nodeId == targetNodeId) {
+        found = true;
+        return accumulatedAnimation;
+    }
+
+    for (const ModelNode& child : node.children) {
+        const glm::mat4 result = animationTransformForNode(
+            child,
+            targetNodeId,
+            elapsedSeconds,
+            accumulatedAnimation,
+            found
+        );
+        if (found) {
+            return result;
+        }
+    }
+    return glm::mat4(1.0f);
 }
 
 void Renderer::updateBoundingBoxVertices() {
@@ -60,6 +152,17 @@ void Renderer::updateBoundingBoxVertices() {
     if (selectedModelNode_ == nullptr || !selectedModelNode_->hasBounds) {
         return;
     }
+
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    bool found = false;
+    const glm::mat4 nodeTransform = animationTransformForNode(
+        meshData_.hierarchy,
+        selectedModelNode_->nodeId,
+        elapsedSeconds,
+        glm::mat4(1.0f),
+        found
+    );
 
     const glm::vec3& minimum = selectedModelNode_->boundsMinimum;
     const glm::vec3& maximum = selectedModelNode_->boundsMaximum;
@@ -75,11 +178,13 @@ void Renderer::updateBoundingBoxVertices() {
     };
 
     for (std::size_t vertexIndex = 0; vertexIndex < kBoundingBoxEdges.size(); ++vertexIndex) {
-        boundingBoxVertices_[vertexIndex].position = corners[kBoundingBoxEdges[vertexIndex]];
+        boundingBoxVertices_[vertexIndex].position = glm::vec3(
+            nodeTransform * glm::vec4(corners[kBoundingBoxEdges[vertexIndex]], 1.0f)
+        );
     }
 }
 
-void Renderer::drawModelHierarchy(const ModelNode& node) {
+void Renderer::drawModelHierarchy(ModelNode& node) {
     const bool hasChildren = !node.children.empty();
     const bool isRootNode = &node == &meshData_.hierarchy;
     const bool nodeSelected = selectedModelNode_ == &node;
@@ -115,7 +220,7 @@ void Renderer::drawModelHierarchy(const ModelNode& node) {
             return;
         }
 
-        for (const ModelNode& child : node.children) {
+        for (ModelNode& child : node.children) {
             drawModelHierarchy(child);
         }
         ImGui::TreePop();
@@ -262,6 +367,13 @@ void Renderer::loadTransformSettings() {
     glm::vec3 translation = modelTranslation_;
     glm::vec3 rotationDegrees = modelRotationDegrees_;
     float scaleFactor = modelScaleFactor_;
+    struct PendingNodeAnimation {
+        std::uint32_t nodeId = 0;
+        bool enabled = false;
+        glm::vec3 initialDegrees{0.0f};
+        glm::vec3 speedDegrees{0.0f};
+    };
+    std::vector<PendingNodeAnimation> pendingNodeAnimations;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -280,6 +392,22 @@ void Renderer::loadTransformSettings() {
                 valid = false;
                 break;
             }
+        } else if (key == "node_animation") {
+            PendingNodeAnimation animation;
+            int enabled = 0;
+            if (!(file >> animation.nodeId >> enabled >>
+                  animation.initialDegrees.x >> animation.initialDegrees.y >>
+                  animation.initialDegrees.z >> animation.speedDegrees.x >>
+                  animation.speedDegrees.y >> animation.speedDegrees.z)) {
+                valid = false;
+                break;
+            }
+            if (enabled != 0 && enabled != 1) {
+                valid = false;
+                break;
+            }
+            animation.enabled = enabled != 0;
+            pendingNodeAnimations.push_back(animation);
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -291,7 +419,19 @@ void Renderer::loadTransformSettings() {
         std::isfinite(translation.z) && std::isfinite(rotationDegrees.x) &&
         std::isfinite(rotationDegrees.y) && std::isfinite(rotationDegrees.z) &&
         std::isfinite(scaleFactor);
-    if (!valid || !finiteValues) {
+    const bool finiteNodeValues = std::all_of(
+        pendingNodeAnimations.begin(),
+        pendingNodeAnimations.end(),
+        [](const PendingNodeAnimation& animation) {
+            return std::isfinite(animation.initialDegrees.x) &&
+                std::isfinite(animation.initialDegrees.y) &&
+                std::isfinite(animation.initialDegrees.z) &&
+                std::isfinite(animation.speedDegrees.x) &&
+                std::isfinite(animation.speedDegrees.y) &&
+                std::isfinite(animation.speedDegrees.z);
+        }
+    );
+    if (!valid || !finiteValues || !finiteNodeValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
         return;
@@ -304,6 +444,15 @@ void Renderer::loadTransformSettings() {
         kMinimumModelScaleFactor,
         kMaximumModelScaleFactor
     );
+    for (const PendingNodeAnimation& animation : pendingNodeAnimations) {
+        ModelNode* node = findModelNodeById(meshData_.hierarchy, animation.nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        node->rotationAnimationEnabled = animation.enabled;
+        node->rotationAnimationInitialDegrees = animation.initialDegrees;
+        node->rotationAnimationSpeedDegrees = animation.speedDegrees;
+    }
 }
 
 void Renderer::saveTransformSettings() const {
@@ -322,6 +471,7 @@ void Renderer::saveTransformSettings() const {
          << "rotation_degrees " << modelRotationDegrees_.x << ' '
          << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
          << "scale " << modelScaleFactor_ << "\n";
+    saveNodeAnimationSettings(file, meshData_.hierarchy);
 }
 
 void Renderer::buildImGuiFrame() {
@@ -387,6 +537,41 @@ void Renderer::buildImGuiFrame() {
         modelScaleFactor_ = 1.0f;
         shouldSaveTransformSettings = true;
     }
+    if (selectedModelNode_ != nullptr) {
+        ImGui::SeparatorText("Selected Node");
+        ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
+        ImGui::TextDisabled("Rotation uses the node's local model axes.");
+
+        ImGui::Checkbox(
+            "Enable rotation animation",
+            &selectedModelNode_->rotationAnimationEnabled
+        );
+        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::DragFloat3(
+            "Initial rotation (X/Y/Z)",
+            &selectedModelNode_->rotationAnimationInitialDegrees.x,
+            1.0f,
+            -360.0f,
+            360.0f,
+            "%.1f deg"
+        );
+        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::DragFloat3(
+            "Rotation speed (X/Y/Z)",
+            &selectedModelNode_->rotationAnimationSpeedDegrees.x,
+            1.0f,
+            -360.0f,
+            360.0f,
+            "%.1f deg/s"
+        );
+        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::Button("Reset node animation")) {
+            selectedModelNode_->rotationAnimationEnabled = false;
+            selectedModelNode_->rotationAnimationInitialDegrees = glm::vec3(0.0f);
+            selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
+            shouldSaveTransformSettings = true;
+        }
+    }
     if (shouldSaveTransformSettings) {
         saveTransformSettings();
     }
@@ -395,6 +580,7 @@ void Renderer::buildImGuiFrame() {
     // ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
+    const bool leftPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
 
     ImGui::SetCursorPos(ImVec2(
@@ -411,7 +597,17 @@ void Renderer::buildImGuiFrame() {
     } else {
         ImGui::TextDisabled("No model hierarchy available");
     }
+    const bool rightPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
+
+    if (selectedModelNode_ != nullptr &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !leftPanelHovered &&
+        !rightPanelHovered &&
+        ImGui::IsWindowHovered()) {
+        selectedModelNode_ = nullptr;
+        updateBoundingBoxVertices();
+    }
     ImGui::End();
 
     // if (showImGuiDemo_) {
@@ -610,7 +806,7 @@ void Renderer::createGraphicsPipeline() {
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
     VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
     pushConstantRange.size = sizeof(MaterialPushConstants);
     pipelineLayoutInfo.pushConstantRangeCount = 1;
@@ -1157,7 +1353,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
 
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
-    for (const MeshPart& part : meshData_.parts) {
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    for (std::size_t partIndex = 0; partIndex < meshData_.parts.size(); ++partIndex) {
+        const MeshPart& part = meshData_.parts[partIndex];
         if (part.materialIndex >= materialCount || part.indexCount == 0) {
             continue;
         }
@@ -1176,12 +1375,20 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         );
 
         MaterialPushConstants materialPushConstants{};
+        bool found = false;
+        materialPushConstants.nodeTransform = animationTransformForNode(
+            meshData_.hierarchy,
+            part.nodeId,
+            elapsedSeconds,
+            glm::mat4(1.0f),
+            found
+        );
         materialPushConstants.baseColor = meshData_.materials[part.materialIndex].baseColor;
         materialPushConstants.hasTexture = materialTextures_[part.materialIndex] != nullptr ? 1u : 0u;
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
-            VK_SHADER_STAGE_FRAGMENT_BIT,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0,
             sizeof(MaterialPushConstants),
             &materialPushConstants
@@ -1206,6 +1413,15 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             &uniformDescriptorSet,
             0,
             nullptr
+        );
+        MaterialPushConstants boundingBoxPushConstants{};
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0,
+            sizeof(MaterialPushConstants),
+            &boundingBoxPushConstants
         );
         vkCmdDraw(commandBuffer, static_cast<uint32_t>(boundingBoxVertices_.size()), 1, 0, 0);
     }
@@ -1248,6 +1464,7 @@ void Renderer::drawFrame() {
     }
 
     buildImGuiFrame();
+    updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");

@@ -30,6 +30,7 @@ struct MeshPart {
     std::uint32_t firstIndex = 0;
     std::uint32_t indexCount = 0;
     std::uint32_t materialIndex = 0;
+    std::uint32_t nodeId = 0;
 };
 
 // The node hierarchy is kept separately from the flattened render mesh. This
@@ -37,13 +38,18 @@ struct MeshPart {
 // the original model structure.
 struct ModelNode {
     std::string name;
+    std::uint32_t nodeId = 0;
     std::uint32_t meshCount = 0;
+    glm::mat4 globalTransform{1.0f};
     // Indices into MeshData::parts for this node's directly attached meshes.
     std::vector<std::uint32_t> meshPartIndices;
     std::vector<ModelNode> children;
     bool hasBounds = false;
     glm::vec3 boundsMinimum{0.0f};
     glm::vec3 boundsMaximum{0.0f};
+    bool rotationAnimationEnabled = false;
+    glm::vec3 rotationAnimationInitialDegrees{0.0f};
+    glm::vec3 rotationAnimationSpeedDegrees{0.0f};
 };
 
 struct MeshData {

@@ -19,6 +19,8 @@
 #include <string>
 #include <utility>
 
+#include <glm/mat4x4.hpp>
+
 namespace {
 
 std::filesystem::path resolveTexturePath(
@@ -116,6 +118,7 @@ VulkCore::EmbeddedTextureData copyEmbeddedTexture(
 std::optional<std::uint32_t> appendMeshGeometry(
     const aiMesh* mesh,
     const aiMatrix4x4& transform,
+    std::uint32_t nodeId,
     VulkCore::MeshData& meshData
 ) {
     if (mesh == nullptr || mesh->mNumVertices == 0) {
@@ -185,9 +188,21 @@ std::optional<std::uint32_t> appendMeshGeometry(
     meshData.parts.push_back({
         firstIndex,
         static_cast<std::uint32_t>(indexCount),
-        materialIndex
+        materialIndex,
+        nodeId
     });
     return partIndex;
+}
+
+glm::mat4 toGlmMatrix(const aiMatrix4x4& matrix) {
+    // Assimp stores matrices in row-major members while GLM's constructor
+    // takes column-major columns.
+    return glm::mat4(
+        matrix.a1, matrix.b1, matrix.c1, matrix.d1,
+        matrix.a2, matrix.b2, matrix.c2, matrix.d2,
+        matrix.a3, matrix.b3, matrix.c3, matrix.d3,
+        matrix.a4, matrix.b4, matrix.c4, matrix.d4
+    );
 }
 
 void expandBounds(VulkCore::ModelNode& node, const glm::vec3& position) {
@@ -214,6 +229,7 @@ VulkCore::ModelNode readModelNode(
     const aiScene& scene,
     const aiNode* node,
     const aiMatrix4x4& parentTransform,
+    std::uint32_t& nextNodeId,
     VulkCore::MeshData& meshData
 ) {
     VulkCore::ModelNode modelNode;
@@ -222,11 +238,13 @@ VulkCore::ModelNode readModelNode(
     }
 
     modelNode.name = node->mName.length > 0 ? node->mName.C_Str() : "<unnamed>";
+    modelNode.nodeId = nextNodeId++;
     modelNode.meshCount = node->mNumMeshes;
     modelNode.meshPartIndices.reserve(node->mNumMeshes);
     modelNode.children.reserve(node->mNumChildren);
 
     const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+    modelNode.globalTransform = toGlmMatrix(globalTransform);
     for (unsigned int meshIndex = 0; meshIndex < node->mNumMeshes; ++meshIndex) {
         if (node->mMeshes == nullptr || node->mMeshes[meshIndex] >= scene.mNumMeshes) {
             continue;
@@ -236,6 +254,7 @@ VulkCore::ModelNode readModelNode(
         const std::optional<std::uint32_t> partIndex = appendMeshGeometry(
             scene.mMeshes[node->mMeshes[meshIndex]],
             globalTransform,
+            modelNode.nodeId,
             meshData
         );
         if (partIndex.has_value()) {
@@ -253,6 +272,7 @@ VulkCore::ModelNode readModelNode(
             scene,
             node->mChildren[childIndex],
             globalTransform,
+            nextNodeId,
             meshData
         );
         mergeBounds(modelNode, child);
@@ -396,10 +416,12 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
     }
 
     aiMatrix4x4 identityTransform;
+    std::uint32_t nextNodeId = 0;
     meshData.hierarchy = readModelNode(
         *scene,
         scene->mRootNode,
         identityTransform,
+        nextNodeId,
         meshData
     );
 
