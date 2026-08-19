@@ -25,7 +25,7 @@ src/                    C++ 实现
 assets/textures/         可选外部纹理图片
 assets/models/            默认 FBX 模型
 third_party/stb/         stb_image.h 单头文件库
-shaders/src/             GLSL 源文件
+shaders/src/             GLSL 源文件（支持 vert/tesc/tese/geom/frag/comp）
 build/shaders/           CMake 自动生成的 SPIR-V 文件，不纳入源码
 ```
 
@@ -97,6 +97,9 @@ ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区
 右侧层级中的节点可以选中，3D 视图会为该节点及其子节点整体显示黄色 AABB 立方体边框；
 节点本身显示其直接 Mesh 数量，但不会再额外展开 `Mesh 0` 子项。
 选中节点后，左侧 Selected Node 区域可以启用该节点绕自身模型坐标系 X/Y/Z 轴的旋转动画，分别设置初始角度和角速度；已启用的节点动画会在切换选择后继续运行，嵌套节点按层级坐标系叠加。节点动画配置也会写入 `vulkcore.ini`。
+同一区域的 Node Shaders 可以为当前节点分别选择 Vertex、Tessellation Control、Tessellation Evaluation、Geometry、Fragment 和 Compute Shader。未选择的 graphics stage 自动回退到默认 Shader，因此只改一个节点不会影响其它节点；相同的 Shader 组合会共享 Vulkan graphics pipeline。Compute Shader 会为该节点创建并校验独立的 compute pipeline，但当前模型 render pass 不会自动 dispatch 它，因为 compute 阶段需要额外的 storage buffer/image 资源绑定。
+Shader 选择来自 `build/shaders` 中的 SPIR-V 文件；新增 GLSL 文件后重新构建即可出现在对应下拉框中。自定义 graphics Shader 需要遵守当前顶点输入、descriptor set `0` 的 UBO/纹理绑定以及 `MaterialPushConstants` 接口。
+Node Shaders 还提供 `Apply water shader` 和 `Apply flowing water` 两个预设：前者使用波浪位移、法线扰动和 Fresnel 高光，后者额外按照参考工程的 flow-map 思路移动 UV，并使用程序化 flow field 作为当前单纹理布局下的 fallback。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。

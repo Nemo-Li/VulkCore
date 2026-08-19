@@ -45,11 +45,89 @@ struct MaterialPushConstants {
 
 constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
+constexpr char kDefaultVertexShader[] = "shader_base.vert";
+constexpr char kDefaultFragmentShader[] = "shader_base.frag";
 constexpr std::array<std::uint32_t, 24> kBoundingBoxEdges = {
     0, 1, 1, 2, 2, 3, 3, 0,
     4, 5, 5, 6, 6, 7, 7, 4,
     0, 4, 1, 5, 2, 6, 3, 7
 };
+
+const char* shaderStageLabel(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::Vertex:
+        return "Vertex shader";
+    case ShaderStage::TessellationControl:
+        return "Tessellation control";
+    case ShaderStage::TessellationEvaluation:
+        return "Tessellation evaluation";
+    case ShaderStage::Geometry:
+        return "Geometry shader";
+    case ShaderStage::Fragment:
+        return "Fragment shader";
+    case ShaderStage::Compute:
+        return "Compute shader";
+    }
+    return "Shader";
+}
+
+const char* shaderStageExtension(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::Vertex:
+        return ".vert";
+    case ShaderStage::TessellationControl:
+        return ".tesc";
+    case ShaderStage::TessellationEvaluation:
+        return ".tese";
+    case ShaderStage::Geometry:
+        return ".geom";
+    case ShaderStage::Fragment:
+        return ".frag";
+    case ShaderStage::Compute:
+        return ".comp";
+    }
+    return "";
+}
+
+VkShaderStageFlagBits vkShaderStage(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::Vertex:
+        return VK_SHADER_STAGE_VERTEX_BIT;
+    case ShaderStage::TessellationControl:
+        return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    case ShaderStage::TessellationEvaluation:
+        return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    case ShaderStage::Geometry:
+        return VK_SHADER_STAGE_GEOMETRY_BIT;
+    case ShaderStage::Fragment:
+        return VK_SHADER_STAGE_FRAGMENT_BIT;
+    case ShaderStage::Compute:
+        return VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    return VK_SHADER_STAGE_VERTEX_BIT;
+}
+
+bool shaderStageForExtension(const std::string& extension, ShaderStage& stage) {
+    for (std::size_t index = 0; index < kShaderStageCount; ++index) {
+        const auto candidate = static_cast<ShaderStage>(index);
+        if (extension == shaderStageExtension(candidate)) {
+            stage = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+const char* defaultShaderForStage(ShaderStage stage) {
+    switch (stage) {
+    case ShaderStage::Vertex:
+        return kDefaultVertexShader;
+    case ShaderStage::Fragment:
+        return kDefaultFragmentShader;
+    default:
+        return "";
+    }
+}
 
 ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
     if (node.nodeId == nodeId) {
@@ -69,6 +147,10 @@ bool hasNodeAnimationSettings(const ModelNode& node) {
         node.rotationAnimationSpeedDegrees != glm::vec3(0.0f);
 }
 
+bool hasNodeShaderSettings(const ModelNode& node) {
+    return !node.shaderConfiguration.empty();
+}
+
 void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     if (hasNodeAnimationSettings(node)) {
         file << "node_animation " << node.nodeId << ' '
@@ -83,6 +165,23 @@ void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     for (const ModelNode& child : node.children) {
         saveNodeAnimationSettings(file, child);
     }
+}
+
+void saveNodeShaderSettings(std::ostream& file, const ModelNode& node) {
+    if (hasNodeShaderSettings(node)) {
+        file << "node_shaders " << node.nodeId;
+        for (const std::string& shaderName : node.shaderConfiguration.shaderNames) {
+            file << ' ' << (shaderName.empty() ? "-" : shaderName);
+        }
+        file << "\n";
+    }
+    for (const ModelNode& child : node.children) {
+        saveNodeShaderSettings(file, child);
+    }
+}
+
+std::string shaderConfigToken(const std::string& token) {
+    return token == "-" ? std::string{} : token;
 }
 
 } // namespace
@@ -228,6 +327,79 @@ void Renderer::drawModelHierarchy(ModelNode& node) {
     ImGui::PopID();
 }
 
+void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings) {
+    ImGui::SeparatorText("Node Shaders");
+    ImGui::TextDisabled("Empty stages fall back to the default shader.");
+
+    const std::array<ShaderStage, kShaderStageCount> stages = {
+        ShaderStage::Vertex,
+        ShaderStage::TessellationControl,
+        ShaderStage::TessellationEvaluation,
+        ShaderStage::Geometry,
+        ShaderStage::Fragment,
+        ShaderStage::Compute
+    };
+    for (const ShaderStage stage : stages) {
+        std::string preview = node.shaderConfiguration.shader(stage).empty()
+            ? "<Default>"
+            : node.shaderConfiguration.shader(stage);
+        ImGui::PushID(static_cast<int>(stage));
+        if (ImGui::BeginCombo(shaderStageLabel(stage), preview.c_str())) {
+            const bool defaultSelected = node.shaderConfiguration.shader(stage).empty();
+            if (ImGui::Selectable("<Default>", defaultSelected)) {
+                node.shaderConfiguration.shader(stage).clear();
+                shouldSaveSettings = true;
+            }
+            if (defaultSelected) {
+                ImGui::SetItemDefaultFocus();
+            }
+
+            const auto& shaders = availableShaders_[static_cast<std::size_t>(stage)];
+            for (const std::string& shaderName : shaders) {
+                const bool selected = node.shaderConfiguration.shader(stage) == shaderName;
+                if (ImGui::Selectable(shaderName.c_str(), selected)) {
+                    node.shaderConfiguration.shader(stage) = shaderName;
+                    shouldSaveSettings = true;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopID();
+    }
+
+    if (ImGui::Button("Apply water shader")) {
+        node.shaderConfiguration = NodeShaderConfiguration{};
+        node.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
+        node.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water.frag";
+        shouldSaveSettings = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Apply flowing water")) {
+        node.shaderConfiguration = NodeShaderConfiguration{};
+        node.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
+        node.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water_flow.frag";
+        shouldSaveSettings = true;
+    }
+
+    if (node.shaderConfiguration.hasComputeOverride()) {
+        if (computePipelineForNode(node) != VK_NULL_HANDLE) {
+            ImGui::TextDisabled("Compute pipeline ready (not dispatched by the mesh pass).");
+        } else {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.65f, 0.25f, 1.0f),
+                "Compute shader pipeline could not be created."
+            );
+        }
+    }
+    if (ImGui::Button("Reset node shaders")) {
+        node.shaderConfiguration = NodeShaderConfiguration{};
+        shouldSaveSettings = true;
+    }
+}
+
 Renderer::Renderer(GLFWwindow* window)
     : startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
@@ -281,6 +453,18 @@ Renderer::~Renderer() {
         vkDestroyFence(context_->device(), inFlightFences_[i], nullptr);
     }
 
+    for (const auto& [key, pipeline] : nodeGraphicsPipelines_) {
+        (void)key;
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(context_->device(), pipeline, nullptr);
+        }
+    }
+    for (const auto& [key, pipeline] : nodeComputePipelines_) {
+        (void)key;
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(context_->device(), pipeline, nullptr);
+        }
+    }
     if (graphicsPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), graphicsPipeline_, nullptr);
     }
@@ -289,6 +473,12 @@ Renderer::~Renderer() {
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
+    }
+    for (const auto& [shaderName, shaderModuleHandle] : shaderModules_) {
+        (void)shaderName;
+        if (shaderModuleHandle != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(context_->device(), shaderModuleHandle, nullptr);
+        }
     }
     if (descriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
@@ -373,7 +563,12 @@ void Renderer::loadTransformSettings() {
         glm::vec3 initialDegrees{0.0f};
         glm::vec3 speedDegrees{0.0f};
     };
+    struct PendingNodeShaders {
+        std::uint32_t nodeId = 0;
+        NodeShaderConfiguration configuration;
+    };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
+    std::vector<PendingNodeShaders> pendingNodeShaders;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -408,6 +603,24 @@ void Renderer::loadTransformSettings() {
             }
             animation.enabled = enabled != 0;
             pendingNodeAnimations.push_back(animation);
+        } else if (key == "node_shaders") {
+            PendingNodeShaders shaders;
+            if (!(file >> shaders.nodeId)) {
+                valid = false;
+                break;
+            }
+            for (std::string& shaderName : shaders.configuration.shaderNames) {
+                std::string token;
+                if (!(file >> token)) {
+                    valid = false;
+                    break;
+                }
+                shaderName = shaderConfigToken(token);
+            }
+            if (!valid) {
+                break;
+            }
+            pendingNodeShaders.push_back(std::move(shaders));
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -453,6 +666,13 @@ void Renderer::loadTransformSettings() {
         node->rotationAnimationInitialDegrees = animation.initialDegrees;
         node->rotationAnimationSpeedDegrees = animation.speedDegrees;
     }
+    for (const PendingNodeShaders& shaders : pendingNodeShaders) {
+        ModelNode* node = findModelNodeById(meshData_.hierarchy, shaders.nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        node->shaderConfiguration = shaders.configuration;
+    }
 }
 
 void Renderer::saveTransformSettings() const {
@@ -472,6 +692,7 @@ void Renderer::saveTransformSettings() const {
          << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
          << "scale " << modelScaleFactor_ << "\n";
     saveNodeAnimationSettings(file, meshData_.hierarchy);
+    saveNodeShaderSettings(file, meshData_.hierarchy);
 }
 
 void Renderer::buildImGuiFrame() {
@@ -571,6 +792,7 @@ void Renderer::buildImGuiFrame() {
             selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
             shouldSaveTransformSettings = true;
         }
+        drawNodeShaderControls(*selectedModelNode_, shouldSaveTransformSettings);
     }
     if (shouldSaveTransformSettings) {
         saveTransformSettings();
@@ -622,12 +844,24 @@ void Renderer::createDescriptorSetLayout() {
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[0].stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT |
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+        VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT |
+        VK_SHADER_STAGE_COMPUTE_BIT;
 
     bindings[1].binding = 1;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT |
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+        VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT |
+        VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -709,30 +943,118 @@ void Renderer::createRenderPass() {
     }
 }
 
-void Renderer::createGraphicsPipeline() {
+void Renderer::discoverShaderBinaries() {
+    for (auto& shaders : availableShaders_) {
+        shaders.clear();
+    }
+
     const std::filesystem::path shaderDirectory(kShaderBinaryDirectory);
-    const auto vertShaderCode = readBinaryFile(shaderDirectory / "shader_base.vert.spv");
-    const auto fragShaderCode = readBinaryFile(shaderDirectory / "shader_base.frag.spv");
+    if (!std::filesystem::exists(shaderDirectory)) {
+        throw std::runtime_error("shader binary directory does not exist: " + shaderDirectory.string());
+    }
 
-    const VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-    const VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+    for (const auto& entry : std::filesystem::directory_iterator(shaderDirectory)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".spv") {
+            continue;
+        }
 
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertShaderModule;
-    vertShaderStageInfo.pName = "main";
+        std::string shaderName = entry.path().filename().string();
+        constexpr std::string_view kSpirvSuffix = ".spv";
+        if (!shaderName.ends_with(kSpirvSuffix)) {
+            continue;
+        }
+        shaderName.erase(shaderName.size() - kSpirvSuffix.size());
 
-    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragShaderStageInfo.module = fragShaderModule;
-    fragShaderStageInfo.pName = "main";
+        ShaderStage stage = ShaderStage::Vertex;
+        if (!shaderStageForExtension(std::filesystem::path(shaderName).extension().string(), stage)) {
+            continue;
+        }
+        availableShaders_[static_cast<std::size_t>(stage)].push_back(std::move(shaderName));
+    }
 
-    VkPipelineShaderStageCreateInfo shaderStages[] = {
-        vertShaderStageInfo,
-        fragShaderStageInfo
+    for (auto& shaders : availableShaders_) {
+        std::sort(shaders.begin(), shaders.end());
+    }
+}
+
+VkShaderModule Renderer::shaderModule(const std::string& shaderName) {
+    const auto existing = shaderModules_.find(shaderName);
+    if (existing != shaderModules_.end()) {
+        return existing->second;
+    }
+
+    const std::filesystem::path shaderPath =
+        std::filesystem::path(kShaderBinaryDirectory) / (shaderName + ".spv");
+    const VkShaderModule module = createShaderModule(readBinaryFile(shaderPath));
+    shaderModules_.emplace(shaderName, module);
+    return module;
+}
+
+std::string Renderer::graphicsPipelineKey(const NodeShaderConfiguration& configuration) const {
+    std::string key;
+    for (const ShaderStage stage : {
+             ShaderStage::Vertex,
+             ShaderStage::TessellationControl,
+             ShaderStage::TessellationEvaluation,
+             ShaderStage::Geometry,
+             ShaderStage::Fragment
+         }) {
+        key += configuration.shader(stage);
+        key += '\n';
+    }
+    return key;
+}
+
+VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& configuration) {
+    const bool hasTessellationControl =
+        !configuration.shader(ShaderStage::TessellationControl).empty();
+    const bool hasTessellationEvaluation =
+        !configuration.shader(ShaderStage::TessellationEvaluation).empty();
+    if (hasTessellationControl != hasTessellationEvaluation) {
+        throw std::runtime_error(
+            "tessellation control and evaluation shaders must be configured together"
+        );
+    }
+    const std::string effectiveFragmentShader =
+        configuration.shader(ShaderStage::Fragment).empty()
+        ? defaultShaderForStage(ShaderStage::Fragment)
+        : configuration.shader(ShaderStage::Fragment);
+    const bool isWaterShader =
+        effectiveFragmentShader == "shader_water.frag" ||
+        effectiveFragmentShader == "shader_water_flow.frag";
+
+    const std::array<ShaderStage, 5> graphicsStages = {
+        ShaderStage::Vertex,
+        ShaderStage::TessellationControl,
+        ShaderStage::TessellationEvaluation,
+        ShaderStage::Geometry,
+        ShaderStage::Fragment
     };
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+    shaderStages.reserve(graphicsStages.size());
+    for (const ShaderStage stage : graphicsStages) {
+        std::string shaderName = configuration.shader(stage);
+        if (shaderName.empty()) {
+            shaderName = defaultShaderForStage(stage);
+        }
+        if (shaderName.empty()) {
+            continue;
+        }
+
+        const auto& stageShaders = availableShaders_[static_cast<std::size_t>(stage)];
+        if (std::find(stageShaders.begin(), stageShaders.end(), shaderName) == stageShaders.end()) {
+            throw std::runtime_error(
+                std::string("shader is not available for ") + shaderStageLabel(stage) + ": " + shaderName
+            );
+        }
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = vkShaderStage(stage);
+        stageInfo.module = shaderModule(shaderName);
+        stageInfo.pName = "main";
+        shaderStages.push_back(stageInfo);
+    }
 
     const auto bindingDescription = Vertex::bindingDescription();
     const auto attributeDescriptions = Vertex::attributeDescriptions();
@@ -746,7 +1068,9 @@ void Renderer::createGraphicsPipeline() {
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.topology = hasTessellationControl
+        ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+        : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewportState{};
@@ -772,7 +1096,7 @@ void Renderer::createGraphicsPipeline() {
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = isWaterShader ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -783,7 +1107,13 @@ void Renderer::createGraphicsPipeline() {
         VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT |
         VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
+    colorBlendAttachment.blendEnable = isWaterShader ? VK_TRUE : VK_FALSE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -801,28 +1131,17 @@ void Renderer::createGraphicsPipeline() {
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(MaterialPushConstants);
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
-    if (vkCreatePipelineLayout(context_->device(), &pipelineLayoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS) {
-        vkDestroyShaderModule(context_->device(), fragShaderModule, nullptr);
-        vkDestroyShaderModule(context_->device(), vertShaderModule, nullptr);
-        throw std::runtime_error("failed to create pipeline layout!");
-    }
+    VkPipelineTessellationStateCreateInfo tessellationState{};
+    tessellationState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    tessellationState.patchControlPoints = 3;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
+    pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pTessellationState = hasTessellationControl ? &tessellationState : nullptr;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
@@ -833,21 +1152,121 @@ void Renderer::createGraphicsPipeline() {
     pipelineInfo.renderPass = renderPass_;
     pipelineInfo.subpass = 0;
 
-    const VkResult result = vkCreateGraphicsPipelines(
-        context_->device(),
-        VK_NULL_HANDLE,
-        1,
-        &pipelineInfo,
-        nullptr,
-        &graphicsPipeline_
-    );
-
-    vkDestroyShaderModule(context_->device(), fragShaderModule, nullptr);
-    vkDestroyShaderModule(context_->device(), vertShaderModule, nullptr);
-
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error("failed to create graphics pipeline!");
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(
+            context_->device(),
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &pipeline
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create node graphics pipeline");
     }
+    return pipeline;
+}
+
+VkPipeline Renderer::graphicsPipelineForNode(const ModelNode& node) {
+    if (!node.shaderConfiguration.hasGraphicsOverride()) {
+        return graphicsPipeline_;
+    }
+
+    const std::string key = graphicsPipelineKey(node.shaderConfiguration);
+    const auto existing = nodeGraphicsPipelines_.find(key);
+    if (existing != nodeGraphicsPipelines_.end()) {
+        return existing->second;
+    }
+    if (failedNodeGraphicsPipelineKeys_.contains(key)) {
+        return graphicsPipeline_;
+    }
+
+    try {
+        const VkPipeline pipeline = createNodeGraphicsPipeline(node.shaderConfiguration);
+        nodeGraphicsPipelines_.emplace(key, pipeline);
+        return pipeline;
+    } catch (const std::exception& error) {
+        failedNodeGraphicsPipelineKeys_.insert(key);
+        std::cerr << "warning: node " << node.nodeId
+                  << " shader pipeline failed, using default shaders: " << error.what() << '\n';
+        return graphicsPipeline_;
+    }
+}
+
+VkPipeline Renderer::computePipelineForNode(const ModelNode& node) {
+    const std::string& computeShaderName = node.shaderConfiguration.shader(ShaderStage::Compute);
+    if (computeShaderName.empty()) {
+        return VK_NULL_HANDLE;
+    }
+    const auto existing = nodeComputePipelines_.find(computeShaderName);
+    if (existing != nodeComputePipelines_.end()) {
+        return existing->second;
+    }
+    if (failedNodeComputePipelineKeys_.contains(computeShaderName)) {
+        return VK_NULL_HANDLE;
+    }
+
+    try {
+        const auto& computeShaders = availableShaders_[static_cast<std::size_t>(ShaderStage::Compute)];
+        if (std::find(computeShaders.begin(), computeShaders.end(), computeShaderName) == computeShaders.end()) {
+            throw std::runtime_error("compute shader is not available: " + computeShaderName);
+        }
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stageInfo.module = shaderModule(computeShaderName);
+        stageInfo.pName = "main";
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = stageInfo;
+        pipelineInfo.layout = pipelineLayout_;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(
+                context_->device(),
+                VK_NULL_HANDLE,
+                1,
+                &pipelineInfo,
+                nullptr,
+                &pipeline
+            ) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create node compute pipeline");
+        }
+        nodeComputePipelines_.emplace(computeShaderName, pipeline);
+        return pipeline;
+    } catch (const std::exception& error) {
+        failedNodeComputePipelineKeys_.insert(computeShaderName);
+        std::cerr << "warning: node " << node.nodeId
+                  << " compute shader pipeline failed: " << error.what() << '\n';
+        return VK_NULL_HANDLE;
+    }
+}
+
+void Renderer::createGraphicsPipeline() {
+    discoverShaderBinaries();
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT |
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+        VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT |
+        VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(MaterialPushConstants);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    if (vkCreatePipelineLayout(context_->device(), &pipelineLayoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create pipeline layout!");
+    }
+
+    graphicsPipeline_ = createNodeGraphicsPipeline(NodeShaderConfiguration{});
 }
 
 void Renderer::createBoundingBoxPipeline() {
@@ -1243,6 +1662,7 @@ void Renderer::updateUniformBuffer() {
     ubo.model = glm::translate(glm::mat4(1.0f), modelTranslation_) *
         rotation *
         modelNormalization;
+    ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
     ubo.view = glm::lookAt(
         glm::vec3(3.5f, 3.5f, 2.8f),
         glm::vec3(0.0f, 0.0f, 0.0f),
@@ -1360,6 +1780,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         if (part.materialIndex >= materialCount || part.indexCount == 0) {
             continue;
         }
+
+        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+        const VkPipeline nodePipeline = node != nullptr
+            ? graphicsPipelineForNode(*node)
+            : graphicsPipeline_;
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, nodePipeline);
 
         const std::size_t descriptorSetIndex =
             static_cast<std::size_t>(currentFrame_) * materialCount + part.materialIndex;

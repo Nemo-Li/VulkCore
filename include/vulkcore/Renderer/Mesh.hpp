@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -33,6 +35,50 @@ struct MeshPart {
     std::uint32_t nodeId = 0;
 };
 
+// Shader selections are stored on the model node instead of globally. Empty
+// entries mean "use the renderer default for this stage". Compute shaders are
+// kept alongside the graphics stages so a node can own a complete shader
+// configuration even though the current mesh pass only consumes graphics
+// stages.
+enum class ShaderStage : std::size_t {
+    Vertex = 0,
+    TessellationControl,
+    TessellationEvaluation,
+    Geometry,
+    Fragment,
+    Compute,
+};
+
+inline constexpr std::size_t kShaderStageCount = 6;
+
+struct NodeShaderConfiguration {
+    std::array<std::string, kShaderStageCount> shaderNames{};
+
+    std::string& shader(ShaderStage stage) {
+        return shaderNames[static_cast<std::size_t>(stage)];
+    }
+
+    const std::string& shader(ShaderStage stage) const {
+        return shaderNames[static_cast<std::size_t>(stage)];
+    }
+
+    bool hasGraphicsOverride() const {
+        return !shader(ShaderStage::Vertex).empty() ||
+            !shader(ShaderStage::TessellationControl).empty() ||
+            !shader(ShaderStage::TessellationEvaluation).empty() ||
+            !shader(ShaderStage::Geometry).empty() ||
+            !shader(ShaderStage::Fragment).empty();
+    }
+
+    bool hasComputeOverride() const {
+        return !shader(ShaderStage::Compute).empty();
+    }
+
+    bool empty() const {
+        return !hasGraphicsOverride() && !hasComputeOverride();
+    }
+};
+
 // The node hierarchy is kept separately from the flattened render mesh. This
 // lets the renderer draw the pre-transformed mesh while the UI still exposes
 // the original model structure.
@@ -50,6 +96,7 @@ struct ModelNode {
     bool rotationAnimationEnabled = false;
     glm::vec3 rotationAnimationInitialDegrees{0.0f};
     glm::vec3 rotationAnimationSpeedDegrees{0.0f};
+    NodeShaderConfiguration shaderConfiguration;
 };
 
 struct MeshData {
