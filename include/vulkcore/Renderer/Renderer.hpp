@@ -6,6 +6,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "vulkcore/Renderer/Mesh.hpp"
+
 struct GLFWwindow;
 
 namespace VulkCore {
@@ -29,6 +31,7 @@ private:
     void createRenderPass();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
+    void createMeshData();
     void createVertexBuffer();
     void createIndexBuffer();
     void createTexture();
@@ -53,8 +56,12 @@ private:
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
+    MeshData meshData_;
+    glm::vec3 modelCenter_{0.0f};
+    float modelScale_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
+    uint32_t indexCount_ = 0;
     std::unique_ptr<Texture> texture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;

@@ -6,6 +6,7 @@
 - Vulkan 核心：实例、调试消息、物理设备、逻辑设备、队列和命令池
 - 渲染器：交换链、渲染管线、帧同步以及 vertex/index buffer
 - 纹理：`stb_image.h` 图片解码、staging 上传、采样器和矩形纹理显示
+- 模型：Assimp FBX 网格导入、节点变换、三角化、法线和 UV 提取
 - 资源工具：GPU buffer 封装、staging buffer 上传和二进制文件读取
 - Shader 管线：GLSL 源码与构建生成的 SPIR-V 分离
 
@@ -15,12 +16,13 @@
 include/vulkcore/       对外头文件和模块接口
   Core/                  构建配置和通用配置
   Renderer/              Vulkan 上下文、交换链、buffer、渲染器
-  Utils/                 文件读取等通用工具
+  Utils/                 文件读取和 Assimp 模型加载
 src/                    C++ 实现
   Application.cpp        应用生命周期和 GLFW 窗口
   Renderer/              Vulkan 渲染实现
   Utils/                 工具实现
 assets/textures/         示例纹理图片
+assets/models/            默认 FBX 模型
 third_party/stb/         stb_image.h 单头文件库
 shaders/src/             GLSL 源文件
 build/shaders/           CMake 自动生成的 SPIR-V 文件，不纳入源码
@@ -46,6 +48,9 @@ sudo apt install cmake build-essential libvulkan-dev vulkan-tools \
 同时需要显卡对应的 Vulkan 驱动。`vulkan-tools` 不是编译必需项，但可以用来运行
 `vulkaninfo` 检查驱动。
 
+Assimp 不要求单独安装：CMake 会优先使用系统中的 Assimp package；如果找不到，
+会在配置阶段从官方仓库下载并构建固定版本 `v6.0.5`。
+
 ## 构建与运行
 
 在工程根目录执行：
@@ -55,6 +60,19 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --parallel
 ./build/vulkcore
 ```
+
+默认会加载并显示 `assets/models/mill-scene.fbx`。如果要替换模型，在配置时传入新的路径：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+    -DVULKCORE_MODEL_PATH=/absolute/path/to/model.fbx
+cmake --build build --parallel
+./build/vulkcore
+```
+
+`loadModelMesh()` 会将 FBX 中的所有网格合并为一个 32 位索引网格，并应用节点变换、
+三角化、平滑法线生成和首个 UV 通道读取；没有 UV 的顶点会使用 `(0, 0)`。
+渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
 CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 pkg-config
 元数据，则会自动使用 pkg-config 查找它们。构建时需要 `glslc`，CMake 会将

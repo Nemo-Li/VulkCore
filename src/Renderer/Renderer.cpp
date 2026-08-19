@@ -4,8 +4,11 @@
 #include "vulkcore/Renderer/Renderer.hpp"
 
 #include <array>
+#include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
+#include <string_view>
 
 #include "vulkcore/Core/Config.hpp"
 #include "vulkcore/Renderer/Buffer.hpp"
@@ -15,6 +18,7 @@
 #include "vulkcore/Renderer/Vertex.hpp"
 #include "vulkcore/Renderer/VulkanContext.hpp"
 #include "vulkcore/Utils/FileUtils.hpp"
+#include "vulkcore/Utils/ModelLoader.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -36,6 +40,7 @@ Renderer::Renderer(GLFWwindow* window)
     createDescriptorSetLayout();
     createGraphicsPipeline();
     swapChain_->createFramebuffers(renderPass_);
+    createMeshData();
     createVertexBuffer();
     createIndexBuffer();
     createTexture();
@@ -126,23 +131,46 @@ void Renderer::createRenderPass() {
     colorAttachmentReference.attachment = 0;
     colorAttachmentReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = swapChain_->depthFormat();
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentReference{};
+    depthAttachmentReference.attachment = 1;
+    depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentReference;
+    subpass.pDepthStencilAttachment = &depthAttachmentReference;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    const std::array<VkAttachmentDescription, 2> attachments = {
+        colorAttachment,
+        depthAttachment
+    };
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -213,6 +241,14 @@ void Renderer::createGraphicsPipeline() {
     multisampling.sampleShadingEnable = VK_FALSE;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT |
@@ -256,6 +292,7 @@ void Renderer::createGraphicsPipeline() {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout_;
@@ -279,8 +316,40 @@ void Renderer::createGraphicsPipeline() {
     }
 }
 
+void Renderer::createMeshData() {
+    if (std::string_view(kModelPath).empty()) {
+        meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
+        meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
+        modelCenter_ = glm::vec3(0.0f);
+        modelScale_ = 1.0f;
+        return;
+    }
+
+    meshData_ = loadModelMesh(std::filesystem::path(kModelPath));
+
+    glm::vec3 minimum(std::numeric_limits<float>::max());
+    glm::vec3 maximum(std::numeric_limits<float>::lowest());
+    for (const Vertex& vertex : meshData_.vertices) {
+        minimum = glm::min(minimum, vertex.position);
+        maximum = glm::max(maximum, vertex.position);
+    }
+
+    const glm::vec3 extent = maximum - minimum;
+    const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
+    if (largestExtent <= std::numeric_limits<float>::epsilon()) {
+        throw std::runtime_error("model has no measurable bounds");
+    }
+
+    modelCenter_ = (minimum + maximum) * 0.5f;
+    modelScale_ = 1.8f / largestExtent;
+}
+
 void Renderer::createVertexBuffer() {
-    const VkDeviceSize bufferSize = sizeof(kRectangleVertices[0]) * kRectangleVertices.size();
+    if (meshData_.vertices.empty()) {
+        throw std::runtime_error("mesh has no vertices");
+    }
+
+    const VkDeviceSize bufferSize = sizeof(meshData_.vertices[0]) * meshData_.vertices.size();
 
     Buffer stagingBuffer(
         *context_,
@@ -288,7 +357,7 @@ void Renderer::createVertexBuffer() {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    stagingBuffer.upload(kRectangleVertices.data(), bufferSize);
+    stagingBuffer.upload(meshData_.vertices.data(), bufferSize);
 
     vertexBuffer_ = std::make_unique<Buffer>(
         *context_,
@@ -300,14 +369,19 @@ void Renderer::createVertexBuffer() {
 }
 
 void Renderer::createIndexBuffer() {
-    const VkDeviceSize bufferSize = sizeof(kRectangleIndices[0]) * kRectangleIndices.size();
+    if (meshData_.indices.empty()) {
+        throw std::runtime_error("mesh has no indices");
+    }
+
+    indexCount_ = static_cast<uint32_t>(meshData_.indices.size());
+    const VkDeviceSize bufferSize = sizeof(meshData_.indices[0]) * meshData_.indices.size();
     Buffer indexStagingBuffer(
         *context_,
         bufferSize,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    indexStagingBuffer.upload(kRectangleIndices.data(), bufferSize);
+    indexStagingBuffer.upload(meshData_.indices.data(), bufferSize);
 
     indexBuffer_ = std::make_unique<Buffer>(
         *context_,
@@ -411,13 +485,19 @@ void Renderer::updateUniformBuffer() {
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     UniformBufferObject ubo{};
+    // GLM post-multiplies transforms. Build S * T so the model is translated
+    // to the origin first and then scaled; T * S would leave the center in
+    // model units and move this scene outside the camera frustum.
+    const glm::mat4 modelNormalization =
+        glm::scale(glm::mat4(1.0f), glm::vec3(modelScale_)) *
+        glm::translate(glm::mat4(1.0f), -modelCenter_);
     ubo.model = glm::rotate(
         glm::mat4(1.0f),
-        elapsedSeconds * glm::radians(90.0f),
+        elapsedSeconds * glm::radians(12.0f),
         glm::vec3(0.0f, 0.0f, 1.0f)
-    );
+    ) * modelNormalization;
     ubo.view = glm::lookAt(
-        glm::vec3(2.0f, 2.0f, 2.0f),
+        glm::vec3(3.5f, 3.5f, 2.8f),
         glm::vec3(0.0f, 0.0f, 0.0f),
         glm::vec3(0.0f, 0.0f, 1.0f)
     );
@@ -429,8 +509,8 @@ void Renderer::updateUniformBuffer() {
     ubo.projection = glm::perspective(
         glm::radians(45.0f),
         static_cast<float>(extent.width) / static_cast<float>(extent.height),
-        0.1f,
-        10.0f
+        0.01f,
+        100.0f
     );
     // GLM follows OpenGL's Y direction; Vulkan's viewport uses the opposite one.
     ubo.projection[1][1] *= -1.0f;
@@ -487,9 +567,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapChain_->extent();
 
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-    renderPassInfo.clearValueCount = 1;
-    renderPassInfo.pClearValues = &clearColor;
+    const std::array<VkClearValue, 2> clearValues = {{
+        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
+        {{{1.0f, 0}}}
+    }};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
@@ -520,8 +603,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     const VkBuffer buffers[] = {vertexBuffer_->handle()};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(kRectangleIndices.size()), 1, 0, 0, 0);
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer, indexCount_, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(commandBuffer);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
