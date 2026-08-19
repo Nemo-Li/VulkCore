@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -63,6 +66,13 @@ private:
     void createSyncObjects();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
+    void discoverShaderBinaries();
+    VkShaderModule shaderModule(const std::string& shaderName);
+    VkPipeline createNodeGraphicsPipeline(const NodeShaderConfiguration& configuration);
+    VkPipeline graphicsPipelineForNode(const ModelNode& node);
+    VkPipeline computePipelineForNode(const ModelNode& node);
+    std::string graphicsPipelineKey(const NodeShaderConfiguration& configuration) const;
+    void drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -79,6 +89,12 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
     VkPipeline boundingBoxPipeline_ = VK_NULL_HANDLE;
+    std::array<std::vector<std::string>, kShaderStageCount> availableShaders_;
+    std::unordered_map<std::string, VkShaderModule> shaderModules_;
+    std::unordered_map<std::string, VkPipeline> nodeGraphicsPipelines_;
+    std::unordered_map<std::string, VkPipeline> nodeComputePipelines_;
+    std::unordered_set<std::string> failedNodeGraphicsPipelineKeys_;
+    std::unordered_set<std::string> failedNodeComputePipelineKeys_;
     MeshData meshData_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
