@@ -38,7 +38,12 @@ struct MeshPart {
 struct ModelNode {
     std::string name;
     std::uint32_t meshCount = 0;
+    // Indices into MeshData::parts for this node's directly attached meshes.
+    std::vector<std::uint32_t> meshPartIndices;
     std::vector<ModelNode> children;
+    bool hasBounds = false;
+    glm::vec3 boundsMinimum{0.0f};
+    glm::vec3 boundsMaximum{0.0f};
 };
 
 struct MeshData {

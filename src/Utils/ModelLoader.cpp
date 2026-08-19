@@ -3,6 +3,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
 #include <assimp/material.h>
+#include <assimp/matrix3x3.h>
+#include <assimp/matrix4x4.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -12,8 +14,10 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -109,7 +113,109 @@ VulkCore::EmbeddedTextureData copyEmbeddedTexture(
     return embeddedTexture;
 }
 
-VulkCore::ModelNode copyModelNode(const aiNode* node) {
+std::optional<std::uint32_t> appendMeshGeometry(
+    const aiMesh* mesh,
+    const aiMatrix4x4& transform,
+    VulkCore::MeshData& meshData
+) {
+    if (mesh == nullptr || mesh->mNumVertices == 0) {
+        return std::nullopt;
+    }
+
+    if (meshData.vertices.size() > std::numeric_limits<std::uint32_t>::max() - mesh->mNumVertices ||
+        meshData.indices.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("model contains more vertices or indices than 32-bit buffers support");
+    }
+
+    const std::size_t initialVertexCount = meshData.vertices.size();
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(initialVertexCount);
+    const std::uint32_t firstIndex = static_cast<std::uint32_t>(meshData.indices.size());
+    const std::uint32_t materialIndex =
+        mesh->mMaterialIndex < meshData.materials.size() ? mesh->mMaterialIndex : 0;
+    aiMatrix3x3 normalTransform(transform);
+    normalTransform.Inverse().Transpose();
+
+    meshData.vertices.reserve(meshData.vertices.size() + mesh->mNumVertices);
+    for (unsigned int vertexIndex = 0; vertexIndex < mesh->mNumVertices; ++vertexIndex) {
+        const aiVector3D transformedPosition = transform * mesh->mVertices[vertexIndex];
+        const aiVector3D localNormal = mesh->HasNormals()
+            ? mesh->mNormals[vertexIndex]
+            : aiVector3D(0.0f, 0.0f, 1.0f);
+        const aiVector3D transformedNormal = normalTransform * localNormal;
+        const aiVector3D texCoord = mesh->HasTextureCoords(0)
+            ? mesh->mTextureCoords[0][vertexIndex]
+            : aiVector3D(0.0f, 0.0f, 0.0f);
+        const aiColor4D color = mesh->HasVertexColors(0)
+            ? mesh->mColors[0][vertexIndex]
+            : aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
+
+        meshData.vertices.push_back({
+            {transformedPosition.x, transformedPosition.y, transformedPosition.z},
+            {transformedNormal.x, transformedNormal.y, transformedNormal.z},
+            {texCoord.x, texCoord.y},
+            {color.r, color.g, color.b, color.a}
+        });
+    }
+
+    for (unsigned int faceIndex = 0; faceIndex < mesh->mNumFaces; ++faceIndex) {
+        const aiFace& face = mesh->mFaces[faceIndex];
+        if (face.mNumIndices < 3) {
+            continue;
+        }
+
+        // Triangulate normally makes every face a triangle. Keeping a fan
+        // fallback makes the loader robust if an importer emits a polygon.
+        for (unsigned int index = 1; index + 1 < face.mNumIndices; ++index) {
+            meshData.indices.push_back(vertexOffset + face.mIndices[0]);
+            meshData.indices.push_back(vertexOffset + face.mIndices[index]);
+            meshData.indices.push_back(vertexOffset + face.mIndices[index + 1]);
+        }
+    }
+
+    const std::size_t indexCount = meshData.indices.size() - firstIndex;
+    if (indexCount == 0) {
+        meshData.vertices.resize(initialVertexCount);
+        return std::nullopt;
+    }
+    if (indexCount > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("mesh contains more indices than a 32-bit index buffer supports");
+    }
+
+    const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData.parts.size());
+    meshData.parts.push_back({
+        firstIndex,
+        static_cast<std::uint32_t>(indexCount),
+        materialIndex
+    });
+    return partIndex;
+}
+
+void expandBounds(VulkCore::ModelNode& node, const glm::vec3& position) {
+    if (!node.hasBounds) {
+        node.boundsMinimum = position;
+        node.boundsMaximum = position;
+        node.hasBounds = true;
+        return;
+    }
+
+    node.boundsMinimum = glm::min(node.boundsMinimum, position);
+    node.boundsMaximum = glm::max(node.boundsMaximum, position);
+}
+
+void mergeBounds(VulkCore::ModelNode& node, const VulkCore::ModelNode& child) {
+    if (!child.hasBounds) {
+        return;
+    }
+    expandBounds(node, child.boundsMinimum);
+    expandBounds(node, child.boundsMaximum);
+}
+
+VulkCore::ModelNode readModelNode(
+    const aiScene& scene,
+    const aiNode* node,
+    const aiMatrix4x4& parentTransform,
+    VulkCore::MeshData& meshData
+) {
     VulkCore::ModelNode modelNode;
     if (node == nullptr) {
         return modelNode;
@@ -117,9 +223,40 @@ VulkCore::ModelNode copyModelNode(const aiNode* node) {
 
     modelNode.name = node->mName.length > 0 ? node->mName.C_Str() : "<unnamed>";
     modelNode.meshCount = node->mNumMeshes;
+    modelNode.meshPartIndices.reserve(node->mNumMeshes);
     modelNode.children.reserve(node->mNumChildren);
+
+    const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+    for (unsigned int meshIndex = 0; meshIndex < node->mNumMeshes; ++meshIndex) {
+        if (node->mMeshes == nullptr || node->mMeshes[meshIndex] >= scene.mNumMeshes) {
+            continue;
+        }
+
+        const std::size_t vertexStart = meshData.vertices.size();
+        const std::optional<std::uint32_t> partIndex = appendMeshGeometry(
+            scene.mMeshes[node->mMeshes[meshIndex]],
+            globalTransform,
+            meshData
+        );
+        if (partIndex.has_value()) {
+            modelNode.meshPartIndices.push_back(*partIndex);
+            for (std::size_t vertexIndex = vertexStart;
+                 vertexIndex < meshData.vertices.size();
+                 ++vertexIndex) {
+                expandBounds(modelNode, meshData.vertices[vertexIndex].position);
+            }
+        }
+    }
+
     for (unsigned int childIndex = 0; childIndex < node->mNumChildren; ++childIndex) {
-        modelNode.children.push_back(copyModelNode(node->mChildren[childIndex]));
+        VulkCore::ModelNode child = readModelNode(
+            scene,
+            node->mChildren[childIndex],
+            globalTransform,
+            meshData
+        );
+        mergeBounds(modelNode, child);
+        modelNode.children.push_back(std::move(child));
     }
     return modelNode;
 }
@@ -231,7 +368,6 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
         aiProcess_JoinIdenticalVertices |
         aiProcess_GenSmoothNormals |
         aiProcess_ImproveCacheLocality |
-        aiProcess_PreTransformVertices |
         aiProcess_FlipUVs;
 
     const aiScene* scene = importer.ReadFile(path.string(), importFlags);
@@ -248,25 +384,6 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
               << " embedded texture(s)\n";
 
     MeshData meshData;
-    // aiProcess_PreTransformVertices intentionally removes most of the source
-    // node graph. Keep a best-effort copy from the flattened scene first, then
-    // replace it with the original hierarchy from a second import.
-    meshData.hierarchy = copyModelNode(scene->mRootNode);
-    Assimp::Importer hierarchyImporter;
-    const aiScene* hierarchyScene = hierarchyImporter.ReadFile(path.string(), 0);
-    if (hierarchyScene != nullptr &&
-        (hierarchyScene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) == 0 &&
-        hierarchyScene->mRootNode != nullptr) {
-        meshData.hierarchy = copyModelNode(hierarchyScene->mRootNode);
-    } else {
-        const std::string hierarchyError = hierarchyImporter.GetErrorString();
-        std::cerr << "warning: failed to read original FBX node hierarchy for '"
-                  << path.string() << "': "
-                  << (hierarchyError.empty()
-                          ? "unknown Assimp error"
-                          : hierarchyError)
-                  << '\n';
-    }
 
     meshData.materials.reserve(scene->mNumMaterials);
     for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
@@ -278,62 +395,13 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
         meshData.materials.emplace_back();
     }
 
-    for (unsigned int meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex) {
-        const aiMesh* mesh = scene->mMeshes[meshIndex];
-        if (mesh == nullptr || mesh->mNumVertices == 0) {
-            continue;
-        }
-
-        if (meshData.vertices.size() > std::numeric_limits<uint32_t>::max() - mesh->mNumVertices) {
-            throw std::overflow_error("model contains more vertices than a 32-bit index buffer supports");
-        }
-
-        const uint32_t vertexOffset = static_cast<uint32_t>(meshData.vertices.size());
-        const uint32_t firstIndex = static_cast<uint32_t>(meshData.indices.size());
-        const std::uint32_t materialIndex =
-            mesh->mMaterialIndex < meshData.materials.size() ? mesh->mMaterialIndex : 0;
-        meshData.vertices.reserve(meshData.vertices.size() + mesh->mNumVertices);
-        for (unsigned int vertexIndex = 0; vertexIndex < mesh->mNumVertices; ++vertexIndex) {
-            const aiVector3D& position = mesh->mVertices[vertexIndex];
-            const aiVector3D normal = mesh->HasNormals()
-                ? mesh->mNormals[vertexIndex]
-                : aiVector3D(0.0f, 0.0f, 1.0f);
-            const aiVector3D texCoord = mesh->HasTextureCoords(0)
-                ? mesh->mTextureCoords[0][vertexIndex]
-                : aiVector3D(0.0f, 0.0f, 0.0f);
-            const aiColor4D color = mesh->HasVertexColors(0)
-                ? mesh->mColors[0][vertexIndex]
-                : aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
-
-            meshData.vertices.push_back({
-                {position.x, position.y, position.z},
-                {normal.x, normal.y, normal.z},
-                {texCoord.x, texCoord.y},
-                {color.r, color.g, color.b, color.a}
-            });
-        }
-
-        for (unsigned int faceIndex = 0; faceIndex < mesh->mNumFaces; ++faceIndex) {
-            const aiFace& face = mesh->mFaces[faceIndex];
-            if (face.mNumIndices < 3) {
-                continue;
-            }
-
-            // Triangulate normally makes every face a triangle. Keeping a
-            // fan fallback makes the loader robust if an importer emits a
-            // polygon despite the post-process flag.
-            for (unsigned int index = 1; index + 1 < face.mNumIndices; ++index) {
-                meshData.indices.push_back(vertexOffset + face.mIndices[0]);
-                meshData.indices.push_back(vertexOffset + face.mIndices[index]);
-                meshData.indices.push_back(vertexOffset + face.mIndices[index + 1]);
-            }
-        }
-
-        const uint32_t indexCount = static_cast<uint32_t>(meshData.indices.size()) - firstIndex;
-        if (indexCount != 0) {
-            meshData.parts.push_back({firstIndex, indexCount, materialIndex});
-        }
-    }
+    aiMatrix4x4 identityTransform;
+    meshData.hierarchy = readModelNode(
+        *scene,
+        scene->mRootNode,
+        identityTransform,
+        meshData
+    );
 
     if (meshData.vertices.empty() || meshData.indices.empty() || meshData.parts.empty()) {
         throw std::runtime_error("model contains no renderable triangle mesh: " + path.string());
