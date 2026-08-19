@@ -42,13 +42,49 @@ struct MaterialPushConstants {
 
 constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
+constexpr std::array<std::uint32_t, 24> kBoundingBoxEdges = {
+    0, 1, 1, 2, 2, 3, 3, 0,
+    4, 5, 5, 6, 6, 7, 7, 4,
+    0, 4, 1, 5, 2, 6, 3, 7
+};
 
 } // namespace
 
-void Renderer::drawModelHierarchy(const ModelNode& node) const {
+void Renderer::selectModelNode(const ModelNode& node) {
+    selectedModelNode_ = &node;
+    updateBoundingBoxVertices();
+}
+
+void Renderer::updateBoundingBoxVertices() {
+    boundingBoxVertices_.fill(Vertex{});
+    if (selectedModelNode_ == nullptr || !selectedModelNode_->hasBounds) {
+        return;
+    }
+
+    const glm::vec3& minimum = selectedModelNode_->boundsMinimum;
+    const glm::vec3& maximum = selectedModelNode_->boundsMaximum;
+    const std::array<glm::vec3, 8> corners = {
+        glm::vec3(minimum.x, minimum.y, minimum.z),
+        glm::vec3(maximum.x, minimum.y, minimum.z),
+        glm::vec3(maximum.x, maximum.y, minimum.z),
+        glm::vec3(minimum.x, maximum.y, minimum.z),
+        glm::vec3(minimum.x, minimum.y, maximum.z),
+        glm::vec3(maximum.x, minimum.y, maximum.z),
+        glm::vec3(maximum.x, maximum.y, maximum.z),
+        glm::vec3(minimum.x, maximum.y, maximum.z)
+    };
+
+    for (std::size_t vertexIndex = 0; vertexIndex < kBoundingBoxEdges.size(); ++vertexIndex) {
+        boundingBoxVertices_[vertexIndex].position = corners[kBoundingBoxEdges[vertexIndex]];
+    }
+}
+
+void Renderer::drawModelHierarchy(const ModelNode& node) {
     const bool hasChildren = !node.children.empty();
+    const bool isRootNode = &node == &meshData_.hierarchy;
+    const bool nodeSelected = selectedModelNode_ == &node;
     std::string label = node.name.empty() ? "<unnamed>" : node.name;
-    if (node.meshCount > 0) {
+    if (!isRootNode && node.meshCount > 0) {
         label += "  [" + std::to_string(node.meshCount) +
             (node.meshCount == 1 ? " mesh]" : " meshes]");
     }
@@ -59,9 +95,26 @@ void Renderer::drawModelHierarchy(const ModelNode& node) const {
             label.c_str(),
             ImGuiTreeNodeFlags_Leaf |
                 ImGuiTreeNodeFlags_NoTreePushOnOpen |
-                ImGuiTreeNodeFlags_SpanAvailWidth
+                ImGuiTreeNodeFlags_SpanAvailWidth |
+                (nodeSelected ? ImGuiTreeNodeFlags_Selected : 0)
         );
-    } else if (ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        if (ImGui::IsItemClicked()) {
+            selectModelNode(node);
+        }
+    } else {
+        const bool isOpen = ImGui::TreeNodeEx(
+            label.c_str(),
+            ImGuiTreeNodeFlags_SpanAvailWidth |
+                (nodeSelected ? ImGuiTreeNodeFlags_Selected : 0)
+        );
+        if (ImGui::IsItemClicked()) {
+            selectModelNode(node);
+        }
+        if (!isOpen) {
+            ImGui::PopID();
+            return;
+        }
+
         for (const ModelNode& child : node.children) {
             drawModelHierarchy(child);
         }
@@ -85,11 +138,13 @@ Renderer::Renderer(GLFWwindow* window)
     createRenderPass();
     createDescriptorSetLayout();
     createGraphicsPipeline();
+    createBoundingBoxPipeline();
     swapChain_->createFramebuffers(renderPass_);
     createMeshData();
     loadTransformSettings();
     createVertexBuffer();
     createIndexBuffer();
+    createBoundingBoxBuffers();
     createMaterialTextures();
     createUniformBuffers();
     createDescriptorPool();
@@ -113,6 +168,7 @@ Renderer::~Renderer() {
     fallbackTexture_.reset();
     indexBuffer_.reset();
     vertexBuffer_.reset();
+    boundingBoxVertexBuffers_.clear();
 
     for (size_t i = 0; i < imageAvailableSemaphores_.size(); ++i) {
         vkDestroySemaphore(context_->device(), imageAvailableSemaphores_[i], nullptr);
@@ -122,6 +178,9 @@ Renderer::~Renderer() {
 
     if (graphicsPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), graphicsPipeline_, nullptr);
+    }
+    if (boundingBoxPipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(context_->device(), boundingBoxPipeline_, nullptr);
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
@@ -595,6 +654,144 @@ void Renderer::createGraphicsPipeline() {
     }
 }
 
+void Renderer::createBoundingBoxPipeline() {
+    const std::filesystem::path shaderDirectory(kShaderBinaryDirectory);
+    const auto vertShaderCode = readBinaryFile(shaderDirectory / "shader_bounding_box.vert.spv");
+    const auto fragShaderCode = readBinaryFile(shaderDirectory / "shader_bounding_box.frag.spv");
+
+    const VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    const VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    const VkPipelineShaderStageCreateInfo shaderStages[] = {
+        vertShaderStageInfo,
+        fragShaderStageInfo
+    };
+
+    const auto bindingDescription = Vertex::bindingDescription();
+    const auto attributeDescriptions = Vertex::attributeDescriptions();
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.logicOp = VK_LOGIC_OP_COPY;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::vector<VkDynamicState> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout_;
+    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.subpass = 0;
+
+    const VkResult result = vkCreateGraphicsPipelines(
+        context_->device(),
+        VK_NULL_HANDLE,
+        1,
+        &pipelineInfo,
+        nullptr,
+        &boundingBoxPipeline_
+    );
+
+    vkDestroyShaderModule(context_->device(), fragShaderModule, nullptr);
+    vkDestroyShaderModule(context_->device(), vertShaderModule, nullptr);
+
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to create bounding box pipeline!");
+    }
+}
+
+void Renderer::createBoundingBoxBuffers() {
+    boundingBoxVertexBuffers_.resize(kMaxFramesInFlight);
+    const VkDeviceSize bufferSize = sizeof(boundingBoxVertices_);
+    for (auto& boundingBoxVertexBuffer : boundingBoxVertexBuffers_) {
+        boundingBoxVertexBuffer = std::make_unique<Buffer>(
+            *context_,
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+    }
+}
+
 void Renderer::createMeshData() {
     if (std::string_view(kModelPath).empty()) {
         meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
@@ -603,6 +800,10 @@ void Renderer::createMeshData() {
         meshData_.parts.push_back({0, static_cast<uint32_t>(meshData_.indices.size()), 0});
         meshData_.hierarchy.name = "Rectangle";
         meshData_.hierarchy.meshCount = 1;
+        meshData_.hierarchy.meshPartIndices.push_back(0);
+        meshData_.hierarchy.hasBounds = true;
+        meshData_.hierarchy.boundsMinimum = glm::vec3(-0.5f, -0.5f, 0.0f);
+        meshData_.hierarchy.boundsMaximum = glm::vec3(0.5f, 0.5f, 0.0f);
         modelCenter_ = glm::vec3(0.0f);
         modelScale_ = 1.0f;
         return;
@@ -868,6 +1069,17 @@ void Renderer::updateUniformBuffer() {
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
 }
 
+void Renderer::updateBoundingBoxBuffer() {
+    if (currentFrame_ >= boundingBoxVertexBuffers_.size()) {
+        return;
+    }
+
+    boundingBoxVertexBuffers_[currentFrame_]->upload(
+        boundingBoxVertices_.data(),
+        sizeof(boundingBoxVertices_)
+    );
+}
+
 void Renderer::createCommandBuffers() {
     commandBuffers_.resize(kMaxFramesInFlight);
 
@@ -977,6 +1189,27 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
     }
 
+    if (selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, boundingBoxPipeline_);
+
+        const VkBuffer boundingBoxBuffer = boundingBoxVertexBuffers_[currentFrame_]->handle();
+        const VkDeviceSize boundingBoxOffset = 0;
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &boundingBoxBuffer, &boundingBoxOffset);
+
+        const VkDescriptorSet& uniformDescriptorSet = descriptorSets_[currentFrame_ * materialCount];
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_,
+            0,
+            1,
+            &uniformDescriptorSet,
+            0,
+            nullptr
+        );
+        vkCmdDraw(commandBuffer, static_cast<uint32_t>(boundingBoxVertices_.size()), 1, 0, 0);
+    }
+
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
     vkCmdEndRenderPass(commandBuffer);
@@ -1020,6 +1253,7 @@ void Renderer::drawFrame() {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
     updateUniformBuffer();
+    updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }

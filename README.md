@@ -94,6 +94,8 @@ render pass 中绘制 Dear ImGui 主界面；左侧控制面板可以调整模�
 ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区域支持拖动修改模型
 的 X/Y/Z 位置和绕 X/Y/Z 轴的旋转角度，也可以关闭 Z 轴自动旋转或恢复默认变换。
 位置、旋转和缩放参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。
+右侧层级中的节点可以选中，3D 视图会为该节点及其子节点整体显示黄色 AABB 立方体边框；
+节点本身显示其直接 Mesh 数量，但不会再额外展开 `Mesh 0` 子项。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。

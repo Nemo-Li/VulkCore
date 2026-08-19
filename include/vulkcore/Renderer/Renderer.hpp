@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -33,6 +35,11 @@ private:
     void buildImGuiFrame();
     void loadTransformSettings();
     void saveTransformSettings() const;
+    void createBoundingBoxPipeline();
+    void createBoundingBoxBuffers();
+    void updateBoundingBoxVertices();
+    void updateBoundingBoxBuffer();
+    void selectModelNode(const ModelNode& node);
     void createRenderPass();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
@@ -46,7 +53,7 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void updateUniformBuffer();
-    void drawModelHierarchy(const ModelNode& node) const;
+    void drawModelHierarchy(const ModelNode& node);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -62,12 +69,14 @@ private:
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
+    VkPipeline boundingBoxPipeline_ = VK_NULL_HANDLE;
     MeshData meshData_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
     float modelScaleFactor_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
+    std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
     std::vector<std::unique_ptr<Texture>> materialTextures_;
     std::unique_ptr<Texture> fallbackTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
@@ -86,6 +95,8 @@ private:
     glm::vec3 modelTranslation_{0.0f};
     glm::vec3 modelRotationDegrees_{0.0f};
     float rotationSpeedDegrees_ = 12.0f;
+    const ModelNode* selectedModelNode_ = nullptr;
+    std::array<Vertex, 24> boundingBoxVertices_{};
 };
 
 } // namespace VulkCore
