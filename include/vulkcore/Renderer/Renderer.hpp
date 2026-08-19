@@ -28,6 +28,9 @@ public:
     void drawFrame();
 
 private:
+    void initializeImGui();
+    void shutdownImGui();
+    void buildImGuiFrame();
     void createRenderPass();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
@@ -73,6 +76,9 @@ private:
     std::vector<VkFence> inFlightFences_;
     uint32_t currentFrame_ = 0;
     bool framebufferResized_ = false;
+    bool imguiInitialized_ = false;
+    bool showImGuiDemo_ = false;
+    float rotationSpeedDegrees_ = 12.0f;
 };
 
 } // namespace VulkCore

@@ -20,6 +20,10 @@
 #include "vulkcore/Utils/FileUtils.hpp"
 #include "vulkcore/Utils/ModelLoader.hpp"
 
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
+
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace VulkCore {
@@ -49,6 +53,7 @@ Renderer::Renderer(GLFWwindow* window)
     createDescriptorSets();
     createCommandBuffers();
     createSyncObjects();
+    initializeImGui();
 }
 
 Renderer::~Renderer() {
@@ -57,6 +62,7 @@ Renderer::~Renderer() {
     }
 
     context_->waitIdle();
+    shutdownImGui();
     swapChain_->cleanupFramebuffers();
     uniformBuffers_.clear();
     texture_.reset();
@@ -87,6 +93,98 @@ Renderer::~Renderer() {
 
     swapChain_.reset();
     context_.reset();
+}
+
+void Renderer::initializeImGui() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+
+    if (!ImGui_ImplGlfw_InitForVulkan(context_->window(), true)) {
+        ImGui::DestroyContext();
+        throw std::runtime_error("failed to initialize Dear ImGui GLFW backend!");
+    }
+
+    const QueueFamilyIndices queueFamilies =
+        context_->findQueueFamilies(context_->physicalDevice());
+    const uint32_t imageCount = static_cast<uint32_t>(swapChain_->framebuffers().size());
+
+    ImGui_ImplVulkan_InitInfo initInfo{};
+    initInfo.ApiVersion = VK_API_VERSION_1_0;
+    initInfo.Instance = context_->instance();
+    initInfo.PhysicalDevice = context_->physicalDevice();
+    initInfo.Device = context_->device();
+    initInfo.QueueFamily = queueFamilies.graphicsFamily.value();
+    initInfo.Queue = context_->graphicsQueue();
+    // Let the backend create a private pool with the flags it needs for
+    // texture descriptor updates. The engine's material pool stays isolated.
+    initInfo.DescriptorPoolSize = 1000;
+    initInfo.MinImageCount = std::max(2u, imageCount);
+    initInfo.ImageCount = std::max(2u, imageCount);
+    initInfo.PipelineInfoMain.RenderPass = renderPass_;
+    initInfo.PipelineInfoMain.Subpass = 0;
+    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (!ImGui_ImplVulkan_Init(&initInfo)) {
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        throw std::runtime_error("failed to initialize Dear ImGui Vulkan backend!");
+    }
+
+    imguiInitialized_ = true;
+}
+
+void Renderer::shutdownImGui() {
+    if (!imguiInitialized_) {
+        return;
+    }
+
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    imguiInitialized_ = false;
+}
+
+void Renderer::buildImGuiFrame() {
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+
+    constexpr ImGuiWindowFlags kMainWindowFlags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground;
+
+    ImGui::Begin("VulkCore Main Screen", nullptr, kMainWindowFlags);
+    ImGui::SetCursorPos(ImVec2(16.0f, 16.0f));
+    ImGui::BeginChild("SceneControls", ImVec2(280.0f, 0.0f), true);
+    ImGui::TextUnformatted("VulkCore");
+    ImGui::TextDisabled("Vulkan scene rendered with Dear ImGui UI");
+    ImGui::Separator();
+    ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+    ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
+    ImGui::SliderFloat("Rotation speed", &rotationSpeedDegrees_, 0.0f, 60.0f, "%.1f deg/s");
+    ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
+    ImGui::Spacing();
+    ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
+    ImGui::EndChild();
+    ImGui::End();
+
+    if (showImGuiDemo_) {
+        ImGui::ShowDemoWindow(&showImGuiDemo_);
+    }
+
+    ImGui::Render();
 }
 
 void Renderer::createDescriptorSetLayout() {
@@ -493,7 +591,7 @@ void Renderer::updateUniformBuffer() {
         glm::translate(glm::mat4(1.0f), -modelCenter_);
     ubo.model = glm::rotate(
         glm::mat4(1.0f),
-        elapsedSeconds * glm::radians(12.0f),
+        elapsedSeconds * glm::radians(rotationSpeedDegrees_),
         glm::vec3(0.0f, 0.0f, 1.0f)
     ) * modelNormalization;
     ubo.view = glm::lookAt(
@@ -606,6 +704,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(commandBuffer, indexCount_, 1, 0, 0, 0);
 
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+
     vkCmdEndRenderPass(commandBuffer);
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to record command buffer!");
@@ -640,6 +740,8 @@ void Renderer::drawFrame() {
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         throw std::runtime_error("failed to acquire swap chain image!");
     }
+
+    buildImGuiFrame();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
@@ -700,6 +802,9 @@ void Renderer::recreateSwapChain() {
 
     context_->waitIdle();
     swapChain_->recreate(renderPass_);
+    ImGui_ImplVulkan_SetMinImageCount(
+        std::max(2u, static_cast<uint32_t>(swapChain_->framebuffers().size()))
+    );
 }
 
 VkShaderModule Renderer::createShaderModule(const std::vector<char>& code) const {
