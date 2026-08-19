@@ -11,13 +11,13 @@ find_package(Vulkan REQUIRED)
 
 find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
 
+include(FetchContent)
+
 # Assimp is used for importing model geometry. Prefer an installed package so
 # local package managers can provide a shared build; FetchContent keeps a fresh
 # checkout buildable when Assimp is not installed on the host.
 find_package(assimp CONFIG QUIET)
 if(NOT TARGET assimp::assimp)
-    include(FetchContent)
-
     set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
     set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
@@ -122,6 +122,52 @@ if(NOT VULKCORE_GLM_TARGET)
     set(VULKCORE_GLM_TARGET PkgConfig::GLM)
 endif()
 
+# Dear ImGui is kept as an upstream checkout and compiled with only the
+# platform and renderer backends used by VulkCore.
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.9
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL
+)
+
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    # Dear ImGui intentionally does not ship a root CMakeLists.txt. Populate
+    # the repository here and expose the small set of source files we need.
+    if(POLICY CMP0169)
+        cmake_policy(PUSH)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(imgui)
+    if(POLICY CMP0169)
+        cmake_policy(POP)
+    endif()
+endif()
+
+add_library(vulkcore_imgui STATIC
+    "${imgui_SOURCE_DIR}/imgui.cpp"
+    "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${imgui_SOURCE_DIR}/imgui_demo.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
+    "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
+)
+
+target_include_directories(vulkcore_imgui
+    PUBLIC
+        "${imgui_SOURCE_DIR}"
+        "${imgui_SOURCE_DIR}/backends"
+)
+
+target_link_libraries(vulkcore_imgui
+    PUBLIC
+        Vulkan::Vulkan
+        ${VULKCORE_GLFW_TARGET}
+)
+
 add_executable(VulkCore
     src/main.cpp
     src/Application.cpp
@@ -156,6 +202,7 @@ target_link_libraries(VulkCore
         ${VULKCORE_GLFW_TARGET}
         ${VULKCORE_GLM_TARGET}
         ${VULKCORE_ASSIMP_TARGET}
+        vulkcore_imgui
 )
 
 if(MSVC)

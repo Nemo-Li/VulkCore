@@ -7,6 +7,7 @@
 - 渲染器：交换链、渲染管线、帧同步以及 vertex/index buffer
 - 纹理：`stb_image.h` 图片解码、staging 上传、采样器和矩形纹理显示
 - 模型：Assimp FBX 网格导入、节点变换、三角化、法线和 UV 提取
+- UI：Dear ImGui 1.92.9 GLFW/Vulkan backend，主画面控制面板和调试窗口
 - 资源工具：GPU buffer 封装、staging buffer 上传和二进制文件读取
 - Shader 管线：GLSL 源码与构建生成的 SPIR-V 分离
 
@@ -51,6 +52,9 @@ sudo apt install cmake build-essential libvulkan-dev vulkan-tools \
 Assimp 不要求单独安装：CMake 会优先使用系统中的 Assimp package；如果找不到，
 会在配置阶段从官方仓库下载并构建固定版本 `v6.0.5`。
 
+Dear ImGui 不要求单独安装：CMake 会从官方仓库下载固定版本 `v1.92.9`，并只编译
+核心库、GLFW platform backend 和 Vulkan renderer backend。
+
 ## 构建与运行
 
 在工程根目录执行：
@@ -81,7 +85,9 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 
 程序启动后会创建一个不使用 OpenGL 上下文的 GLFW 窗口，初始化 Vulkan 实例、交换链、
 渲染管线以及 vertex/index buffer，然后将 `assets/textures/vulkcore_demo_texture.png`
-上传为 Vulkan 纹理并显示在矩形上。
+上传为 Vulkan 纹理并显示在矩形上。现有 3D 场景会先绘制，随后在同一个 Vulkan render
+pass 中绘制 Dear ImGui 主界面；左侧控制面板可以调整模型旋转速度并打开 ImGui demo
+窗口。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。
