@@ -12,6 +12,7 @@ namespace VulkCore {
 
 class Buffer;
 class SwapChain;
+class Texture;
 class VulkanContext;
 
 class Renderer {
@@ -30,6 +31,7 @@ private:
     void createGraphicsPipeline();
     void createVertexBuffer();
     void createIndexBuffer();
+    void createTexture();
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
@@ -53,6 +55,7 @@ private:
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
+    std::unique_ptr<Texture> texture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;

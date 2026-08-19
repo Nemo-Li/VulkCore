@@ -11,7 +11,7 @@ namespace VulkCore {
 
 struct Vertex {
     glm::vec2 position;
-    glm::vec3 color;
+    glm::vec2 texCoord;
 
     static VkVertexInputBindingDescription bindingDescription() {
         VkVertexInputBindingDescription description{};
@@ -31,18 +31,18 @@ struct Vertex {
 
         descriptions[1].binding = 0;
         descriptions[1].location = 1;
-        descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        descriptions[1].offset = offsetof(Vertex, color);
+        descriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        descriptions[1].offset = offsetof(Vertex, texCoord);
 
         return descriptions;
     }
 };
 
 inline const std::array<Vertex, 4> kRectangleVertices = {{
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 0.0f}}
+    {{-0.5f, -0.5f}, {0.0f, 1.0f}},
+    {{0.5f, -0.5f}, {1.0f, 1.0f}},
+    {{0.5f, 0.5f}, {1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f}}
 }};
 
 inline const std::array<uint16_t, 6> kRectangleIndices = {{
