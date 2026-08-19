@@ -89,8 +89,10 @@ add_executable(VulkCore
     src/Renderer/Buffer.cpp
     src/Renderer/Renderer.cpp
     src/Renderer/SwapChain.cpp
+    src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
     src/Utils/FileUtils.cpp
+    src/Utils/StbImage.cpp
 )
 
 add_dependencies(VulkCore VulkCoreShaders)
@@ -98,11 +100,13 @@ add_dependencies(VulkCore VulkCoreShaders)
 target_include_directories(VulkCore
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
 target_compile_definitions(VulkCore
     PRIVATE
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
+        VULKCORE_TEXTURE_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/vulkcore_demo_texture.png\"
 )
 
 target_link_libraries(VulkCore

@@ -5,6 +5,7 @@
 - 应用层：窗口创建、事件循环和生命周期管理
 - Vulkan 核心：实例、调试消息、物理设备、逻辑设备、队列和命令池
 - 渲染器：交换链、渲染管线、帧同步以及 vertex/index buffer
+- 纹理：`stb_image.h` 图片解码、staging 上传、采样器和矩形纹理显示
 - 资源工具：GPU buffer 封装、staging buffer 上传和二进制文件读取
 - Shader 管线：GLSL 源码与构建生成的 SPIR-V 分离
 
@@ -19,6 +20,8 @@ src/                    C++ 实现
   Application.cpp        应用生命周期和 GLFW 窗口
   Renderer/              Vulkan 渲染实现
   Utils/                 工具实现
+assets/textures/         示例纹理图片
+third_party/stb/         stb_image.h 单头文件库
 shaders/src/             GLSL 源文件
 build/shaders/           CMake 自动生成的 SPIR-V 文件，不纳入源码
 ```
@@ -59,7 +62,8 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 不依赖当前工作目录。
 
 程序启动后会创建一个不使用 OpenGL 上下文的 GLFW 窗口，初始化 Vulkan 实例、交换链、
-渲染管线以及 vertex/index buffer，然后进入矩形绘制循环。
+渲染管线以及 vertex/index buffer，然后将 `assets/textures/vulkcore_demo_texture.png`
+上传为 Vulkan 纹理并显示在矩形上。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。
