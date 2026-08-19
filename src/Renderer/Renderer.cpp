@@ -9,13 +9,17 @@
 #include "vulkcore/Core/Config.hpp"
 #include "vulkcore/Renderer/Buffer.hpp"
 #include "vulkcore/Renderer/SwapChain.hpp"
+#include "vulkcore/Renderer/UniformBuffer.hpp"
 #include "vulkcore/Renderer/Vertex.hpp"
 #include "vulkcore/Renderer/VulkanContext.hpp"
 #include "vulkcore/Utils/FileUtils.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 namespace VulkCore {
 
-Renderer::Renderer(GLFWwindow* window) {
+Renderer::Renderer(GLFWwindow* window)
+    : startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
         throw std::invalid_argument("Renderer requires a valid GLFW window!");
     }
@@ -27,10 +31,14 @@ Renderer::Renderer(GLFWwindow* window) {
     swapChain_ = std::make_unique<SwapChain>(*context_);
 
     createRenderPass();
+    createDescriptorSetLayout();
     createGraphicsPipeline();
     swapChain_->createFramebuffers(renderPass_);
     createVertexBuffer();
     createIndexBuffer();
+    createUniformBuffers();
+    createDescriptorPool();
+    createDescriptorSets();
     createCommandBuffers();
     createSyncObjects();
 }
@@ -42,6 +50,7 @@ Renderer::~Renderer() {
 
     context_->waitIdle();
     swapChain_->cleanupFramebuffers();
+    uniformBuffers_.clear();
     indexBuffer_.reset();
     vertexBuffer_.reset();
 
@@ -57,12 +66,40 @@ Renderer::~Renderer() {
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
     }
+    if (descriptorPool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
+    }
+    if (descriptorSetLayout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(context_->device(), descriptorSetLayout_, nullptr);
+    }
     if (renderPass_ != VK_NULL_HANDLE) {
         vkDestroyRenderPass(context_->device(), renderPass_, nullptr);
     }
 
     swapChain_.reset();
     context_.reset();
+}
+
+void Renderer::createDescriptorSetLayout() {
+    VkDescriptorSetLayoutBinding uboLayoutBinding{};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboLayoutBinding;
+
+    if (vkCreateDescriptorSetLayout(
+            context_->device(),
+            &layoutInfo,
+            nullptr,
+            &descriptorSetLayout_
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor set layout!");
+    }
 }
 
 void Renderer::createRenderPass() {
@@ -159,7 +196,7 @@ void Renderer::createGraphicsPipeline() {
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -193,6 +230,8 @@ void Renderer::createGraphicsPipeline() {
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
     if (vkCreatePipelineLayout(context_->device(), &pipelineLayoutInfo, nullptr, &pipelineLayout_) != VK_SUCCESS) {
         vkDestroyShaderModule(context_->device(), fragShaderModule, nullptr);
         vkDestroyShaderModule(context_->device(), vertShaderModule, nullptr);
@@ -270,6 +309,101 @@ void Renderer::createIndexBuffer() {
     context_->copyBuffer(indexStagingBuffer.handle(), indexBuffer_->handle(), bufferSize);
 }
 
+void Renderer::createUniformBuffers() {
+    const VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+    uniformBuffers_.resize(kMaxFramesInFlight);
+
+    for (auto& uniformBuffer : uniformBuffers_) {
+        uniformBuffer = std::make_unique<Buffer>(
+            *context_,
+            bufferSize,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+    }
+}
+
+void Renderer::createDescriptorPool() {
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = kMaxFramesInFlight;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = kMaxFramesInFlight;
+
+    if (vkCreateDescriptorPool(context_->device(), &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor pool!");
+    }
+}
+
+void Renderer::createDescriptorSets() {
+    std::vector<VkDescriptorSetLayout> layouts(kMaxFramesInFlight, descriptorSetLayout_);
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = descriptorPool_;
+    allocInfo.descriptorSetCount = kMaxFramesInFlight;
+    allocInfo.pSetLayouts = layouts.data();
+
+    descriptorSets_.resize(kMaxFramesInFlight);
+    if (vkAllocateDescriptorSets(context_->device(), &allocInfo, descriptorSets_.data()) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate descriptor sets!");
+    }
+
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = uniformBuffers_[i]->handle();
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformBufferObject);
+
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSets_[i];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(context_->device(), 1, &descriptorWrite, 0, nullptr);
+    }
+}
+
+void Renderer::updateUniformBuffer() {
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+
+    UniformBufferObject ubo{};
+    ubo.model = glm::rotate(
+        glm::mat4(1.0f),
+        elapsedSeconds * glm::radians(90.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f)
+    );
+    ubo.view = glm::lookAt(
+        glm::vec3(2.0f, 2.0f, 2.0f),
+        glm::vec3(0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f)
+    );
+
+    const VkExtent2D extent = swapChain_->extent();
+    if (extent.height == 0) {
+        return;
+    }
+    ubo.projection = glm::perspective(
+        glm::radians(45.0f),
+        static_cast<float>(extent.width) / static_cast<float>(extent.height),
+        0.1f,
+        10.0f
+    );
+    // GLM follows OpenGL's Y direction; Vulkan's viewport uses the opposite one.
+    ubo.projection[1][1] *= -1.0f;
+
+    uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
+}
+
 void Renderer::createCommandBuffers() {
     commandBuffers_.resize(kMaxFramesInFlight);
 
@@ -325,6 +459,17 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
+
+    vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipelineLayout_,
+        0,
+        1,
+        &descriptorSets_[currentFrame_],
+        0,
+        nullptr
+    );
 
     const VkExtent2D extent = swapChain_->extent();
     VkViewport viewport{};
@@ -382,6 +527,7 @@ void Renderer::drawFrame() {
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
+    updateUniformBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }
