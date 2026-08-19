@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "vulkcore/Renderer/Vertex.hpp"
@@ -31,11 +32,21 @@ struct MeshPart {
     std::uint32_t materialIndex = 0;
 };
 
+// The node hierarchy is kept separately from the flattened render mesh. This
+// lets the renderer draw the pre-transformed mesh while the UI still exposes
+// the original model structure.
+struct ModelNode {
+    std::string name;
+    std::uint32_t meshCount = 0;
+    std::vector<ModelNode> children;
+};
+
 struct MeshData {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<MaterialData> materials;
     std::vector<MeshPart> parts;
+    ModelNode hierarchy;
 };
 
 } // namespace VulkCore

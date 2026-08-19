@@ -75,9 +75,9 @@ cmake --build build --parallel
 ```
 
 `loadModelMesh()` 会将 FBX 中的所有网格合并为一个 32 位索引网格，并应用节点变换、
-三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；没有 UV 的顶点会使用
-`(0, 0)`。每个材质对应一个绘制分段，材质纹理不可用时使用其 Base Color/Diffuse
-颜色。
+三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；同时保留 FBX 原始节点
+层级，供右侧 Model Hierarchy 面板展示。没有 UV 的顶点会使用 `(0, 0)`。每个材质对应
+一个绘制分段，材质纹理不可用时使用其 Base Color/Diffuse 颜色。
 渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
 CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 pkg-config
@@ -91,8 +91,9 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 默认图片不存在或无法加载时使用 FBX 中的材质颜色和顶点颜色，不再绑定固定的示例纹理。
 现有 3D 场景会先绘制，随后在同一个 Vulkan
 render pass 中绘制 Dear ImGui 主界面；左侧控制面板可以调整模型旋转速度并打开
-ImGui demo 窗口。Transform Debug 区域支持拖动修改模型的 X/Y/Z 位置和绕 X/Y/Z 轴
-的旋转角度，也可以关闭 Z 轴自动旋转或恢复默认变换。
+ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区域支持拖动修改模型
+的 X/Y/Z 位置和绕 X/Y/Z 轴的旋转角度，也可以关闭 Z 轴自动旋转或恢复默认变换。
+位置、旋转和缩放参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。

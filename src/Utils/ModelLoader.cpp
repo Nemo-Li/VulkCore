@@ -109,6 +109,21 @@ VulkCore::EmbeddedTextureData copyEmbeddedTexture(
     return embeddedTexture;
 }
 
+VulkCore::ModelNode copyModelNode(const aiNode* node) {
+    VulkCore::ModelNode modelNode;
+    if (node == nullptr) {
+        return modelNode;
+    }
+
+    modelNode.name = node->mName.length > 0 ? node->mName.C_Str() : "<unnamed>";
+    modelNode.meshCount = node->mNumMeshes;
+    modelNode.children.reserve(node->mNumChildren);
+    for (unsigned int childIndex = 0; childIndex < node->mNumChildren; ++childIndex) {
+        modelNode.children.push_back(copyModelNode(node->mChildren[childIndex]));
+    }
+    return modelNode;
+}
+
 VulkCore::MaterialData readMaterial(
     const aiScene& scene,
     const aiMaterial* material,
@@ -233,6 +248,26 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
               << " embedded texture(s)\n";
 
     MeshData meshData;
+    // aiProcess_PreTransformVertices intentionally removes most of the source
+    // node graph. Keep a best-effort copy from the flattened scene first, then
+    // replace it with the original hierarchy from a second import.
+    meshData.hierarchy = copyModelNode(scene->mRootNode);
+    Assimp::Importer hierarchyImporter;
+    const aiScene* hierarchyScene = hierarchyImporter.ReadFile(path.string(), 0);
+    if (hierarchyScene != nullptr &&
+        (hierarchyScene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) == 0 &&
+        hierarchyScene->mRootNode != nullptr) {
+        meshData.hierarchy = copyModelNode(hierarchyScene->mRootNode);
+    } else {
+        const std::string hierarchyError = hierarchyImporter.GetErrorString();
+        std::cerr << "warning: failed to read original FBX node hierarchy for '"
+                  << path.string() << "': "
+                  << (hierarchyError.empty()
+                          ? "unknown Assimp error"
+                          : hierarchyError)
+                  << '\n';
+    }
+
     meshData.materials.reserve(scene->mNumMaterials);
     for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
         meshData.materials.push_back(
