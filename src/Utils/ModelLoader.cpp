@@ -289,6 +289,7 @@ VulkCore::MaterialData readMaterial(
 ) {
     VulkCore::MaterialData materialData;
     if (material == nullptr) {
+        materialData.name = "unnamed";
         materialData.texturePath = defaultDiffuseTexturePath(modelPath, "unnamed");
         std::cerr << "[VulkCore][FBX] material[" << materialIndex
                   << "] has no material data; default texture='"
@@ -300,6 +301,7 @@ VulkCore::MaterialData readMaterial(
     material->Get(AI_MATKEY_NAME, materialName);
     const std::string materialNameString =
         materialName.length > 0 ? materialName.C_Str() : "unnamed";
+    materialData.name = materialNameString;
     const std::string textureMaterialName = stripNumericSuffix(materialNameString);
     std::cerr << "[VulkCore][FBX] material[" << materialIndex << "] '"
               << materialNameString << "'\n";

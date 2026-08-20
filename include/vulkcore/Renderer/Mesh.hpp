@@ -22,24 +22,10 @@ struct EmbeddedTextureData {
     }
 };
 
-struct MaterialData {
-    glm::vec4 baseColor{1.0f};
-    std::filesystem::path texturePath;
-    EmbeddedTextureData embeddedTexture;
-};
-
-struct MeshPart {
-    std::uint32_t firstIndex = 0;
-    std::uint32_t indexCount = 0;
-    std::uint32_t materialIndex = 0;
-    std::uint32_t nodeId = 0;
-};
-
-// Shader selections are stored on the model node instead of globally. Empty
-// entries mean "use the renderer default for this stage". Compute shaders are
-// kept alongside the graphics stages so a node can own a complete shader
-// configuration even though the current mesh pass only consumes graphics
-// stages.
+// Shader selections belong to a Material. Empty entries mean "use the
+// renderer default for this stage". Compute shaders are kept alongside the
+// graphics stages so a Material can own a complete shader configuration even
+// though the current mesh pass only consumes graphics stages.
 enum class ShaderStage : std::size_t {
     Vertex = 0,
     TessellationControl,
@@ -51,7 +37,7 @@ enum class ShaderStage : std::size_t {
 
 inline constexpr std::size_t kShaderStageCount = 6;
 
-struct NodeShaderConfiguration {
+struct ShaderConfiguration {
     std::array<std::string, kShaderStageCount> shaderNames{};
 
     std::string& shader(ShaderStage stage) {
@@ -88,6 +74,36 @@ struct WaterShaderSettings {
     float waveHeight = 0.025f;
 };
 
+struct MaterialData {
+    std::string name = "Material";
+    glm::vec4 baseColor{1.0f};
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    float opacity = 1.0f;
+    enum class BlendMode : std::uint8_t {
+        Opaque = 0,
+        AlphaBlend,
+        Additive,
+        Multiply,
+    };
+    BlendMode blendMode = BlendMode::Opaque;
+    bool depthWrite = true;
+    bool doubleSided = false;
+    bool userCreated = false;
+    bool userModified = false;
+    ShaderConfiguration shaderConfiguration;
+    WaterShaderSettings waterShaderSettings;
+    std::filesystem::path texturePath;
+    EmbeddedTextureData embeddedTexture;
+};
+
+struct MeshPart {
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t materialIndex = 0;
+    std::uint32_t nodeId = 0;
+};
+
 // The node hierarchy is kept separately from the flattened render mesh. This
 // lets the renderer draw the pre-transformed mesh while the UI still exposes
 // the original model structure.
@@ -105,8 +121,9 @@ struct ModelNode {
     bool rotationAnimationEnabled = false;
     glm::vec3 rotationAnimationInitialDegrees{0.0f};
     glm::vec3 rotationAnimationSpeedDegrees{0.0f};
-    NodeShaderConfiguration shaderConfiguration;
-    WaterShaderSettings waterShaderSettings;
+    // -1 keeps the material assignments imported from the model. A valid
+    // material index overrides the material for this node and its children.
+    std::int32_t materialOverride = -1;
 };
 
 struct MeshData {

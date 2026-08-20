@@ -72,6 +72,7 @@ private:
     void createVertexBuffer();
     void createIndexBuffer();
     void createMaterialTextures();
+    void rebuildMaterialResources();
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
@@ -82,11 +83,21 @@ private:
     void drawModelHierarchy(ModelNode& node);
     void discoverShaderBinaries();
     VkShaderModule shaderModule(const std::string& shaderName);
-    VkPipeline createNodeGraphicsPipeline(const NodeShaderConfiguration& configuration);
-    VkPipeline graphicsPipelineForNode(const ModelNode& node);
-    VkPipeline computePipelineForNode(const ModelNode& node);
-    std::string graphicsPipelineKey(const NodeShaderConfiguration& configuration) const;
-    void drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings);
+    VkPipeline createMaterialGraphicsPipeline(
+        const ShaderConfiguration& configuration,
+        const MaterialData& material
+    );
+    VkPipeline graphicsPipelineForMaterial(
+        const MaterialData& material
+    );
+    VkPipeline computePipelineForMaterial(const MaterialData& material);
+    std::string graphicsPipelineKey(
+        const ShaderConfiguration& configuration,
+        const MaterialData& material
+    ) const;
+    std::uint32_t materialIndexForPart(const MeshPart& part) const;
+    void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
+    void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -137,6 +148,10 @@ private:
     glm::vec3 modelRotationDegrees_{0.0f};
     float rotationSpeedDegrees_ = 12.0f;
     ModelNode* selectedModelNode_ = nullptr;
+    std::array<char, 128> materialNameBuffer_{};
+    std::int32_t materialNameMaterialIndex_ = -1;
+    std::array<char, 512> materialTexturePathBuffer_{};
+    std::int32_t materialTexturePathMaterialIndex_ = -1;
     std::array<Vertex, 24> boundingBoxVertices_{};
 };
 

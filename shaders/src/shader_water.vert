@@ -17,9 +17,9 @@ layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
     uint hasTexture;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    float metallic;
+    float roughness;
+    float opacity;
     vec4 waterFlow;
     vec4 waterSurface;
 } pushConstants;
