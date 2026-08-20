@@ -80,6 +80,17 @@ VkExtent2D SwapChain::extent() const {
     return extent_;
 }
 
+VkImage SwapChain::image(uint32_t imageIndex) const {
+    if (imageIndex >= images_.size()) {
+        throw std::out_of_range("swap chain image index is out of range");
+    }
+    return images_[imageIndex];
+}
+
+VkImage SwapChain::depthImage() const {
+    return depthImage_;
+}
+
 const std::vector<VkFramebuffer>& SwapChain::framebuffers() const {
     return framebuffers_;
 }
@@ -103,7 +114,9 @@ void SwapChain::createSwapChain() {
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = selectedExtent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.imageUsage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     const QueueFamilyIndices indices = context_.findQueueFamilies(context_.physicalDevice());
     const uint32_t queueFamilyIndices[] = {
@@ -180,7 +193,9 @@ void SwapChain::createDepthResources() {
     imageInfo.format = depthFormat_;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.usage =
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 

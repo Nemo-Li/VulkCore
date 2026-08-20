@@ -41,6 +41,8 @@ struct MaterialPushConstants {
     glm::vec4 baseColor;
     std::uint32_t hasTexture = 0;
     std::array<std::uint32_t, 3> padding{};
+    glm::vec4 waterFlow{};
+    glm::vec4 waterSurface{};
 };
 
 constexpr float kMinimumModelScaleFactor = 0.1f;
@@ -129,6 +131,12 @@ const char* defaultShaderForStage(ShaderStage stage) {
     }
 }
 
+bool isWaterShaderConfiguration(const NodeShaderConfiguration& configuration) {
+    const std::string& fragmentShader = configuration.shader(ShaderStage::Fragment);
+    return fragmentShader == "shader_water.frag" ||
+        fragmentShader == "shader_water_flow.frag";
+}
+
 ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
     if (node.nodeId == nodeId) {
         return &node;
@@ -149,6 +157,16 @@ bool hasNodeAnimationSettings(const ModelNode& node) {
 
 bool hasNodeShaderSettings(const ModelNode& node) {
     return !node.shaderConfiguration.empty();
+}
+
+bool hasNodeWaterSettings(const ModelNode& node) {
+    const WaterShaderSettings& settings = node.waterShaderSettings;
+    return settings.flowDirection != glm::vec2(0.0f, 1.0f) ||
+        settings.flowSpeed != 0.12f ||
+        settings.flowStrength != 1.0f ||
+        settings.flowTurbulence != 0.35f ||
+        settings.waveScale != 1.0f ||
+        settings.waveHeight != 0.025f;
 }
 
 void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
@@ -177,6 +195,20 @@ void saveNodeShaderSettings(std::ostream& file, const ModelNode& node) {
     }
     for (const ModelNode& child : node.children) {
         saveNodeShaderSettings(file, child);
+    }
+}
+
+void saveNodeWaterSettings(std::ostream& file, const ModelNode& node) {
+    if (hasNodeWaterSettings(node)) {
+        const WaterShaderSettings& settings = node.waterShaderSettings;
+        file << "node_water " << node.nodeId << ' '
+             << settings.flowDirection.x << ' ' << settings.flowDirection.y << ' '
+             << settings.flowSpeed << ' ' << settings.flowStrength << ' '
+             << settings.flowTurbulence << ' ' << settings.waveScale << ' '
+             << settings.waveHeight << "\n";
+    }
+    for (const ModelNode& child : node.children) {
+        saveNodeWaterSettings(file, child);
     }
 }
 
@@ -384,6 +416,39 @@ void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings)
         shouldSaveSettings = true;
     }
 
+    if (isWaterShaderConfiguration(node.shaderConfiguration)) {
+        ImGui::SeparatorText("Water Flow");
+        ImGui::TextDisabled("Direction is in the mesh UV space: +X right, +Y up.");
+        ImGui::DragFloat2(
+            "Flow direction",
+            &node.waterShaderSettings.flowDirection.x,
+            0.01f,
+            -1.0f,
+            1.0f,
+            "%.2f"
+        );
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (glm::length(node.waterShaderSettings.flowDirection) < 0.001f) {
+                node.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+            }
+            shouldSaveSettings = true;
+        }
+        ImGui::SliderFloat("Flow speed", &node.waterShaderSettings.flowSpeed, 0.0f, 4.0f, "%.2f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SliderFloat("Flow strength", &node.waterShaderSettings.flowStrength, 0.0f, 4.0f, "%.2f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SliderFloat("Flow turbulence", &node.waterShaderSettings.flowTurbulence, 0.0f, 1.0f, "%.2f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SliderFloat("Wave scale", &node.waterShaderSettings.waveScale, 0.1f, 8.0f, "%.2f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SliderFloat("Wave height", &node.waterShaderSettings.waveHeight, 0.0f, 0.2f, "%.3f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::Button("Reset water parameters")) {
+            node.waterShaderSettings = WaterShaderSettings{};
+            shouldSaveSettings = true;
+        }
+    }
+
     if (node.shaderConfiguration.hasComputeOverride()) {
         if (computePipelineForNode(node) != VK_NULL_HANDLE) {
             ImGui::TextDisabled("Compute pipeline ready (not dispatched by the mesh pass).");
@@ -413,6 +478,7 @@ Renderer::Renderer(GLFWwindow* window)
     swapChain_ = std::make_unique<SwapChain>(*context_);
 
     createRenderPass();
+    createSceneRenderResources();
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createBoundingBoxPipeline();
@@ -440,6 +506,7 @@ Renderer::~Renderer() {
     context_->waitIdle();
     shutdownImGui();
     swapChain_->cleanupFramebuffers();
+    destroySceneRenderResources();
     uniformBuffers_.clear();
     materialTextures_.clear();
     fallbackTexture_.reset();
@@ -567,8 +634,13 @@ void Renderer::loadTransformSettings() {
         std::uint32_t nodeId = 0;
         NodeShaderConfiguration configuration;
     };
+    struct PendingNodeWater {
+        std::uint32_t nodeId = 0;
+        WaterShaderSettings settings;
+    };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
     std::vector<PendingNodeShaders> pendingNodeShaders;
+    std::vector<PendingNodeWater> pendingNodeWater;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -621,6 +693,16 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             pendingNodeShaders.push_back(std::move(shaders));
+        } else if (key == "node_water") {
+            PendingNodeWater water;
+            if (!(file >> water.nodeId >> water.settings.flowDirection.x >>
+                  water.settings.flowDirection.y >> water.settings.flowSpeed >>
+                  water.settings.flowStrength >> water.settings.flowTurbulence >>
+                  water.settings.waveScale >> water.settings.waveHeight)) {
+                valid = false;
+                break;
+            }
+            pendingNodeWater.push_back(water);
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -644,7 +726,20 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(animation.speedDegrees.z);
         }
     );
-    if (!valid || !finiteValues || !finiteNodeValues) {
+    const bool finiteWaterValues = std::all_of(
+        pendingNodeWater.begin(),
+        pendingNodeWater.end(),
+        [](const PendingNodeWater& water) {
+            return std::isfinite(water.settings.flowDirection.x) &&
+                std::isfinite(water.settings.flowDirection.y) &&
+                std::isfinite(water.settings.flowSpeed) &&
+                std::isfinite(water.settings.flowStrength) &&
+                std::isfinite(water.settings.flowTurbulence) &&
+                std::isfinite(water.settings.waveScale) &&
+                std::isfinite(water.settings.waveHeight);
+        }
+    );
+    if (!valid || !finiteValues || !finiteNodeValues || !finiteWaterValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
         return;
@@ -673,6 +768,26 @@ void Renderer::loadTransformSettings() {
         }
         node->shaderConfiguration = shaders.configuration;
     }
+    for (const PendingNodeWater& water : pendingNodeWater) {
+        ModelNode* node = findModelNodeById(meshData_.hierarchy, water.nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        node->waterShaderSettings = water.settings;
+        if (glm::length(node->waterShaderSettings.flowDirection) < 0.001f) {
+            node->waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+        }
+        node->waterShaderSettings.flowSpeed = std::clamp(
+            node->waterShaderSettings.flowSpeed, 0.0f, 4.0f);
+        node->waterShaderSettings.flowStrength = std::clamp(
+            node->waterShaderSettings.flowStrength, 0.0f, 4.0f);
+        node->waterShaderSettings.flowTurbulence = std::clamp(
+            node->waterShaderSettings.flowTurbulence, 0.0f, 1.0f);
+        node->waterShaderSettings.waveScale = std::clamp(
+            node->waterShaderSettings.waveScale, 0.1f, 8.0f);
+        node->waterShaderSettings.waveHeight = std::clamp(
+            node->waterShaderSettings.waveHeight, 0.0f, 0.2f);
+    }
 }
 
 void Renderer::saveTransformSettings() const {
@@ -693,6 +808,7 @@ void Renderer::saveTransformSettings() const {
          << "scale " << modelScaleFactor_ << "\n";
     saveNodeAnimationSettings(file, meshData_.hierarchy);
     saveNodeShaderSettings(file, meshData_.hierarchy);
+    saveNodeWaterSettings(file, meshData_.hierarchy);
 }
 
 void Renderer::buildImGuiFrame() {
@@ -840,7 +956,7 @@ void Renderer::buildImGuiFrame() {
 }
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -863,6 +979,11 @@ void Renderer::createDescriptorSetLayout() {
         VK_SHADER_STAGE_FRAGMENT_BIT |
         VK_SHADER_STAGE_COMPUTE_BIT;
 
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -882,11 +1003,11 @@ void Renderer::createRenderPass() {
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = swapChain_->imageFormat();
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     VkAttachmentReference colorAttachmentReference{};
@@ -896,11 +1017,11 @@ void Renderer::createRenderPass() {
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = swapChain_->depthFormat();
     depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference depthAttachmentReference{};
@@ -940,6 +1061,260 @@ void Renderer::createRenderPass() {
 
     if (vkCreateRenderPass(context_->device(), &renderPassInfo, nullptr, &renderPass_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
+    }
+}
+
+void Renderer::createSceneRenderResources() {
+    const VkExtent2D extent = swapChain_->extent();
+
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = swapChain_->imageFormat();
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference colorReference{};
+    colorReference.attachment = 0;
+    colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = swapChain_->depthFormat();
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthReference{};
+    depthReference.attachment = 1;
+    depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorReference;
+    subpass.pDepthStencilAttachment = &depthReference;
+
+    std::array<VkSubpassDependency, 2> dependencies{};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dependencies[0].dstStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[1].srcAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstStageMask =
+        VK_PIPELINE_STAGE_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstAccessMask =
+        VK_ACCESS_TRANSFER_READ_BIT |
+        VK_ACCESS_SHADER_READ_BIT;
+
+    const std::array<VkAttachmentDescription, 2> attachments = {
+        colorAttachment,
+        depthAttachment
+    };
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    renderPassInfo.pDependencies = dependencies.data();
+    if (vkCreateRenderPass(context_->device(), &renderPassInfo, nullptr, &sceneRenderPass_) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create scene render pass!");
+    }
+
+    const auto createImage = [&](VkFormat format,
+                                 VkImageUsageFlags usage,
+                                 VkImage& image,
+                                 VkDeviceMemory& memory) {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = format;
+        imageInfo.extent = {extent.width, extent.height, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = usage;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        if (vkCreateImage(context_->device(), &imageInfo, nullptr, &image) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create scene render image!");
+        }
+        try {
+            VkMemoryRequirements memoryRequirements{};
+            vkGetImageMemoryRequirements(context_->device(), image, &memoryRequirements);
+
+            VkMemoryAllocateInfo allocateInfo{};
+            allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocateInfo.allocationSize = memoryRequirements.size;
+            allocateInfo.memoryTypeIndex = context_->findMemoryType(
+                memoryRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            );
+            if (vkAllocateMemory(context_->device(), &allocateInfo, nullptr, &memory) != VK_SUCCESS) {
+                throw std::runtime_error("failed to allocate scene render image memory!");
+            }
+            if (vkBindImageMemory(context_->device(), image, memory, 0) != VK_SUCCESS) {
+                throw std::runtime_error("failed to bind scene render image memory!");
+            }
+        } catch (...) {
+            if (memory != VK_NULL_HANDLE) {
+                vkFreeMemory(context_->device(), memory, nullptr);
+                memory = VK_NULL_HANDLE;
+            }
+            vkDestroyImage(context_->device(), image, nullptr);
+            image = VK_NULL_HANDLE;
+            throw;
+        }
+    };
+
+    const auto createImageView = [&](VkImage image, VkFormat format, VkImageAspectFlags aspect) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = aspect;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        VkImageView imageView = VK_NULL_HANDLE;
+        if (vkCreateImageView(context_->device(), &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create scene render image view!");
+        }
+        return imageView;
+    };
+
+    try {
+        sceneRenderTargets_.resize(kMaxFramesInFlight);
+        for (SceneRenderTarget& target : sceneRenderTargets_) {
+            createImage(
+                swapChain_->imageFormat(),
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                target.colorImage,
+                target.colorMemory
+            );
+            target.colorImageView = createImageView(
+                target.colorImage,
+                swapChain_->imageFormat(),
+                VK_IMAGE_ASPECT_COLOR_BIT
+            );
+
+            VkSamplerCreateInfo samplerInfo{};
+            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            samplerInfo.magFilter = VK_FILTER_LINEAR;
+            samplerInfo.minFilter = VK_FILTER_LINEAR;
+            samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            samplerInfo.maxAnisotropy = 1.0f;
+            samplerInfo.maxLod = 0.0f;
+            if (vkCreateSampler(context_->device(), &samplerInfo, nullptr, &target.colorSampler) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create scene render sampler!");
+            }
+
+            createImage(
+                swapChain_->depthFormat(),
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                target.depthImage,
+                target.depthMemory
+            );
+            target.depthImageView = createImageView(
+                target.depthImage,
+                swapChain_->depthFormat(),
+                VK_IMAGE_ASPECT_DEPTH_BIT
+            );
+
+            const std::array<VkImageView, 2> framebufferAttachments = {
+                target.colorImageView,
+                target.depthImageView
+            };
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = sceneRenderPass_;
+            framebufferInfo.attachmentCount = static_cast<uint32_t>(framebufferAttachments.size());
+            framebufferInfo.pAttachments = framebufferAttachments.data();
+            framebufferInfo.width = extent.width;
+            framebufferInfo.height = extent.height;
+            framebufferInfo.layers = 1;
+            if (vkCreateFramebuffer(
+                    context_->device(),
+                    &framebufferInfo,
+                    nullptr,
+                    &target.framebuffer
+                ) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create scene render framebuffer!");
+            }
+        }
+    } catch (...) {
+        destroySceneRenderResources();
+        throw;
+    }
+}
+
+void Renderer::destroySceneRenderResources() {
+    if (!context_) {
+        return;
+    }
+    for (SceneRenderTarget& target : sceneRenderTargets_) {
+        if (target.framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(context_->device(), target.framebuffer, nullptr);
+        }
+        if (target.colorSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(context_->device(), target.colorSampler, nullptr);
+        }
+        if (target.colorImageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(context_->device(), target.colorImageView, nullptr);
+        }
+        if (target.depthImageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(context_->device(), target.depthImageView, nullptr);
+        }
+        if (target.colorImage != VK_NULL_HANDLE) {
+            vkDestroyImage(context_->device(), target.colorImage, nullptr);
+        }
+        if (target.depthImage != VK_NULL_HANDLE) {
+            vkDestroyImage(context_->device(), target.depthImage, nullptr);
+        }
+        if (target.colorMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(context_->device(), target.colorMemory, nullptr);
+        }
+        if (target.depthMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(context_->device(), target.depthMemory, nullptr);
+        }
+        target = SceneRenderTarget{};
+    }
+    sceneRenderTargets_.clear();
+    if (sceneRenderPass_ != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(context_->device(), sceneRenderPass_, nullptr);
+        sceneRenderPass_ = VK_NULL_HANDLE;
     }
 }
 
@@ -1015,13 +1390,7 @@ VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& c
             "tessellation control and evaluation shaders must be configured together"
         );
     }
-    const std::string effectiveFragmentShader =
-        configuration.shader(ShaderStage::Fragment).empty()
-        ? defaultShaderForStage(ShaderStage::Fragment)
-        : configuration.shader(ShaderStage::Fragment);
-    const bool isWaterShader =
-        effectiveFragmentShader == "shader_water.frag" ||
-        effectiveFragmentShader == "shader_water_flow.frag";
+    const bool isWaterShader = isWaterShaderConfiguration(configuration);
 
     const std::array<ShaderStage, 5> graphicsStages = {
         ShaderStage::Vertex,
@@ -1555,7 +1924,7 @@ void Renderer::createDescriptorPool() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = descriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = descriptorCount;
+    poolSizes[1].descriptorCount = descriptorCount * 2;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1632,6 +2001,35 @@ void Renderer::createDescriptorSets() {
             );
         }
     }
+    updateSceneTextureDescriptors();
+}
+
+void Renderer::updateSceneTextureDescriptors() {
+    if (sceneRenderTargets_.size() < kMaxFramesInFlight) {
+        throw std::runtime_error("scene render targets are not initialized");
+    }
+
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+    for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        const SceneRenderTarget& target = sceneRenderTargets_[frameIndex];
+        for (uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
+            const std::size_t descriptorSetIndex =
+                static_cast<std::size_t>(frameIndex) * materialCount + materialIndex;
+            VkDescriptorImageInfo sceneImageInfo{};
+            sceneImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sceneImageInfo.imageView = target.colorImageView;
+            sceneImageInfo.sampler = target.colorSampler;
+
+            VkWriteDescriptorSet sceneWrite{};
+            sceneWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            sceneWrite.dstSet = descriptorSets_[descriptorSetIndex];
+            sceneWrite.dstBinding = 2;
+            sceneWrite.descriptorCount = 1;
+            sceneWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sceneWrite.pImageInfo = &sceneImageInfo;
+            vkUpdateDescriptorSets(context_->device(), 1, &sceneWrite, 0, nullptr);
+        }
+    }
 }
 
 void Renderer::updateUniformBuffer() {
@@ -1673,6 +2071,12 @@ void Renderer::updateUniformBuffer() {
     if (extent.height == 0) {
         return;
     }
+    ubo.viewport = glm::vec4(
+        static_cast<float>(extent.width),
+        static_cast<float>(extent.height),
+        1.0f / static_cast<float>(extent.width),
+        1.0f / static_cast<float>(extent.height)
+    );
     ubo.projection = glm::perspective(
         glm::radians(45.0f),
         static_cast<float>(extent.width) / static_cast<float>(extent.height),
@@ -1738,50 +2142,31 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = renderPass_;
-    renderPassInfo.framebuffer = swapChain_->framebuffers()[imageIndex];
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = swapChain_->extent();
-
-    const std::array<VkClearValue, 2> clearValues = {{
-        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
-        {{{1.0f, 0}}}
-    }};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
-    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
-
     const VkExtent2D extent = swapChain_->extent();
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+
     VkViewport viewport{};
     viewport.width = static_cast<float>(extent.width);
     viewport.height = static_cast<float>(extent.height);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
     VkRect2D scissor{};
     scissor.extent = extent;
-    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
     const VkBuffer buffers[] = {vertexBuffer_->handle()};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
 
-    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    for (std::size_t partIndex = 0; partIndex < meshData_.parts.size(); ++partIndex) {
-        const MeshPart& part = meshData_.parts[partIndex];
-        if (part.materialIndex >= materialCount || part.indexCount == 0) {
-            continue;
-        }
+    const auto bindViewport = [&]() {
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    };
 
-        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+    const auto drawPart = [&](const MeshPart& part, const ModelNode* node) {
         const VkPipeline nodePipeline = node != nullptr
             ? graphicsPipelineForNode(*node)
             : graphicsPipeline_;
@@ -1811,6 +2196,20 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         );
         materialPushConstants.baseColor = meshData_.materials[part.materialIndex].baseColor;
         materialPushConstants.hasTexture = materialTextures_[part.materialIndex] != nullptr ? 1u : 0u;
+        const WaterShaderSettings waterSettings = node != nullptr
+            ? node->waterShaderSettings
+            : WaterShaderSettings{};
+        materialPushConstants.waterFlow = glm::vec4(
+            waterSettings.flowDirection,
+            waterSettings.flowSpeed,
+            waterSettings.flowStrength
+        );
+        materialPushConstants.waterSurface = glm::vec4(
+            waterSettings.flowTurbulence,
+            waterSettings.waveScale,
+            waterSettings.waveHeight,
+            0.0f
+        );
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
@@ -1820,6 +2219,235 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             &materialPushConstants
         );
         vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+    };
+
+    const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
+    VkRenderPassBeginInfo sceneRenderPassInfo{};
+    sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    sceneRenderPassInfo.renderPass = sceneRenderPass_;
+    sceneRenderPassInfo.framebuffer = sceneTarget.framebuffer;
+    sceneRenderPassInfo.renderArea.offset = {0, 0};
+    sceneRenderPassInfo.renderArea.extent = extent;
+    const std::array<VkClearValue, 2> sceneClearValues = {{
+        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
+        {{{1.0f, 0}}}
+    }};
+    sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
+    sceneRenderPassInfo.pClearValues = sceneClearValues.data();
+    vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    bindViewport();
+
+    // Render the opaque scene into a sampled color/depth pair first. Water
+    // parts are intentionally excluded: they need this color/depth as their
+    // reflection and refraction source in the second pass.
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
+    for (const MeshPart& part : meshData_.parts) {
+        if (part.materialIndex >= materialCount || part.indexCount == 0) {
+            continue;
+        }
+        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+        const bool isWater = node != nullptr &&
+            isWaterShaderConfiguration(node->shaderConfiguration);
+        if (!isWater) {
+            drawPart(part, node);
+        }
+    }
+    vkCmdEndRenderPass(commandBuffer);
+
+    VkImageMemoryBarrier sceneColorToTransfer{};
+    sceneColorToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneColorToTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    sceneColorToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sceneColorToTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneColorToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sceneColorToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneColorToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneColorToTransfer.image = sceneTarget.colorImage;
+    sceneColorToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    sceneColorToTransfer.subresourceRange.levelCount = 1;
+    sceneColorToTransfer.subresourceRange.layerCount = 1;
+
+    VkImageMemoryBarrier sceneDepthToTransfer{};
+    sceneDepthToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneDepthToTransfer.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    sceneDepthToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sceneDepthToTransfer.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    sceneDepthToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sceneDepthToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneDepthToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneDepthToTransfer.image = sceneTarget.depthImage;
+    sceneDepthToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    sceneDepthToTransfer.subresourceRange.levelCount = 1;
+    sceneDepthToTransfer.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        std::array<VkImageMemoryBarrier, 2>{sceneColorToTransfer, sceneDepthToTransfer}.data()
+    );
+
+    VkImageMemoryBarrier swapColorToTransfer{};
+    swapColorToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapColorToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapColorToTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    swapColorToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapColorToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapColorToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapColorToTransfer.image = swapChain_->image(imageIndex);
+    swapColorToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    swapColorToTransfer.subresourceRange.levelCount = 1;
+    swapColorToTransfer.subresourceRange.layerCount = 1;
+
+    VkImageMemoryBarrier swapDepthToTransfer{};
+    swapDepthToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapDepthToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapDepthToTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    swapDepthToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapDepthToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapDepthToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapDepthToTransfer.image = swapChain_->depthImage();
+    swapDepthToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    swapDepthToTransfer.subresourceRange.levelCount = 1;
+    swapDepthToTransfer.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        2,
+        std::array<VkImageMemoryBarrier, 2>{swapColorToTransfer, swapDepthToTransfer}.data()
+    );
+
+    VkImageCopy colorCopy{};
+    colorCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    colorCopy.srcSubresource.layerCount = 1;
+    colorCopy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    colorCopy.dstSubresource.layerCount = 1;
+    colorCopy.extent = {extent.width, extent.height, 1};
+    vkCmdCopyImage(
+        commandBuffer,
+        sceneTarget.colorImage,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        swapChain_->image(imageIndex),
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &colorCopy
+    );
+
+    VkImageCopy depthCopy{};
+    depthCopy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depthCopy.srcSubresource.layerCount = 1;
+    depthCopy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depthCopy.dstSubresource.layerCount = 1;
+    depthCopy.extent = {extent.width, extent.height, 1};
+    vkCmdCopyImage(
+        commandBuffer,
+        sceneTarget.depthImage,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        swapChain_->depthImage(),
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &depthCopy
+    );
+
+    VkImageMemoryBarrier sceneColorToShader{};
+    sceneColorToShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneColorToShader.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sceneColorToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sceneColorToShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sceneColorToShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneColorToShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneColorToShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneColorToShader.image = sceneTarget.colorImage;
+    sceneColorToShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    sceneColorToShader.subresourceRange.levelCount = 1;
+    sceneColorToShader.subresourceRange.layerCount = 1;
+
+    VkImageMemoryBarrier swapColorToAttachment{};
+    swapColorToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapColorToAttachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapColorToAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    swapColorToAttachment.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapColorToAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    swapColorToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapColorToAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapColorToAttachment.image = swapChain_->image(imageIndex);
+    swapColorToAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    swapColorToAttachment.subresourceRange.levelCount = 1;
+    swapColorToAttachment.subresourceRange.layerCount = 1;
+
+    VkImageMemoryBarrier swapDepthToAttachment{};
+    swapDepthToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapDepthToAttachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapDepthToAttachment.dstAccessMask =
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    swapDepthToAttachment.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapDepthToAttachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    swapDepthToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapDepthToAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapDepthToAttachment.image = swapChain_->depthImage();
+    swapDepthToAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    swapDepthToAttachment.subresourceRange.levelCount = 1;
+    swapDepthToAttachment.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        3,
+        std::array<VkImageMemoryBarrier, 3>{
+            sceneColorToShader,
+            swapColorToAttachment,
+            swapDepthToAttachment
+        }.data()
+    );
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = renderPass_;
+    renderPassInfo.framebuffer = swapChain_->framebuffers()[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = extent;
+    const std::array<VkClearValue, 2> clearValues = {{
+        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
+        {{{1.0f, 0}}}
+    }};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    bindViewport();
+
+    // The opaque scene is already in the swap-chain color attachment. Only
+    // water is rendered here so it can blend over and sample that scene.
+    for (const MeshPart& part : meshData_.parts) {
+        if (part.materialIndex >= materialCount || part.indexCount == 0) {
+            continue;
+        }
+        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+        if (node != nullptr && isWaterShaderConfiguration(node->shaderConfiguration)) {
+            drawPart(part, node);
+        }
     }
 
     if (selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
@@ -1951,7 +2579,10 @@ void Renderer::recreateSwapChain() {
     }
 
     context_->waitIdle();
+    destroySceneRenderResources();
     swapChain_->recreate(renderPass_);
+    createSceneRenderResources();
+    updateSceneTextureDescriptors();
     ImGui_ImplVulkan_SetMinImageCount(
         std::max(2u, static_cast<uint32_t>(swapChain_->framebuffers().size()))
     );

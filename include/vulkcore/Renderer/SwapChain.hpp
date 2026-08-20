@@ -24,6 +24,8 @@ public:
     VkFormat imageFormat() const;
     VkFormat depthFormat() const;
     VkExtent2D extent() const;
+    VkImage image(uint32_t imageIndex) const;
+    VkImage depthImage() const;
     const std::vector<VkFramebuffer>& framebuffers() const;
 
 private:

@@ -10,6 +10,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 projection;
     vec4 time;
+    vec4 viewport;
 } ubo;
 
 layout(push_constant) uniform MaterialPushConstants {

@@ -34,6 +34,17 @@ public:
     void drawFrame();
 
 private:
+    struct SceneRenderTarget {
+        VkImage colorImage = VK_NULL_HANDLE;
+        VkDeviceMemory colorMemory = VK_NULL_HANDLE;
+        VkImageView colorImageView = VK_NULL_HANDLE;
+        VkSampler colorSampler = VK_NULL_HANDLE;
+        VkImage depthImage = VK_NULL_HANDLE;
+        VkDeviceMemory depthMemory = VK_NULL_HANDLE;
+        VkImageView depthImageView = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    };
+
     void initializeImGui();
     void shutdownImGui();
     void buildImGuiFrame();
@@ -53,6 +64,8 @@ private:
         bool& found
     ) const;
     void createRenderPass();
+    void createSceneRenderResources();
+    void destroySceneRenderResources();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
     void createMeshData();
@@ -62,6 +75,7 @@ private:
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
+    void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
     void updateUniformBuffer();
@@ -85,6 +99,7 @@ private:
     std::unique_ptr<SwapChain> swapChain_;
 
     VkRenderPass renderPass_ = VK_NULL_HANDLE;
+    VkRenderPass sceneRenderPass_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
@@ -95,6 +110,7 @@ private:
     std::unordered_map<std::string, VkPipeline> nodeComputePipelines_;
     std::unordered_set<std::string> failedNodeGraphicsPipelineKeys_;
     std::unordered_set<std::string> failedNodeComputePipelineKeys_;
+    std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
