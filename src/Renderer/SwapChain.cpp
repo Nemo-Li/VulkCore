@@ -284,7 +284,14 @@ VkFormat SwapChain::findDepthFormat() const {
     for (const VkFormat format : candidates) {
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(context_.physicalDevice(), format, &properties);
-        if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+        // The renderer also samples the off-screen depth attachment for the
+        // shader demo lab (fog, SSAO, outlines, and depth of field). Select a
+        // format that is valid for both attachment and sampled-image usage.
+        if ((properties.optimalTilingFeatures &
+                (VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) ==
+            (VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
             return format;
         }
     }
