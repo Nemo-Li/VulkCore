@@ -334,23 +334,41 @@ void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     }
 }
 
-void saveNodeMaterialSettings(std::ostream& file, const ModelNode& node) {
+void saveNodeMaterialSettings(
+    std::ostream& file,
+    const ModelNode& node,
+    const MaterialIndexRemap& materialIndexRemap
+) {
     if (node.materialOverride >= 0) {
-        file << "node_material " << node.nodeId << ' '
-             << node.materialOverride << "\n";
+        const auto materialIt = materialIndexRemap.find(
+            static_cast<std::size_t>(node.materialOverride)
+        );
+        if (materialIt != materialIndexRemap.end()) {
+            file << "node_material " << node.nodeId << ' '
+                 << materialIt->second << "\n";
+        }
     }
     for (const ModelNode& child : node.children) {
-        saveNodeMaterialSettings(file, child);
+        saveNodeMaterialSettings(file, child, materialIndexRemap);
     }
 }
 
-void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& materials) {
+void saveUserMaterials(
+    std::ostream& file,
+    const std::vector<MaterialData>& materials,
+    const MaterialIndexRemap& materialIndexRemap
+) {
     for (std::size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex) {
         const MaterialData& material = materials[materialIndex];
         if (!material.userCreated && !material.userModified) {
             continue;
         }
-        file << "material " << materialIndex << ' '
+        const auto remappedIndexIt = materialIndexRemap.find(materialIndex);
+        if (remappedIndexIt == materialIndexRemap.end()) {
+            continue;
+        }
+        const std::size_t serializedMaterialIndex = remappedIndexIt->second;
+        file << "material " << serializedMaterialIndex << ' '
              << std::quoted(material.name) << ' '
              << material.baseColor.r << ' ' << material.baseColor.g << ' '
              << material.baseColor.b << ' ' << material.baseColor.a << ' '
@@ -371,7 +389,7 @@ void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& mate
              << ' ' << material.emissionColor.r << ' '
              << material.emissionColor.g << ' ' << material.emissionColor.b << ' '
              << material.emissionStrength << "\n";
-        file << "material_textures " << materialIndex << ' '
+        file << "material_textures " << serializedMaterialIndex << ' '
              << std::quoted(material.normalTexturePath.string()) << ' '
              << std::quoted(material.specularTexturePath.string()) << "\n";
     }
@@ -434,4 +452,3 @@ std::size_t countMeshNodes(const ModelNode& node) {
 
 
 } // namespace VulkCore::renderer_detail
-

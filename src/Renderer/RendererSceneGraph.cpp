@@ -277,7 +277,7 @@ void Renderer::drawResourceModelHierarchy(const ModelNode& node) {
 
 void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings) {
     ImGui::SeparatorText("Node Material");
-    ImGui::TextDisabled("A material override applies to this node and its children.");
+    ImGui::TextWrapped("A material override applies to this node and its children.");
 
     const std::int32_t inheritedOverride = inheritedMaterialOverrideForSceneNode(node.nodeId);
     const std::int32_t localOverride = node.materialOverride;
@@ -349,20 +349,34 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
     }
 
     if (!hasEffectiveMaterial) {
-        ImGui::TextDisabled("Select or create a material to edit its parameters.");
+        ImGui::TextWrapped("Select or create a material to edit its parameters.");
         return;
     }
 
     if (localOverride < 0 && inheritedOverride < 0 && node.meshPartIndices.size() > 1) {
-        ImGui::TextDisabled(
+        ImGui::TextWrapped(
             "This node has multiple imported material bindings; editing the first one."
         );
     }
 
+    const SceneModelResource* modelResource = sceneModelResourceForNode(node);
+    const std::filesystem::path* modelResourcePath = nullptr;
+    std::int32_t materialKey = effectiveOverride;
+    if (modelResource != nullptr) {
+        const std::size_t sceneMaterialIndex = static_cast<std::size_t>(effectiveOverride);
+        const std::size_t materialStart = modelResource->materialStart;
+        if (sceneMaterialIndex >= materialStart &&
+            sceneMaterialIndex - materialStart < modelResource->materialCount) {
+            materialKey = static_cast<std::int32_t>(sceneMaterialIndex - materialStart);
+            modelResourcePath = &modelResource->path;
+        }
+    }
+
     drawMaterialControls(
         meshData_.materials[effectiveOverride],
-        effectiveOverride,
-        shouldSaveSettings
+        materialKey,
+        shouldSaveSettings,
+        modelResourcePath
     );
 }
 
@@ -389,7 +403,7 @@ void Renderer::drawMaterialControls(
             synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
         }
     };
-    ImGui::Text("Editing: %s", material.name.c_str());
+    ImGui::TextWrapped("Editing: %s", material.name.c_str());
     if (materialNameMaterialIndex_ != materialKey) {
         materialNameMaterialIndex_ = materialKey;
         materialNameBuffer_.fill('\0');
@@ -666,7 +680,7 @@ void Renderer::drawMaterialControls(
     }
 
     ImGui::SeparatorText("Engine Compatibility");
-    ImGui::TextDisabled(
+    ImGui::TextWrapped(
         "VulkCore slots: Base Color / Normal / Specular; default shaders use the engine ABI."
     );
     if (ImGui::Button("Apply engine-safe defaults")) {
@@ -693,7 +707,7 @@ void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSa
     };
 
     ImGui::SeparatorText("Material Shaders");
-    ImGui::TextDisabled("Empty stages fall back to the default shader.");
+    ImGui::TextWrapped("Empty stages fall back to the default shader.");
 
     const std::array<ShaderStage, kShaderStageCount> stages = {
         ShaderStage::Vertex,
@@ -750,7 +764,7 @@ void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSa
 
     if (isWaterShaderConfiguration(material.shaderConfiguration)) {
         ImGui::SeparatorText("Water Flow");
-        ImGui::TextDisabled("Direction is in the mesh UV space: +X right, +Y up.");
+        ImGui::TextWrapped("Direction is in the mesh UV space: +X right, +Y up.");
         ImGui::DragFloat2(
             "Flow direction",
             &material.waterShaderSettings.flowDirection.x,
@@ -783,12 +797,13 @@ void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSa
 
     if (material.shaderConfiguration.hasComputeOverride()) {
         if (computePipelineForMaterial(material) != VK_NULL_HANDLE) {
-            ImGui::TextDisabled("Compute pipeline ready (not dispatched by the mesh pass).");
+            ImGui::TextWrapped("Compute pipeline ready (not dispatched by the mesh pass).");
         } else {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.65f, 0.25f, 1.0f),
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.25f, 1.0f));
+            ImGui::TextWrapped(
                 "Compute shader pipeline could not be created."
             );
+            ImGui::PopStyleColor();
         }
     }
     if (ImGui::Button("Reset material shaders")) {
@@ -799,4 +814,3 @@ void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSa
 
 
 } // namespace VulkCore
-

@@ -2,7 +2,10 @@
 
 namespace VulkCore {
 
-bool Renderer::importModelResource(const std::filesystem::path& path) {
+bool Renderer::importModelResource(
+    const std::filesystem::path& path,
+    std::optional<std::uint32_t> preferredRootNodeId
+) {
     resourceImportFailed_ = false;
     resourceImportStatus_.clear();
 
@@ -90,7 +93,11 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
     if (preserveSun) {
         removeSunMesh();
     }
-    appendImportedModel(std::move(importedMesh), resolvedPath);
+    appendImportedModel(
+        std::move(importedMesh),
+        resolvedPath,
+        preferredRootNodeId
+    );
     discoverModelResources();
     if (preserveSun) {
         createSunMesh(&preservedSunNode, &preservedSunMaterial);
@@ -892,11 +899,12 @@ void Renderer::updateUniformBuffer() {
 
     ubo.model = modelNormalization;
     ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
-    ubo.view = glm::lookAt(
-        glm::vec3(3.5f, 3.5f, 2.8f),
-        glm::vec3(0.0f, 0.0f, 0.0f),
-        glm::vec3(0.0f, 0.0f, 1.0f)
-    );
+    const glm::vec3 cameraTarget(0.0f);
+    const glm::vec3 cameraForward = glm::normalize(cameraTarget - cameraPosition_);
+    const glm::vec3 worldUp = std::abs(glm::dot(cameraForward, glm::vec3(0.0f, 0.0f, 1.0f))) > 0.99f
+        ? glm::vec3(0.0f, 1.0f, 0.0f)
+        : glm::vec3(0.0f, 0.0f, 1.0f);
+    ubo.view = glm::lookAt(cameraPosition_, cameraTarget, worldUp);
 
     const VkExtent2D extent = swapChain_->extent();
     if (extent.height == 0) {
@@ -985,4 +993,3 @@ void Renderer::createSyncObjects() {
 
 
 } // namespace VulkCore
-

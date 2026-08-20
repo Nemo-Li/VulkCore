@@ -160,8 +160,6 @@ bool hasNodeTransformSettings(const ModelNode& node);
 void saveNodeTransformSettings(std::ostream& file, const ModelNode& node);
 void saveNodeRenderSettings(std::ostream& file, const ModelNode& node);
 void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node);
-void saveNodeMaterialSettings(std::ostream& file, const ModelNode& node);
-void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& materials);
 void saveParticleSystemSettings(
     std::ostream& file,
     std::uint32_t nodeId,
@@ -171,7 +169,18 @@ std::string shaderConfigToken(const std::string& token);
 std::size_t countModelNodes(const ModelNode& node);
 std::size_t countMeshNodes(const ModelNode& node);
 
+using MaterialIndexRemap = std::unordered_map<std::size_t, std::size_t>;
+void saveNodeMaterialSettings(
+    std::ostream& file,
+    const ModelNode& node,
+    const MaterialIndexRemap& materialIndexRemap
+);
+void saveUserMaterials(
+    std::ostream& file,
+    const std::vector<MaterialData>& materials,
+    const MaterialIndexRemap& materialIndexRemap
+);
+
 } // namespace renderer_detail
 
 } // namespace VulkCore
-

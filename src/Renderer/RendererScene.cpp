@@ -223,8 +223,26 @@ void Renderer::initializeEmptyScene() {
     sunPresent_ = false;
 }
 
+const Renderer::SceneModelResource* Renderer::sceneModelResourceForNode(
+    const ModelNode& node
+) const {
+    for (const SceneModelResource& model : sceneModelResources_) {
+        if (node.nodeId >= model.rootNodeId &&
+            node.nodeId - model.rootNodeId < kSceneModelNodeStride) {
+            return &model;
+        }
+    }
+    return nullptr;
+}
+
 void Renderer::clearSceneData() {
     context_->waitIdle();
+    // A scene edit may have changed an imported FBX material without touching
+    // the resource preview. Preserve those values before dropping the scene
+    // so the next instance of the same resource can reuse them.
+    for (const SceneModelResource& model : sceneModelResources_) {
+        refreshModelResourceCacheFromScene(model.path);
+    }
     selectedModelNode_ = nullptr;
     removedSceneNodeIds_.clear();
     sceneNodeTransforms_.clear();
@@ -297,12 +315,49 @@ void Renderer::recalculateSceneBounds() {
 
 void Renderer::appendImportedModel(
     MeshData importedMesh,
-    const std::filesystem::path& path
+    const std::filesystem::path& path,
+    std::optional<std::uint32_t> preferredRootNodeId
 ) {
-    const std::uint32_t modelIndex = nextSceneModelInstanceIndex_++;
-    if (modelIndex >= (std::numeric_limits<std::uint32_t>::max() - 1u) /
-            kSceneModelNodeStride) {
-        throw std::runtime_error("scene contains too many model instances");
+    std::uint32_t modelIndex = nextSceneModelInstanceIndex_;
+    std::uint32_t nodeOffset = 0;
+    if (preferredRootNodeId.has_value()) {
+        const std::uint32_t rootNodeId = *preferredRootNodeId;
+        if (rootNodeId == 0 ||
+            (rootNodeId - 1u) % kSceneModelNodeStride != 0) {
+            throw std::runtime_error("scene contains an invalid model root node ID");
+        }
+        modelIndex = (rootNodeId - 1u) / kSceneModelNodeStride;
+        nodeOffset = rootNodeId;
+        const bool duplicateRoot = std::any_of(
+            sceneModelResources_.begin(),
+            sceneModelResources_.end(),
+            [rootNodeId](const SceneModelResource& model) {
+                return model.rootNodeId == rootNodeId;
+            }
+        );
+        if (duplicateRoot) {
+            throw std::runtime_error("scene contains duplicate model root node IDs");
+        }
+    } else {
+        if (modelIndex >= (std::numeric_limits<std::uint32_t>::max() - 1u) /
+                kSceneModelNodeStride) {
+            throw std::runtime_error("scene contains too many model instances");
+        }
+        nodeOffset = 1u + modelIndex * kSceneModelNodeStride;
+        ++nextSceneModelInstanceIndex_;
+    }
+
+    const std::size_t importedNodeCount = countModelNodes(importedMesh.hierarchy);
+    if (importedNodeCount > 0 &&
+        nodeOffset > std::numeric_limits<std::uint32_t>::max() -
+            static_cast<std::uint32_t>(importedNodeCount - 1)) {
+        throw std::runtime_error("scene model node IDs overflow 32-bit storage");
+    }
+    if (preferredRootNodeId.has_value()) {
+        nextSceneModelInstanceIndex_ = std::max(
+            nextSceneModelInstanceIndex_,
+            modelIndex + 1u
+        );
     }
 
     const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
@@ -311,9 +366,6 @@ void Renderer::appendImportedModel(
     const std::uint32_t importedMaterialCount =
         static_cast<std::uint32_t>(importedMesh.materials.size());
     const std::uint32_t partOffset = static_cast<std::uint32_t>(meshData_.parts.size());
-    const std::uint32_t nodeOffset = 1u + modelIndex *
-        kSceneModelNodeStride;
-
     for (const Vertex& vertex : importedMesh.vertices) {
         meshData_.vertices.push_back(vertex);
     }
@@ -499,7 +551,11 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         return false;
     }
 
-    std::vector<std::filesystem::path> modelPaths;
+    struct ModelResourceReference {
+        std::filesystem::path path;
+        std::optional<std::uint32_t> rootNodeId;
+    };
+    std::vector<ModelResourceReference> modelReferences;
     bool sceneHasSun = false;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
@@ -516,7 +572,21 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 sceneStatus_ = "Scene file has an invalid model path.";
                 return false;
             }
-            modelPaths.emplace_back(configuredPath);
+            std::string modelReferenceSuffix;
+            std::getline(sceneFile, modelReferenceSuffix);
+            std::istringstream suffixStream(modelReferenceSuffix);
+            std::uint64_t savedRootNodeId = 0;
+            std::optional<std::uint32_t> rootNodeId;
+            if (suffixStream >> savedRootNodeId) {
+                if (savedRootNodeId == 0 ||
+                    savedRootNodeId > std::numeric_limits<std::uint32_t>::max()) {
+                    sceneStatusFailed_ = true;
+                    sceneStatus_ = "Scene file has an invalid model root node ID.";
+                    return false;
+                }
+                rootNodeId = static_cast<std::uint32_t>(savedRootNodeId);
+            }
+            modelReferences.push_back({std::move(configuredPath), rootNodeId});
         } else if (key == "sun_present") {
             int present = 0;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -531,7 +601,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         }
     }
 
-    for (std::filesystem::path& modelPath : modelPaths) {
+    for (ModelResourceReference& modelReference : modelReferences) {
+        std::filesystem::path& modelPath = modelReference.path;
         if (modelPath.is_relative()) {
             const std::filesystem::path sceneRelativePath =
                 resolvedScenePath.parent_path() / modelPath;
@@ -550,8 +621,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     }
 
     clearSceneData();
-    for (const std::filesystem::path& modelPath : modelPaths) {
-        if (!importModelResource(modelPath)) {
+    for (const ModelResourceReference& modelReference : modelReferences) {
+        if (!importModelResource(modelReference.path, modelReference.rootNodeId)) {
             sceneStatusFailed_ = true;
             sceneStatus_ = "Failed to load scene model: " + resourceImportStatus_;
             return false;
@@ -612,6 +683,7 @@ void Renderer::loadTransformSettings() {
     glm::vec3 legacyRotationDegrees(0.0f);
     float legacyScaleFactor = 1.0f;
     bool hasLegacyTransformSettings = false;
+    glm::vec3 cameraPosition = cameraPosition_;
     glm::vec3 ambientLightColor = ambientLightColor_;
     float ambientLightIntensity = ambientLightIntensity_;
     glm::vec3 sunLightDirection = sunLightDirection_;
@@ -860,6 +932,11 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             pendingNodeMaterials.push_back(material);
+        } else if (key == "camera_position") {
+            if (!(file >> cameraPosition.x >> cameraPosition.y >> cameraPosition.z)) {
+                valid = false;
+                break;
+            }
         } else if (key == "ambient_color") {
             if (!(file >> ambientLightColor.r >> ambientLightColor.g >> ambientLightColor.b)) {
                 valid = false;
@@ -945,6 +1022,8 @@ void Renderer::loadTransformSettings() {
         std::isfinite(legacyRotationDegrees.y) && std::isfinite(legacyRotationDegrees.z) &&
         std::isfinite(legacyScaleFactor);
     const bool finiteLightingValues =
+        std::isfinite(cameraPosition.x) && std::isfinite(cameraPosition.y) &&
+        std::isfinite(cameraPosition.z) &&
         std::isfinite(ambientLightColor.r) && std::isfinite(ambientLightColor.g) &&
         std::isfinite(ambientLightColor.b) && std::isfinite(ambientLightIntensity) &&
         std::isfinite(sunLightDirection.x) && std::isfinite(sunLightDirection.y) &&
@@ -1060,6 +1139,9 @@ void Renderer::loadTransformSettings() {
     }
 
     ambientLightColor_ = glm::clamp(ambientLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
+    cameraPosition_ = glm::length(cameraPosition) < 0.05f
+        ? glm::vec3(3.5f, 3.5f, 2.8f)
+        : cameraPosition;
     ambientLightIntensity_ = std::clamp(ambientLightIntensity, 0.0f, 4.0f);
     sunLightDirection_ = sunLightDirection;
     if (glm::length(sunLightDirection_) < 0.001f) {
@@ -1307,6 +1389,8 @@ bool Renderer::saveTransformSettings() const {
              << model.rootNodeId << "\n";
     }
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
+         << "camera_position " << cameraPosition_.x << ' '
+         << cameraPosition_.y << ' ' << cameraPosition_.z << "\n"
          << "ambient_color " << ambientLightColor_.r << ' '
          << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
          << "ambient_intensity " << ambientLightIntensity_ << "\n"
@@ -1330,6 +1414,59 @@ bool Renderer::saveTransformSettings() const {
             saveParticleSystemSettings(file, node.nodeId, systemIt->second.settings());
         }
     }
+
+    std::unordered_set<std::size_t> activeMaterialIndices;
+    if (!meshData_.materials.empty()) {
+        activeMaterialIndices.insert(0);
+    }
+    for (const SceneModelResource& model : sceneModelResources_) {
+        for (std::size_t materialIndex = 0;
+             materialIndex < model.materialCount;
+             ++materialIndex) {
+            const std::size_t sceneMaterialIndex =
+                static_cast<std::size_t>(model.materialStart) + materialIndex;
+            if (sceneMaterialIndex < meshData_.materials.size()) {
+                activeMaterialIndices.insert(sceneMaterialIndex);
+            }
+        }
+    }
+    for (const MeshPart& part : meshData_.parts) {
+        if (!removedSceneNodeIds_.contains(part.nodeId) &&
+            part.materialIndex < meshData_.materials.size()) {
+            activeMaterialIndices.insert(part.materialIndex);
+        }
+    }
+    if (sunPresent_ && sunMaterialIndex_ < meshData_.materials.size()) {
+        activeMaterialIndices.insert(sunMaterialIndex_);
+    }
+    const auto collectActiveNodeMaterials =
+        [this, &activeMaterialIndices](const auto& self, const ModelNode& node) -> void {
+            if (removedSceneNodeIds_.contains(node.nodeId)) {
+                return;
+            }
+            if (node.materialOverride >= 0 &&
+                static_cast<std::size_t>(node.materialOverride) < meshData_.materials.size()) {
+                activeMaterialIndices.insert(
+                    static_cast<std::size_t>(node.materialOverride)
+                );
+            }
+            for (const ModelNode& child : node.children) {
+                self(self, child);
+            }
+        };
+    collectActiveNodeMaterials(collectActiveNodeMaterials, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        collectActiveNodeMaterials(collectActiveNodeMaterials, node);
+    }
+    MaterialIndexRemap materialIndexRemap;
+    std::size_t serializedMaterialIndex = 0;
+    for (std::size_t materialIndex = 0;
+         materialIndex < meshData_.materials.size();
+         ++materialIndex) {
+        if (activeMaterialIndices.contains(materialIndex)) {
+            materialIndexRemap.emplace(materialIndex, serializedMaterialIndex++);
+        }
+    }
     saveNodeTransformSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeTransformSettings(file, node);
@@ -1342,10 +1479,10 @@ bool Renderer::saveTransformSettings() const {
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeAnimationSettings(file, node);
     }
-    saveUserMaterials(file, meshData_.materials);
-    saveNodeMaterialSettings(file, meshData_.hierarchy);
+    saveUserMaterials(file, meshData_.materials, materialIndexRemap);
+    saveNodeMaterialSettings(file, meshData_.hierarchy, materialIndexRemap);
     for (const ModelNode& node : meshData_.additionalNodes) {
-        saveNodeMaterialSettings(file, node);
+        saveNodeMaterialSettings(file, node, materialIndexRemap);
     }
     return static_cast<bool>(file);
 }
@@ -1454,4 +1591,3 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
 
 
 } // namespace VulkCore
-
