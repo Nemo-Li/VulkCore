@@ -92,13 +92,8 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 贴图默认沿用 `<material>-diffuse` 的目录与文件名，将 `diffuse` 替换为 `normal` 或
 `specular`。Normal 缺失时绑定平坦法线回退贴图，Specular 缺失时绑定白色回退贴图。
 现有 3D 场景会先绘制到离屏颜色/深度目标，再复制到交换链；水面在第二阶段采样离屏场景颜色和深度完成反射、折射与透明混合，随后在同一个 Vulkan
-render pass 中绘制水面和 Dear ImGui 主界面；左侧控制面板可以调整模型旋转速度并打开
-ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区域支持拖动修改模型
-的 X/Y/Z 位置和绕 X/Y/Z 轴的旋转角度，也可以关闭 Z 轴自动旋转或恢复默认变换。
-位置、旋转和缩放参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。
-右侧层级中的节点可以选中，3D 视图会为该节点及其子节点整体显示黄色 AABB 立方体边框；
-节点本身显示其直接 Mesh 数量，但不会再额外展开 `Mesh 0` 子项。
-选中节点后，左侧 Selected Node 区域可以启用该节点绕自身模型坐标系 X/Y/Z 轴的旋转动画，分别设置初始角度和角速度；已启用的节点动画会在切换选择后继续运行，嵌套节点按层级坐标系叠加。节点动画配置也会写入 `vulkcore.ini`。
+render pass 中绘制水面和 Dear ImGui 主界面；右侧面板显示 FBX 内部节点树。右侧层级中的节点可以选中，3D 视图会为该节点及其子节点整体显示黄色 AABB 立方体边框；节点本身显示其直接 Mesh 数量，但不会再额外展开 `Mesh 0` 子项。
+选中带直接 Mesh 的命名节点后，左侧 Selected Node 区域的 Transform 会直接编辑该 Mesh 节点的位置、绕自身模型坐标系 X/Y/Z 轴的旋转和缩放；例如选中生成的 Sun 时，变换只作用于 Sun，不会移动其他模型。`MeshPart` 仅是该 Mesh 的材质绘制分段，不保存独立 Transform。各节点的变换参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。该区域也可以启用节点旋转动画，分别设置初始角度和角速度；已启用的节点动画会在切换选择后继续运行，嵌套节点按层级坐标系叠加。
 同一区域的 Node Material 可以为当前节点及其子节点绑定已有 Material，或创建独立 Material；Material 支持名称、Base Color、Base Color/Normal/Specular 纹理、Metallic、Roughness、Opacity、Opaque/Alpha/Additive/Multiply 混合、深度写入和双面渲染。新建 Material 与 Node 绑定会保存为 `material`、`material_textures` 和 `node_material` 配置。
 Material Shaders 区域可以为当前 Material 分别选择 Vertex、Tessellation Control、Tessellation Evaluation、Geometry、Fragment 和 Compute Shader。未选择的 graphics stage 自动回退到默认 Shader，因此绑定同一 Material 的节点共享 Shader；相同的 Shader/Material 状态会共享 Vulkan graphics pipeline。Compute Shader 会为该 Material 创建并校验独立的 compute pipeline，但当前模型 render pass 不会自动 dispatch 它，因为 compute 阶段需要额外的 storage buffer/image 资源绑定。
 Shader 选择来自 `build/shaders` 中的 SPIR-V 文件；新增 GLSL 文件后重新构建即可出现在对应下拉框中。自定义 graphics Shader 需要遵守当前顶点输入、descriptor set `0` 的 UBO/纹理绑定以及 `MaterialPushConstants` 接口。

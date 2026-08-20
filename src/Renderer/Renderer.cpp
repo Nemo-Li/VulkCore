@@ -217,6 +217,28 @@ bool hasNodeAnimationSettings(const ModelNode& node) {
         node.rotationAnimationSpeedDegrees != glm::vec3(0.0f);
 }
 
+bool hasNodeTransformSettings(const ModelNode& node) {
+    return node.transformTranslation != glm::vec3(0.0f) ||
+        node.transformRotationDegrees != glm::vec3(0.0f) ||
+        node.transformScaleFactor != 1.0f;
+}
+
+void saveNodeTransformSettings(std::ostream& file, const ModelNode& node) {
+    if (hasNodeTransformSettings(node)) {
+        file << "node_transform " << node.nodeId << ' '
+             << node.transformTranslation.x << ' '
+             << node.transformTranslation.y << ' '
+             << node.transformTranslation.z << ' '
+             << node.transformRotationDegrees.x << ' '
+             << node.transformRotationDegrees.y << ' '
+             << node.transformRotationDegrees.z << ' '
+             << node.transformScaleFactor << "\n";
+    }
+    for (const ModelNode& child : node.children) {
+        saveNodeTransformSettings(file, child);
+    }
+}
+
 void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     if (hasNodeAnimationSettings(node)) {
         file << "node_animation " << node.nodeId << ' '
@@ -287,6 +309,49 @@ void Renderer::selectModelNode(ModelNode& node) {
     updateBoundingBoxVertices();
 }
 
+glm::mat4 Renderer::nodeManualTransform(const ModelNode& node) const {
+    if (!hasNodeTransformSettings(node)) {
+        return glm::mat4(1.0f);
+    }
+
+    const float safeModelScale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
+    const glm::mat4 rotation =
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.z),
+            glm::vec3(0.0f, 0.0f, 1.0f)
+        ) *
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.y),
+            glm::vec3(0.0f, 1.0f, 0.0f)
+        ) *
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.x),
+            glm::vec3(1.0f, 0.0f, 0.0f)
+        );
+    const glm::mat4 localTransform =
+        glm::translate(
+            glm::mat4(1.0f),
+            node.transformTranslation / safeModelScale
+        ) *
+        rotation *
+        glm::scale(
+            glm::mat4(1.0f),
+            glm::vec3(std::max(node.transformScaleFactor, kMinimumModelScaleFactor))
+        );
+
+    // The imported geometry has already been flattened into model-root
+    // coordinates. Conjugating the local transform keeps the selected node
+    // as the pivot. The root uses the scene center to retain the previous
+    // whole-model transform behavior.
+    const glm::mat4 pivot = &node == &meshData_.hierarchy
+        ? glm::translate(glm::mat4(1.0f), modelCenter_)
+        : node.globalTransform;
+    return pivot * localTransform * glm::inverse(pivot);
+}
+
 glm::mat4 Renderer::nodeAnimationTransform(
     const ModelNode& node,
     float elapsedSeconds
@@ -308,69 +373,37 @@ glm::mat4 Renderer::nodeAnimationTransform(
     return node.globalTransform * rotation * glm::inverse(node.globalTransform);
 }
 
-glm::mat4 Renderer::animationTransformForNode(
-    const ModelNode& node,
-    std::uint32_t targetNodeId,
-    float elapsedSeconds,
-    const glm::mat4& parentAnimation,
-    bool& found
-) const {
-    glm::mat4 accumulatedAnimation = parentAnimation;
-    if (node.rotationAnimationEnabled) {
-        // Parent animation is applied after child-local animation, so the
-        // matrices are accumulated in hierarchy order from root to leaf.
-        accumulatedAnimation *= nodeAnimationTransform(node, elapsedSeconds);
-    }
+void Renderer::updateSceneNodeTransforms(float elapsedSeconds) {
+    sceneNodeTransforms_.clear();
 
-    if (node.nodeId == targetNodeId) {
-        found = true;
-        return accumulatedAnimation;
-    }
-
-    for (const ModelNode& child : node.children) {
-        const glm::mat4 result = animationTransformForNode(
-            child,
-            targetNodeId,
-            elapsedSeconds,
-            accumulatedAnimation,
-            found
-        );
-        if (found) {
-            return result;
+    const auto updateNode = [this, elapsedSeconds](
+                                const auto& self,
+                                const ModelNode& node,
+                                const glm::mat4& parentTransform
+                            ) -> void {
+        glm::mat4 transform = parentTransform * nodeManualTransform(node);
+        if (node.rotationAnimationEnabled) {
+            // Parent animation is applied after child-local animation, so
+            // transforms are accumulated in hierarchy order from root to leaf.
+            transform *= nodeAnimationTransform(node, elapsedSeconds);
         }
+        sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
+        for (const ModelNode& child : node.children) {
+            self(self, child, transform);
+        }
+    };
+
+    updateNode(updateNode, meshData_.hierarchy, glm::mat4(1.0f));
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        updateNode(updateNode, node, glm::mat4(1.0f));
     }
-    return glm::mat4(1.0f);
 }
 
-glm::mat4 Renderer::animationTransformForSceneNode(
-    std::uint32_t targetNodeId,
-    float elapsedSeconds,
-    bool& found
-) const {
-    found = false;
-    glm::mat4 result = animationTransformForNode(
-        meshData_.hierarchy,
-        targetNodeId,
-        elapsedSeconds,
-        glm::mat4(1.0f),
-        found
-    );
-    if (found) {
-        return result;
-    }
-    for (const ModelNode& node : meshData_.additionalNodes) {
-        result = animationTransformForNode(
-            node,
-            targetNodeId,
-            elapsedSeconds,
-            glm::mat4(1.0f),
-            found
-        );
-        if (found) {
-            return result;
-        }
-    }
-    return glm::mat4(1.0f);
+glm::mat4 Renderer::transformForSceneNode(std::uint32_t nodeId) const {
+    const auto transformIt = sceneNodeTransforms_.find(nodeId);
+    return transformIt != sceneNodeTransforms_.end()
+        ? transformIt->second
+        : glm::mat4(1.0f);
 }
 
 void Renderer::updateBoundingBoxVertices() {
@@ -379,14 +412,7 @@ void Renderer::updateBoundingBoxVertices() {
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    bool found = false;
-    const glm::mat4 nodeTransform = animationTransformForSceneNode(
-        selectedModelNode_->nodeId,
-        elapsedSeconds,
-        found
-    );
+    const glm::mat4 nodeTransform = transformForSceneNode(selectedModelNode_->nodeId);
 
     const glm::vec3& minimum = selectedModelNode_->boundsMinimum;
     const glm::vec3& maximum = selectedModelNode_->boundsMaximum;
@@ -832,9 +858,8 @@ Renderer::Renderer(GLFWwindow* window)
     createBoundingBoxPipeline();
     swapChain_->createFramebuffers(renderPass_);
     createMeshData();
-    loadTransformSettings();
     createSunMesh();
-    loadSunNodeSettings();
+    loadTransformSettings();
     createVertexBuffer();
     createIndexBuffer();
     createBoundingBoxBuffers();
@@ -974,9 +999,10 @@ void Renderer::loadTransformSettings() {
         return;
     }
 
-    glm::vec3 translation = modelTranslation_;
-    glm::vec3 rotationDegrees = modelRotationDegrees_;
-    float scaleFactor = modelScaleFactor_;
+    glm::vec3 legacyTranslation(0.0f);
+    glm::vec3 legacyRotationDegrees(0.0f);
+    float legacyScaleFactor = 1.0f;
+    bool hasLegacyTransformSettings = false;
     glm::vec3 ambientLightColor = ambientLightColor_;
     float ambientLightIntensity = ambientLightIntensity_;
     glm::vec3 sunLightDirection = sunLightDirection_;
@@ -987,6 +1013,12 @@ void Renderer::loadTransformSettings() {
         bool enabled = false;
         glm::vec3 initialDegrees{0.0f};
         glm::vec3 speedDegrees{0.0f};
+    };
+    struct PendingNodeTransform {
+        std::uint32_t nodeId = 0;
+        glm::vec3 translation{0.0f};
+        glm::vec3 rotationDegrees{0.0f};
+        float scaleFactor = 1.0f;
     };
     struct PendingNodeShaders {
         std::uint32_t nodeId = 0;
@@ -1010,6 +1042,7 @@ void Renderer::loadTransformSettings() {
         std::int32_t materialIndex = -1;
     };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
+    std::vector<PendingNodeTransform> pendingNodeTransforms;
     std::vector<PendingNodeShaders> pendingNodeShaders;
     std::vector<PendingNodeWater> pendingNodeWater;
     std::vector<PendingMaterial> pendingMaterials;
@@ -1019,20 +1052,35 @@ void Renderer::loadTransformSettings() {
     std::string key;
     while (file >> key) {
         if (key == "position") {
-            if (!(file >> translation.x >> translation.y >> translation.z)) {
+            if (!(file >> legacyTranslation.x >> legacyTranslation.y >> legacyTranslation.z)) {
                 valid = false;
                 break;
             }
+            hasLegacyTransformSettings = true;
         } else if (key == "rotation_degrees") {
-            if (!(file >> rotationDegrees.x >> rotationDegrees.y >> rotationDegrees.z)) {
+            if (!(file >> legacyRotationDegrees.x >> legacyRotationDegrees.y >>
+                  legacyRotationDegrees.z)) {
                 valid = false;
                 break;
             }
+            hasLegacyTransformSettings = true;
         } else if (key == "scale") {
-            if (!(file >> scaleFactor)) {
+            if (!(file >> legacyScaleFactor)) {
                 valid = false;
                 break;
             }
+            hasLegacyTransformSettings = true;
+        } else if (key == "node_transform") {
+            PendingNodeTransform transform;
+            if (!(file >> transform.nodeId >> transform.translation.x >>
+                  transform.translation.y >> transform.translation.z >>
+                  transform.rotationDegrees.x >> transform.rotationDegrees.y >>
+                  transform.rotationDegrees.z >> transform.scaleFactor) ||
+                transform.scaleFactor <= 0.0f) {
+                valid = false;
+                break;
+            }
+            pendingNodeTransforms.push_back(transform);
         } else if (key == "node_animation") {
             PendingNodeAnimation animation;
             int enabled = 0;
@@ -1200,10 +1248,10 @@ void Renderer::loadTransformSettings() {
     }
 
     const bool finiteValues =
-        std::isfinite(translation.x) && std::isfinite(translation.y) &&
-        std::isfinite(translation.z) && std::isfinite(rotationDegrees.x) &&
-        std::isfinite(rotationDegrees.y) && std::isfinite(rotationDegrees.z) &&
-        std::isfinite(scaleFactor);
+        std::isfinite(legacyTranslation.x) && std::isfinite(legacyTranslation.y) &&
+        std::isfinite(legacyTranslation.z) && std::isfinite(legacyRotationDegrees.x) &&
+        std::isfinite(legacyRotationDegrees.y) && std::isfinite(legacyRotationDegrees.z) &&
+        std::isfinite(legacyScaleFactor);
     const bool finiteLightingValues =
         std::isfinite(ambientLightColor.r) && std::isfinite(ambientLightColor.g) &&
         std::isfinite(ambientLightColor.b) && std::isfinite(ambientLightIntensity) &&
@@ -1221,6 +1269,19 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(animation.speedDegrees.x) &&
                 std::isfinite(animation.speedDegrees.y) &&
                 std::isfinite(animation.speedDegrees.z);
+        }
+    );
+    const bool finiteNodeTransformValues = std::all_of(
+        pendingNodeTransforms.begin(),
+        pendingNodeTransforms.end(),
+        [](const PendingNodeTransform& transform) {
+            return std::isfinite(transform.translation.x) &&
+                std::isfinite(transform.translation.y) &&
+                std::isfinite(transform.translation.z) &&
+                std::isfinite(transform.rotationDegrees.x) &&
+                std::isfinite(transform.rotationDegrees.y) &&
+                std::isfinite(transform.rotationDegrees.z) &&
+                std::isfinite(transform.scaleFactor);
         }
     );
     const bool finiteWaterValues = std::all_of(
@@ -1259,20 +1320,13 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(pending.material.waterShaderSettings.waveHeight);
         }
     );
-    if (!valid || !finiteValues || !finiteLightingValues || !finiteNodeValues || !finiteWaterValues ||
-        !finiteMaterialValues) {
+    if (!valid || !finiteValues || !finiteLightingValues || !finiteNodeValues ||
+        !finiteNodeTransformValues || !finiteWaterValues || !finiteMaterialValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
         return;
     }
 
-    modelTranslation_ = translation;
-    modelRotationDegrees_ = rotationDegrees;
-    modelScaleFactor_ = std::clamp(
-        scaleFactor,
-        kMinimumModelScaleFactor,
-        kMaximumModelScaleFactor
-    );
     ambientLightColor_ = glm::clamp(ambientLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
     ambientLightIntensity_ = std::clamp(ambientLightIntensity, 0.0f, 4.0f);
     sunLightDirection_ = sunLightDirection;
@@ -1345,8 +1399,38 @@ void Renderer::loadTransformSettings() {
         material.embeddedNormalTexture = EmbeddedTextureData{};
         material.embeddedSpecularTexture = EmbeddedTextureData{};
     }
+    const bool hasRootNodeTransform = std::any_of(
+        pendingNodeTransforms.begin(),
+        pendingNodeTransforms.end(),
+        [this](const PendingNodeTransform& transform) {
+            return transform.nodeId == meshData_.hierarchy.nodeId;
+        }
+    );
+    if (hasLegacyTransformSettings && !hasRootNodeTransform) {
+        ModelNode& rootNode = meshData_.hierarchy;
+        rootNode.transformTranslation = legacyTranslation;
+        rootNode.transformRotationDegrees = legacyRotationDegrees;
+        rootNode.transformScaleFactor = std::clamp(
+            legacyScaleFactor,
+            kMinimumModelScaleFactor,
+            kMaximumModelScaleFactor
+        );
+    }
+    for (const PendingNodeTransform& transform : pendingNodeTransforms) {
+        ModelNode* node = findSceneNodeById(meshData_, transform.nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        node->transformTranslation = transform.translation;
+        node->transformRotationDegrees = transform.rotationDegrees;
+        node->transformScaleFactor = std::clamp(
+            transform.scaleFactor,
+            kMinimumModelScaleFactor,
+            kMaximumModelScaleFactor
+        );
+    }
     for (const PendingNodeAnimation& animation : pendingNodeAnimations) {
-        ModelNode* node = findModelNodeById(meshData_.hierarchy, animation.nodeId);
+        ModelNode* node = findSceneNodeById(meshData_, animation.nodeId);
         if (node == nullptr) {
             continue;
         }
@@ -1355,7 +1439,7 @@ void Renderer::loadTransformSettings() {
         node->rotationAnimationSpeedDegrees = animation.speedDegrees;
     }
     for (const PendingNodeMaterial& material : pendingNodeMaterials) {
-        ModelNode* node = findModelNodeById(meshData_.hierarchy, material.nodeId);
+        ModelNode* node = findSceneNodeById(meshData_, material.nodeId);
         if (node == nullptr) {
             continue;
         }
@@ -1377,7 +1461,7 @@ void Renderer::loadTransformSettings() {
         legacyNodeIds.insert(water.nodeId);
     }
     for (const std::uint32_t nodeId : legacyNodeIds) {
-        ModelNode* node = findModelNodeById(meshData_.hierarchy, nodeId);
+        ModelNode* node = findSceneNodeById(meshData_, nodeId);
         if (node == nullptr) {
             continue;
         }
@@ -1425,65 +1509,6 @@ void Renderer::loadTransformSettings() {
     }
 }
 
-void Renderer::loadSunNodeSettings() {
-    if (sunNodeId_ == 0 || meshData_.additionalNodes.empty()) {
-        return;
-    }
-
-    ModelNode* sunNode = nullptr;
-    for (ModelNode& node : meshData_.additionalNodes) {
-        sunNode = findModelNodeById(node, sunNodeId_);
-        if (sunNode != nullptr) {
-            break;
-        }
-    }
-    if (sunNode == nullptr) {
-        return;
-    }
-
-    const std::filesystem::path configPath(kConfigPath);
-    std::ifstream file(configPath);
-    if (!file.is_open()) {
-        return;
-    }
-
-    std::string key;
-    while (file >> key) {
-        if (key == "node_animation") {
-            std::uint32_t nodeId = 0;
-            int enabled = 0;
-            glm::vec3 initialDegrees(0.0f);
-            glm::vec3 speedDegrees(0.0f);
-            if (!(file >> nodeId >> enabled >> initialDegrees.x >> initialDegrees.y >>
-                  initialDegrees.z >> speedDegrees.x >> speedDegrees.y >> speedDegrees.z)) {
-                return;
-            }
-            if (nodeId == sunNodeId_ && enabled >= 0 && enabled <= 1 &&
-                std::isfinite(initialDegrees.x) && std::isfinite(initialDegrees.y) &&
-                std::isfinite(initialDegrees.z) && std::isfinite(speedDegrees.x) &&
-                std::isfinite(speedDegrees.y) && std::isfinite(speedDegrees.z)) {
-                sunNode->rotationAnimationEnabled = enabled != 0;
-                sunNode->rotationAnimationInitialDegrees = initialDegrees;
-                sunNode->rotationAnimationSpeedDegrees = speedDegrees;
-            }
-        } else if (key == "node_material") {
-            std::uint32_t nodeId = 0;
-            std::int32_t materialIndex = -1;
-            if (!(file >> nodeId >> materialIndex)) {
-                return;
-            }
-            if (nodeId == sunNodeId_ && materialIndex >= -1 &&
-                (materialIndex == -1 ||
-                 static_cast<std::size_t>(materialIndex) < meshData_.materials.size())) {
-                sunNode->materialOverride = materialIndex;
-            }
-        } else {
-            std::string ignoredLine;
-            std::getline(file, ignoredLine);
-        }
-    }
-}
-
 void Renderer::saveTransformSettings() const {
     const std::filesystem::path configPath(kConfigPath);
     std::ofstream file(configPath, std::ios::trunc);
@@ -1495,11 +1520,6 @@ void Renderer::saveTransformSettings() const {
 
     file << "# VulkCore transform settings\n"
          << std::setprecision(9)
-         << "position " << modelTranslation_.x << ' '
-         << modelTranslation_.y << ' ' << modelTranslation_.z << "\n"
-         << "rotation_degrees " << modelRotationDegrees_.x << ' '
-         << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
-         << "scale " << modelScaleFactor_ << "\n"
          << "ambient_color " << ambientLightColor_.r << ' '
          << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
          << "ambient_intensity " << ambientLightIntensity_ << "\n"
@@ -1508,6 +1528,10 @@ void Renderer::saveTransformSettings() const {
          << "sun_light_color " << sunLightColor_.r << ' '
          << sunLightColor_.g << ' ' << sunLightColor_.b << "\n"
          << "sun_light_intensity " << sunLightIntensity_ << "\n";
+    saveNodeTransformSettings(file, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        saveNodeTransformSettings(file, node);
+    }
     saveNodeAnimationSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeAnimationSettings(file, node);
@@ -1598,47 +1622,55 @@ void Renderer::buildImGuiFrame() {
         sunLightIntensity_ = 1.0f;
         shouldSaveTransformSettings = true;
     }
-    ImGui::SeparatorText("Transform Debug");
-    ImGui::DragFloat3(
-        "Position (X/Y/Z)",
-        &modelTranslation_.x,
-        0.01f,
-        -10.0f,
-        10.0f,
-        "%.2f"
-    );
-    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::DragFloat3(
-        "Rotation (X/Y/Z)",
-        &modelRotationDegrees_.x,
-        1.0f,
-        -360.0f,
-        360.0f,
-        "%.1f deg"
-    );
-    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::SliderFloat(
-        "Model Scale",
-        &modelScaleFactor_,
-        kMinimumModelScaleFactor,
-        kMaximumModelScaleFactor,
-        "%.2fx"
-    );
-    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-    if (ImGui::Button("Reset transform")) {
-        modelTranslation_ = glm::vec3(0.0f);
-        modelRotationDegrees_ = glm::vec3(0.0f);
-        modelScaleFactor_ = 1.0f;
-        shouldSaveTransformSettings = true;
-    }
+    ImGui::SeparatorText("Transform");
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
         ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
         if (selectedModelNode_->nodeId == sunNodeId_) {
             ImGui::TextDisabled("Generated spherical sun mesh");
         }
-        ImGui::TextDisabled("Rotation uses the node's local model axes.");
+        const bool isNamedMeshNode = selectedModelNode_->meshCount > 0 &&
+            !selectedModelNode_->name.empty() &&
+            selectedModelNode_->name != "<unnamed>";
+        if (isNamedMeshNode) {
+            ImGui::TextDisabled("Position is in scene units; rotation and scale use local axes.");
+            ImGui::DragFloat3(
+                "Position (X/Y/Z)",
+                &selectedModelNode_->transformTranslation.x,
+                0.01f,
+                -10.0f,
+                10.0f,
+                "%.2f"
+            );
+            shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::DragFloat3(
+                "Rotation (X/Y/Z)",
+                &selectedModelNode_->transformRotationDegrees.x,
+                1.0f,
+                -360.0f,
+                360.0f,
+                "%.1f deg"
+            );
+            shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SliderFloat(
+                "Scale",
+                &selectedModelNode_->transformScaleFactor,
+                kMinimumModelScaleFactor,
+                kMaximumModelScaleFactor,
+                "%.2fx"
+            );
+            shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+            if (ImGui::Button("Reset selected transform")) {
+                selectedModelNode_->transformTranslation = glm::vec3(0.0f);
+                selectedModelNode_->transformRotationDegrees = glm::vec3(0.0f);
+                selectedModelNode_->transformScaleFactor = 1.0f;
+                shouldSaveTransformSettings = true;
+            }
+        } else {
+            ImGui::TextDisabled("Transform is available for named mesh nodes only.");
+        }
 
+        ImGui::SeparatorText("Node Animation");
         ImGui::Checkbox(
             "Enable rotation animation",
             &selectedModelNode_->rotationAnimationEnabled
@@ -1669,13 +1701,12 @@ void Renderer::buildImGuiFrame() {
             shouldSaveTransformSettings = true;
         }
         drawNodeMaterialControls(*selectedModelNode_, shouldSaveTransformSettings);
+    } else {
+        ImGui::TextDisabled("Select a scene object to edit its transform.");
     }
     if (shouldSaveTransformSettings) {
         saveTransformSettings();
     }
-    // ImGui::Checkbox("Auto rotate Z", &autoRotate_);
-    // ImGui::DragFloat("Auto rotation speed", &rotationSpeedDegrees_, 0.1f, 0.0f, 60.0f, "%.1f deg/s");
-    // ImGui::Checkbox("ImGui demo window", &showImGuiDemo_);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
     const bool leftPanelHovered = ImGui::IsWindowHovered();
@@ -1711,10 +1742,6 @@ void Renderer::buildImGuiFrame() {
         updateBoundingBoxVertices();
     }
     ImGui::End();
-
-    // if (showImGuiDemo_) {
-    //     ImGui::ShowDemoWindow(&showImGuiDemo_);
-    // }
 
     ImGui::Render();
 }
@@ -3028,29 +3055,17 @@ void Renderer::updateUniformBuffer() {
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     UniformBufferObject ubo{};
-    // GLM post-multiplies transforms. Build S * T so the model is translated
-    // to the origin first and then scaled; T * S would leave the center in
-    // model units and move this scene outside the camera frustum.
+    // Keep the imported scene centered and normalized. Per-node transforms
+    // are supplied through the draw push constants, after an object has been
+    // selected in the hierarchy.
     const glm::mat4 modelNormalization =
         glm::scale(
             glm::mat4(1.0f),
-            glm::vec3(modelScale_ * std::max(modelScaleFactor_, kMinimumModelScaleFactor))
+            glm::vec3(modelScale_)
         ) *
         glm::translate(glm::mat4(1.0f), -modelCenter_);
 
-    glm::vec3 rotationDegrees = modelRotationDegrees_;
-    if (autoRotate_) {
-        rotationDegrees.z += elapsedSeconds * rotationSpeedDegrees_;
-    }
-
-    const glm::mat4 rotation =
-        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.z), glm::vec3(0.0f, 0.0f, 1.0f)) *
-        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.y), glm::vec3(0.0f, 1.0f, 0.0f)) *
-        glm::rotate(glm::mat4(1.0f), glm::radians(rotationDegrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
-
-    ubo.model = glm::translate(glm::mat4(1.0f), modelTranslation_) *
-        rotation *
-        modelNormalization;
+    ubo.model = modelNormalization;
     ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
     ubo.view = glm::lookAt(
         glm::vec3(3.5f, 3.5f, 2.8f),
@@ -3151,8 +3166,6 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
     const VkExtent2D extent = swapChain_->extent();
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(extent.width);
@@ -3196,12 +3209,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         );
 
         MaterialPushConstants materialPushConstants{};
-        bool found = false;
-        materialPushConstants.nodeTransform = animationTransformForSceneNode(
-            part.nodeId,
-            elapsedSeconds,
-            found
-        );
+        materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
         materialPushConstants.baseColor = material.baseColor;
         materialPushConstants.textureFlags =
             (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
@@ -3545,6 +3553,9 @@ void Renderer::drawFrame() {
     }
 
     buildImGuiFrame();
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    updateSceneNodeTransforms(elapsedSeconds);
     updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
