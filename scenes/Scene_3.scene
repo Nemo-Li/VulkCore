@@ -1,0 +1,9 @@
+# VulkCore scene
+sun_present 0
+camera_position 0 0 4.26000023
+ambient_color 1 1 1
+ambient_intensity 1
+sun_light_direction 0.403169602 0.541572988 0.737667263
+sun_light_color 1 1 1
+sun_light_intensity 3.51999998
+shader_demo 0 1 0.5 0.5 0

@@ -85,6 +85,8 @@ Resource Manager 导入，或通过场景文件恢复。
 三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；同时保留 FBX 原始节点
 层级，供右侧 Model Hierarchy 面板展示。没有 UV 的顶点会使用 `(0, 0)`。每个材质对应
 一个绘制分段，材质纹理不可用时使用其 Base Color/Diffuse 颜色。
+模型中的骨骼绑定、骨骼层级、动画 Clip、节点通道和 Position/Rotation/Scale 关键帧也会
+一并解析并缓存，Resource Manager 的 Inspector 会显示对应摘要。
 渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
 CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 pkg-config
@@ -113,6 +115,7 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 - 节点变换、三角化和平滑法线生成
 - 首个 UV 通道、顶点颜色和材质信息读取
 - FBX 原始节点层级保留，供右侧 Model Hierarchy 面板展示
+- 骨骼、绑定影响、动画 Clip/Channel 和 Position/Rotation/Scale 关键帧读取
 
 没有 UV 的顶点会使用 `(0, 0)`。每个材质对应一个绘制分段，材质纹理不可用时使用其
 Base Color/Diffuse 颜色。渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于
@@ -166,6 +169,8 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 - 选中任意 Model 资源后，路径会自动填入上方 Import Model 输入框，右侧 Inspector 和中间
   层级面板会展开显示该模型的导入信息；模型解析结果会缓存，重复切换时直接显示缓存信息；
   点击 `Import Model` 可将其追加到当前场景。
+- Model Inspector 会展示骨骼数量、蒙皮网格/权重、骨骼父子关系，以及每个动画 Clip 的时长、
+  通道和三类关键帧数量。
 - 选中 Model 后，Materials 和 Textures 会切换到该模型自己的资源；材质支持编辑 Base Color、
   Normal、Specular 三个纹理槽。模型同级 `tex` 文件夹中的图片会递归出现在候选列表，也可以
   手动输入图片路径；修改后的材质配置会随当前场景保存，并同步到该模型的所有场景实例。

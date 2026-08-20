@@ -472,6 +472,24 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         }
         return material.embeddedTexture;
     };
+    const auto animationBehaviorLabel = [](AnimationBehavior behavior) {
+        switch (behavior) {
+        case AnimationBehavior::Default:
+            return "Default";
+        case AnimationBehavior::Constant:
+            return "Constant";
+        case AnimationBehavior::Linear:
+            return "Linear";
+        case AnimationBehavior::Repeat:
+            return "Repeat";
+        }
+        return "Default";
+    };
+    const auto animationChannelKeyCount = [](const SkeletalAnimationChannel& channel) {
+        return channel.positionKeys.size() +
+            channel.rotationKeys.size() +
+            channel.scalingKeys.size();
+    };
     const MeshData* selectedResourceModelData = selectedResourceType_ == ResourceSelectionType::Model
         ? selectedModelPreview_.get()
         : nullptr;
@@ -768,6 +786,157 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             ImGui::Bullet();
             ImGui::SameLine();
             ImGui::TextWrapped("Base Color, Normal, and Specular texture slots");
+
+            ImGui::SeparatorText("Skeleton");
+            if (modelData.skeletonBones.empty()) {
+                ImGui::TextWrapped("No skeletal skinning data found in this model.");
+            } else {
+                ImGui::Text(
+                    "%zu bones / %zu skinned meshes / %zu skin weights",
+                    modelData.skeletonBones.size(),
+                    modelData.skinnedMeshCount,
+                    modelData.skinWeightCount
+                );
+                if (ImGui::BeginTable(
+                        "ResourceSkeletonBones",
+                        4,
+                        ImGuiTableFlags_Borders |
+                            ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_SizingStretchProp
+                    )) {
+                    ImGui::TableSetupColumn("Bone");
+                    ImGui::TableSetupColumn("Node ID");
+                    ImGui::TableSetupColumn("Parent bone");
+                    ImGui::TableSetupColumn("Influences");
+                    ImGui::TableHeadersRow();
+                    for (std::size_t boneIndex = 0;
+                         boneIndex < modelData.skeletonBones.size();
+                         ++boneIndex) {
+                        const SkeletonBone& bone = modelData.skeletonBones[boneIndex];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::TextWrapped("%s", bone.name.c_str());
+                        ImGui::TableSetColumnIndex(1);
+                        if (bone.nodeId == std::numeric_limits<std::uint32_t>::max()) {
+                            ImGui::TextUnformatted("unresolved");
+                        } else {
+                            ImGui::Text("%u", bone.nodeId);
+                        }
+                        ImGui::TableSetColumnIndex(2);
+                        if (bone.parentIndex >= 0 &&
+                            static_cast<std::size_t>(bone.parentIndex) <
+                                modelData.skeletonBones.size()) {
+                            ImGui::TextWrapped(
+                                "%s",
+                                modelData.skeletonBones[
+                                    static_cast<std::size_t>(bone.parentIndex)
+                                ].name.c_str()
+                            );
+                        } else {
+                            ImGui::TextUnformatted("-");
+                        }
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::Text("%u", bone.influenceCount);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+
+            ImGui::SeparatorText("Skeletal Animations");
+            if (modelData.skeletalAnimations.empty()) {
+                ImGui::TextWrapped("No skeletal animation clips found in this model.");
+            } else {
+                ImGui::Text(
+                    "%zu clip(s)",
+                    modelData.skeletalAnimations.size()
+                );
+                for (std::size_t animationIndex = 0;
+                     animationIndex < modelData.skeletalAnimations.size();
+                     ++animationIndex) {
+                    const SkeletalAnimationClip& animation =
+                        modelData.skeletalAnimations[animationIndex];
+                    ImGui::PushID(static_cast<int>(animationIndex));
+                    const std::string animationLabel = animation.name.empty()
+                        ? "Animation " + std::to_string(animationIndex)
+                        : animation.name;
+                    if (ImGui::TreeNodeEx(
+                            animationLabel.c_str(),
+                            ImGuiTreeNodeFlags_SpanAvailWidth
+                        )) {
+                        std::size_t totalKeyCount = 0;
+                        for (const SkeletalAnimationChannel& channel : animation.channels) {
+                            totalKeyCount += animationChannelKeyCount(channel);
+                        }
+                        if (animation.ticksPerSecond > 0.0) {
+                            ImGui::Text(
+                                "Duration: %.3f s (%.3f ticks) / %.3f ticks per second",
+                                animation.durationTicks / animation.ticksPerSecond,
+                                animation.durationTicks,
+                                animation.ticksPerSecond
+                            );
+                        } else {
+                            ImGui::Text(
+                                "Duration: %.3f ticks / ticks per second unspecified",
+                                animation.durationTicks
+                            );
+                        }
+                        ImGui::Text(
+                            "%zu channels / %zu keyframes / %u morph channels",
+                            animation.channels.size(),
+                            totalKeyCount,
+                            animation.meshChannelCount
+                        );
+                        if (ImGui::BeginTable(
+                                "ResourceAnimationChannels",
+                                6,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp
+                            )) {
+                            ImGui::TableSetupColumn("Channel");
+                            ImGui::TableSetupColumn("Bone");
+                            ImGui::TableSetupColumn("Position");
+                            ImGui::TableSetupColumn("Rotation");
+                            ImGui::TableSetupColumn("Scale");
+                            ImGui::TableSetupColumn("Pre / post");
+                            ImGui::TableHeadersRow();
+                            for (const SkeletalAnimationChannel& channel : animation.channels) {
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::TextWrapped("%s", channel.nodeName.c_str());
+                                ImGui::TableSetColumnIndex(1);
+                                if (channel.boneIndex >= 0 &&
+                                    static_cast<std::size_t>(channel.boneIndex) <
+                                        modelData.skeletonBones.size()) {
+                                    ImGui::TextWrapped(
+                                        "%s",
+                                        modelData.skeletonBones[
+                                            static_cast<std::size_t>(channel.boneIndex)
+                                        ].name.c_str()
+                                    );
+                                } else {
+                                    ImGui::TextUnformatted("node only");
+                                }
+                                ImGui::TableSetColumnIndex(2);
+                                ImGui::Text("%zu", channel.positionKeys.size());
+                                ImGui::TableSetColumnIndex(3);
+                                ImGui::Text("%zu", channel.rotationKeys.size());
+                                ImGui::TableSetColumnIndex(4);
+                                ImGui::Text("%zu", channel.scalingKeys.size());
+                                ImGui::TableSetColumnIndex(5);
+                                ImGui::Text(
+                                    "%s / %s",
+                                    animationBehaviorLabel(channel.preBehavior),
+                                    animationBehaviorLabel(channel.postBehavior)
+                                );
+                            }
+                            ImGui::EndTable();
+                        }
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+            }
 
             if (!modelData.materials.empty()) {
                 ImGui::SeparatorText("Materials in Model");
