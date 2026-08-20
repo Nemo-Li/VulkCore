@@ -298,6 +298,40 @@ void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& mate
     }
 }
 
+void saveParticleSystemSettings(
+    std::ostream& file,
+    std::uint32_t nodeId,
+    const ParticleSystemSettings& settings
+) {
+    file << "particle_system_object " << nodeId << ' '
+         << (settings.enabled ? 1 : 0) << ' '
+         << (settings.playOnAwake ? 1 : 0) << ' '
+         << (settings.looping ? 1 : 0) << ' '
+         << settings.maxParticles << ' '
+         << settings.duration << ' '
+         << settings.emissionRate << ' '
+         << settings.startLifetime << ' '
+         << settings.lifetimeRandomness << ' '
+         << settings.startSpeed << ' '
+         << settings.speedRandomness << ' '
+         << settings.startSize << ' '
+         << settings.endSize << ' '
+         << settings.rotationSpeedDegrees << ' '
+         << settings.gravityModifier << ' '
+         << settings.position.x << ' ' << settings.position.y << ' ' << settings.position.z << ' '
+         << settings.emissionDirection.x << ' ' << settings.emissionDirection.y << ' '
+         << settings.emissionDirection.z << ' '
+         << settings.spreadDegrees << ' '
+         << settings.shapeRadius << ' '
+         << static_cast<int>(settings.shape) << ' '
+         << static_cast<int>(settings.blendMode) << ' '
+         << settings.startColor.r << ' ' << settings.startColor.g << ' '
+         << settings.startColor.b << ' ' << settings.startColor.a << ' '
+         << settings.endColor.r << ' ' << settings.endColor.g << ' '
+         << settings.endColor.b << ' ' << settings.endColor.a << ' '
+         << std::quoted(settings.texturePath.string()) << "\n";
+}
+
 std::string shaderConfigToken(const std::string& token) {
     return token == "-" ? std::string{} : token;
 }
@@ -350,6 +384,31 @@ glm::mat4 Renderer::nodeManualTransform(const ModelNode& node) const {
         ? glm::translate(glm::mat4(1.0f), modelCenter_)
         : node.globalTransform;
     return pivot * localTransform * glm::inverse(pivot);
+}
+
+glm::mat4 Renderer::particleObjectTransform(const ModelNode& node) const {
+    const glm::mat4 rotation =
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.z),
+            glm::vec3(0.0f, 0.0f, 1.0f)
+        ) *
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.y),
+            glm::vec3(0.0f, 1.0f, 0.0f)
+        ) *
+        glm::rotate(
+            glm::mat4(1.0f),
+            glm::radians(node.transformRotationDegrees.x),
+            glm::vec3(1.0f, 0.0f, 0.0f)
+        );
+    return glm::translate(glm::mat4(1.0f), node.transformTranslation) *
+        rotation *
+        glm::scale(
+            glm::mat4(1.0f),
+            glm::vec3(std::max(node.transformScaleFactor, kMinimumModelScaleFactor))
+        );
 }
 
 glm::mat4 Renderer::nodeAnimationTransform(
@@ -452,7 +511,9 @@ void Renderer::drawModelHierarchy(ModelNode& node) {
     const bool isRootNode = &node == &meshData_.hierarchy;
     const bool nodeSelected = selectedModelNode_ == &node;
     std::string label = node.name.empty() ? "<unnamed>" : node.name;
-    if (!isRootNode && node.meshCount > 0) {
+    if (node.objectType == SceneObjectType::ParticleSystem) {
+        label += "  [Particle System]";
+    } else if (!isRootNode && node.meshCount > 0) {
         label += "  [" + std::to_string(node.meshCount) +
             (node.meshCount == 1 ? " mesh]" : " meshes]");
     }
@@ -856,14 +917,17 @@ Renderer::Renderer(GLFWwindow* window)
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createBoundingBoxPipeline();
+    createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
     createMeshData();
     createSunMesh();
     loadTransformSettings();
     createVertexBuffer();
     createIndexBuffer();
+    createParticleBuffer();
     createBoundingBoxBuffers();
     createMaterialTextures();
+    createParticleTextures();
     createUniformBuffers();
     createDescriptorPool();
     createDescriptorSets();
@@ -886,10 +950,12 @@ Renderer::~Renderer() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
+    particleTextures_.clear();
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();
     vertexBuffer_.reset();
+    particleVertexBuffers_.clear();
     boundingBoxVertexBuffers_.clear();
 
     for (size_t i = 0; i < imageAvailableSemaphores_.size(); ++i) {
@@ -915,6 +981,12 @@ Renderer::~Renderer() {
     }
     if (boundingBoxPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), boundingBoxPipeline_, nullptr);
+    }
+    if (particleAlphaPipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(context_->device(), particleAlphaPipeline_, nullptr);
+    }
+    if (particleAdditivePipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(context_->device(), particleAdditivePipeline_, nullptr);
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
@@ -1041,6 +1113,10 @@ void Renderer::loadTransformSettings() {
         std::uint32_t nodeId = 0;
         std::int32_t materialIndex = -1;
     };
+    struct PendingParticleSystem {
+        std::uint32_t nodeId = 0;
+        ParticleSystemSettings settings;
+    };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
     std::vector<PendingNodeTransform> pendingNodeTransforms;
     std::vector<PendingNodeShaders> pendingNodeShaders;
@@ -1048,6 +1124,7 @@ void Renderer::loadTransformSettings() {
     std::vector<PendingMaterial> pendingMaterials;
     std::vector<PendingMaterialTextures> pendingMaterialTextures;
     std::vector<PendingNodeMaterial> pendingNodeMaterials;
+    std::vector<PendingParticleSystem> pendingParticleSystems;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -1241,6 +1318,47 @@ void Renderer::loadTransformSettings() {
                 valid = false;
                 break;
             }
+        } else if (key == "particle_system_object") {
+            int enabled = 0;
+            int playOnAwake = 0;
+            int looping = 0;
+            int shape = 0;
+            int blendMode = 0;
+            PendingParticleSystem pending;
+            ParticleSystemSettings& settings = pending.settings;
+            std::string particleLine;
+            std::getline(file, particleLine);
+            std::istringstream particleStream(particleLine);
+            if (!(particleStream >> pending.nodeId >> enabled >> playOnAwake >> looping
+                  >> settings.maxParticles >> settings.duration >> settings.emissionRate
+                  >> settings.startLifetime >> settings.lifetimeRandomness >> settings.startSpeed
+                  >> settings.speedRandomness >> settings.startSize >> settings.endSize
+                  >> settings.rotationSpeedDegrees >> settings.gravityModifier
+                  >> settings.position.x >> settings.position.y >> settings.position.z
+                  >> settings.emissionDirection.x >> settings.emissionDirection.y
+                  >> settings.emissionDirection.z >> settings.spreadDegrees >> settings.shapeRadius
+                  >> shape >> blendMode >> settings.startColor.r >> settings.startColor.g
+                  >> settings.startColor.b >> settings.startColor.a >> settings.endColor.r
+                  >> settings.endColor.g >> settings.endColor.b >> settings.endColor.a) ||
+                (enabled != 0 && enabled != 1) ||
+                (playOnAwake != 0 && playOnAwake != 1) ||
+                (looping != 0 && looping != 1) ||
+                shape < 0 || shape > static_cast<int>(ParticleSystemSettings::Shape::Cone) ||
+                blendMode < 0 ||
+                blendMode > static_cast<int>(ParticleSystemSettings::BlendMode::Additive)) {
+                valid = false;
+                break;
+            }
+            std::string texturePath;
+            if (particleStream >> std::quoted(texturePath)) {
+                settings.texturePath = std::move(texturePath);
+            }
+            settings.enabled = enabled != 0;
+            settings.playOnAwake = playOnAwake != 0;
+            settings.looping = looping != 0;
+            settings.shape = static_cast<ParticleSystemSettings::Shape>(shape);
+            settings.blendMode = static_cast<ParticleSystemSettings::BlendMode>(blendMode);
+            pendingParticleSystems.push_back(std::move(pending));
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -1320,8 +1438,39 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(pending.material.waterShaderSettings.waveHeight);
         }
     );
+    const auto finiteVector = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const auto finiteColor = [](const glm::vec4& value) {
+        return std::isfinite(value.r) && std::isfinite(value.g) &&
+            std::isfinite(value.b) && std::isfinite(value.a);
+    };
+    const bool finiteParticleValues = std::all_of(
+        pendingParticleSystems.begin(),
+        pendingParticleSystems.end(),
+        [&finiteVector, &finiteColor](const PendingParticleSystem& pending) {
+            const ParticleSystemSettings& settings = pending.settings;
+            return std::isfinite(settings.duration) &&
+                std::isfinite(settings.emissionRate) &&
+                std::isfinite(settings.startLifetime) &&
+                std::isfinite(settings.lifetimeRandomness) &&
+                std::isfinite(settings.startSpeed) &&
+                std::isfinite(settings.speedRandomness) &&
+                std::isfinite(settings.startSize) &&
+                std::isfinite(settings.endSize) &&
+                std::isfinite(settings.rotationSpeedDegrees) &&
+                std::isfinite(settings.gravityModifier) &&
+                finiteVector(settings.position) &&
+                finiteVector(settings.emissionDirection) &&
+                std::isfinite(settings.spreadDegrees) &&
+                std::isfinite(settings.shapeRadius) &&
+                finiteColor(settings.startColor) &&
+                finiteColor(settings.endColor);
+        }
+    );
     if (!valid || !finiteValues || !finiteLightingValues || !finiteNodeValues ||
-        !finiteNodeTransformValues || !finiteWaterValues || !finiteMaterialValues) {
+        !finiteNodeTransformValues || !finiteWaterValues || !finiteMaterialValues ||
+        !finiteParticleValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
         return;
@@ -1337,6 +1486,35 @@ void Renderer::loadTransformSettings() {
     }
     sunLightColor_ = glm::clamp(sunLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
     sunLightIntensity_ = std::clamp(sunLightIntensity, 0.0f, 4.0f);
+    for (PendingParticleSystem& pending : pendingParticleSystems) {
+        ModelNode* node = findSceneNodeById(meshData_, pending.nodeId);
+        if (node == nullptr) {
+            if (particleSystems_.size() >= kMaximumParticleSystems) {
+                continue;
+            }
+            ModelNode particleNode;
+            particleNode.name = "Particle System " + std::to_string(pending.nodeId);
+            particleNode.nodeId = pending.nodeId;
+            particleNode.objectType = SceneObjectType::ParticleSystem;
+            meshData_.additionalNodes.push_back(std::move(particleNode));
+            node = &meshData_.additionalNodes.back();
+        }
+        if (node->objectType != SceneObjectType::ParticleSystem) {
+            continue;
+        }
+        if (!particleSystems_.contains(node->nodeId) &&
+            particleSystems_.size() >= kMaximumParticleSystems) {
+            continue;
+        }
+        auto [systemIt, inserted] = particleSystems_.try_emplace(node->nodeId);
+        (void)inserted;
+        systemIt->second.setSettings(pending.settings);
+        if (pending.settings.enabled && pending.settings.playOnAwake) {
+            systemIt->second.restart();
+        } else {
+            systemIt->second.stop();
+        }
+    }
     for (PendingMaterial& pending : pendingMaterials) {
         pending.material.baseColor = glm::clamp(
             pending.material.baseColor,
@@ -1528,6 +1706,15 @@ void Renderer::saveTransformSettings() const {
          << "sun_light_color " << sunLightColor_.r << ' '
          << sunLightColor_.g << ' ' << sunLightColor_.b << "\n"
          << "sun_light_intensity " << sunLightIntensity_ << "\n";
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        if (node.objectType != SceneObjectType::ParticleSystem) {
+            continue;
+        }
+        const auto systemIt = particleSystems_.find(node.nodeId);
+        if (systemIt != particleSystems_.end()) {
+            saveParticleSystemSettings(file, node.nodeId, systemIt->second.settings());
+        }
+    }
     saveNodeTransformSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeTransformSettings(file, node);
@@ -1540,6 +1727,221 @@ void Renderer::saveTransformSettings() const {
     saveNodeMaterialSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeMaterialSettings(file, node);
+    }
+}
+
+void Renderer::createParticleSystemObject() {
+    if (particleSystems_.size() >= kMaximumParticleSystems) {
+        return;
+    }
+    std::uint32_t maximumNodeId = maximumModelNodeId(meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        maximumNodeId = std::max(maximumNodeId, maximumModelNodeId(node));
+    }
+
+    ModelNode particleNode;
+    particleNode.name = "Particle System " + std::to_string(maximumNodeId + 1);
+    particleNode.nodeId = maximumNodeId + 1;
+    particleNode.objectType = SceneObjectType::ParticleSystem;
+    meshData_.additionalNodes.push_back(std::move(particleNode));
+    ModelNode& createdNode = meshData_.additionalNodes.back();
+    particleSystems_.try_emplace(createdNode.nodeId);
+    createParticleDescriptorSets(createdNode.nodeId);
+    selectModelNode(createdNode);
+    saveTransformSettings();
+}
+
+void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings) {
+    const auto systemIt = particleSystems_.find(node.nodeId);
+    if (systemIt == particleSystems_.end()) {
+        ImGui::TextDisabled("Particle component is not available for this object.");
+        return;
+    }
+    ParticleSystem& particleSystem = systemIt->second;
+    ParticleSystemSettings& settings = particleSystem.settings();
+    bool settingsChanged = false;
+    if (particleTexturePathNodeId_ != node.nodeId) {
+        particleTexturePathNodeId_ = node.nodeId;
+        particleTexturePathBuffer_.fill('\0');
+        const std::string path = settings.texturePath.string();
+        const std::size_t copyCount = std::min(
+            path.size(),
+            particleTexturePathBuffer_.size() - 1
+        );
+        std::copy_n(path.data(), copyCount, particleTexturePathBuffer_.data());
+    }
+
+    ImGui::SeparatorText("Particle System");
+    ImGui::Text("GameObject: %s", node.name.c_str());
+    ImGui::TextDisabled("CPU simulation + camera-facing billboard batch");
+
+    ImGui::SeparatorText("GameObject Transform");
+    ImGui::DragFloat3(
+        "Object position",
+        &node.transformTranslation.x,
+        0.01f,
+        -2.0f,
+        2.0f,
+        "%.2f"
+    );
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat3(
+        "Object rotation",
+        &node.transformRotationDegrees.x,
+        1.0f,
+        -360.0f,
+        360.0f,
+        "%.1f deg"
+    );
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat(
+        "Object scale",
+        &node.transformScaleFactor,
+        kMinimumModelScaleFactor,
+        kMaximumModelScaleFactor,
+        "%.2fx"
+    );
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+
+    bool enabled = settings.enabled;
+    if (ImGui::Checkbox("Enabled", &enabled)) {
+        particleSystem.setEnabled(enabled);
+        shouldSaveSettings = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("Alive: %zu", particleSystem.aliveCount());
+    bool playOnAwake = settings.playOnAwake;
+    if (ImGui::Checkbox("Play on awake", &playOnAwake)) {
+        settings.playOnAwake = playOnAwake;
+        shouldSaveSettings = true;
+    }
+    bool looping = settings.looping;
+    if (ImGui::Checkbox("Looping", &looping)) {
+        settings.looping = looping;
+        settingsChanged = true;
+    }
+    if (ImGui::Button("Play")) {
+        particleSystem.play();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) {
+        particleSystem.stop();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Restart")) {
+        particleSystem.restart();
+    }
+
+    int maxParticles = static_cast<int>(settings.maxParticles);
+    if (ImGui::SliderInt("Max particles", &maxParticles, 1, static_cast<int>(
+            ParticleSystem::kMaximumSupportedParticles))) {
+        settings.maxParticles = static_cast<std::uint32_t>(maxParticles);
+        settingsChanged = true;
+    }
+    ImGui::SliderFloat("Duration", &settings.duration, 0.05f, 60.0f, "%.2f s");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Emission rate", &settings.emissionRate, 0.0f, 200.0f, "%.1f /s");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SeparatorText("Main Module");
+    ImGui::SliderFloat("Start lifetime", &settings.startLifetime, 0.02f, 20.0f, "%.2f s");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Lifetime randomness", &settings.lifetimeRandomness, 0.0f, 1.0f, "%.2f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Start speed", &settings.startSpeed, 0.0f, 8.0f, "%.2f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Speed randomness", &settings.speedRandomness, 0.0f, 1.0f, "%.2f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Gravity", &settings.gravityModifier, -4.0f, 4.0f, "%.2f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat3(
+        "Position",
+        &settings.position.x,
+        0.01f,
+        -2.0f,
+        2.0f,
+        "%.2f"
+    );
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SeparatorText("Shape");
+    const char* shapeLabels[] = {"Point", "Sphere", "Cone"};
+    int shape = static_cast<int>(settings.shape);
+    if (ImGui::Combo("Emitter shape", &shape, shapeLabels, IM_ARRAYSIZE(shapeLabels))) {
+        settings.shape = static_cast<ParticleSystemSettings::Shape>(shape);
+        settingsChanged = true;
+    }
+    ImGui::SliderFloat("Spread", &settings.spreadDegrees, 0.0f, 89.0f, "%.1f deg");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat3(
+        "Direction",
+        &settings.emissionDirection.x,
+        0.01f,
+        -1.0f,
+        1.0f,
+        "%.2f"
+    );
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Shape radius", &settings.shapeRadius, 0.0f, 1.0f, "%.2f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::SeparatorText("Over Lifetime");
+    ImGui::SliderFloat("Start size", &settings.startSize, 0.001f, 0.5f, "%.3f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("End size", &settings.endSize, 0.001f, 0.5f, "%.3f");
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat(
+        "Rotation speed",
+        &settings.rotationSpeedDegrees,
+        -360.0f,
+        360.0f,
+        "%.1f deg/s"
+    );
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::ColorEdit4("Start color", &settings.startColor.x);
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::ColorEdit4("End color", &settings.endColor.x);
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
+
+    const char* blendLabels[] = {"Alpha", "Additive"};
+    int blendMode = static_cast<int>(settings.blendMode);
+    if (ImGui::Combo("Blend mode", &blendMode, blendLabels, IM_ARRAYSIZE(blendLabels))) {
+        settings.blendMode = static_cast<ParticleSystemSettings::BlendMode>(blendMode);
+        settingsChanged = true;
+    }
+
+    ImGui::SeparatorText("Renderer");
+    ImGui::InputText(
+        "Particle texture",
+        particleTexturePathBuffer_.data(),
+        particleTexturePathBuffer_.size()
+    );
+    if (ImGui::Button("Load particle texture")) {
+        settings.texturePath = particleTexturePathBuffer_.data();
+        loadParticleTexture(node.nodeId);
+        shouldSaveSettings = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear particle texture")) {
+        settings.texturePath.clear();
+        particleTexturePathBuffer_.fill('\0');
+        loadParticleTexture(node.nodeId);
+        shouldSaveSettings = true;
+    }
+    if (particleTextures_.contains(node.nodeId)) {
+        ImGui::TextDisabled("Texture loaded; RGBA is multiplied by particle color.");
+    } else {
+        ImGui::TextDisabled("No valid texture; using the soft-circle fallback.");
+    }
+    if (ImGui::Button("Reset particle settings")) {
+        particleSystem.setSettings(ParticleSystemSettings{});
+        particleTexturePathBuffer_.fill('\0');
+        loadParticleTexture(node.nodeId);
+        shouldSaveSettings = true;
+    }
+    if (settingsChanged) {
+        particleSystem.setSettings(ParticleSystem::sanitizeSettings(settings));
+        shouldSaveSettings = true;
     }
 }
 
@@ -1626,81 +2028,85 @@ void Renderer::buildImGuiFrame() {
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
         ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
-        if (selectedModelNode_->nodeId == sunNodeId_) {
-            ImGui::TextDisabled("Generated spherical sun mesh");
-        }
-        const bool isNamedMeshNode = selectedModelNode_->meshCount > 0 &&
-            !selectedModelNode_->name.empty() &&
-            selectedModelNode_->name != "<unnamed>";
-        if (isNamedMeshNode) {
-            ImGui::TextDisabled("Position is in scene units; rotation and scale use local axes.");
-            ImGui::DragFloat3(
-                "Position (X/Y/Z)",
-                &selectedModelNode_->transformTranslation.x,
-                0.01f,
-                -10.0f,
-                10.0f,
-                "%.2f"
+        if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
+            drawParticleSystemControls(*selectedModelNode_, shouldSaveTransformSettings);
+        } else {
+            if (selectedModelNode_->nodeId == sunNodeId_) {
+                ImGui::TextDisabled("Generated spherical sun mesh");
+            }
+            const bool isNamedMeshNode = selectedModelNode_->meshCount > 0 &&
+                !selectedModelNode_->name.empty() &&
+                selectedModelNode_->name != "<unnamed>";
+            if (isNamedMeshNode) {
+                ImGui::TextDisabled("Position is in scene units; rotation and scale use local axes.");
+                ImGui::DragFloat3(
+                    "Position (X/Y/Z)",
+                    &selectedModelNode_->transformTranslation.x,
+                    0.01f,
+                    -10.0f,
+                    10.0f,
+                    "%.2f"
+                );
+                shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::DragFloat3(
+                    "Rotation (X/Y/Z)",
+                    &selectedModelNode_->transformRotationDegrees.x,
+                    1.0f,
+                    -360.0f,
+                    360.0f,
+                    "%.1f deg"
+                );
+                shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::SliderFloat(
+                    "Scale",
+                    &selectedModelNode_->transformScaleFactor,
+                    kMinimumModelScaleFactor,
+                    kMaximumModelScaleFactor,
+                    "%.2fx"
+                );
+                shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+                if (ImGui::Button("Reset selected transform")) {
+                    selectedModelNode_->transformTranslation = glm::vec3(0.0f);
+                    selectedModelNode_->transformRotationDegrees = glm::vec3(0.0f);
+                    selectedModelNode_->transformScaleFactor = 1.0f;
+                    shouldSaveTransformSettings = true;
+                }
+            } else {
+                ImGui::TextDisabled("Transform is available for named mesh nodes only.");
+            }
+
+            ImGui::SeparatorText("Node Animation");
+            ImGui::Checkbox(
+                "Enable rotation animation",
+                &selectedModelNode_->rotationAnimationEnabled
             );
             shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
             ImGui::DragFloat3(
-                "Rotation (X/Y/Z)",
-                &selectedModelNode_->transformRotationDegrees.x,
+                "Initial rotation (X/Y/Z)",
+                &selectedModelNode_->rotationAnimationInitialDegrees.x,
                 1.0f,
                 -360.0f,
                 360.0f,
                 "%.1f deg"
             );
             shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::SliderFloat(
-                "Scale",
-                &selectedModelNode_->transformScaleFactor,
-                kMinimumModelScaleFactor,
-                kMaximumModelScaleFactor,
-                "%.2fx"
+            ImGui::DragFloat3(
+                "Rotation speed (X/Y/Z)",
+                &selectedModelNode_->rotationAnimationSpeedDegrees.x,
+                1.0f,
+                -360.0f,
+                360.0f,
+                "%.1f deg/s"
             );
             shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-            if (ImGui::Button("Reset selected transform")) {
-                selectedModelNode_->transformTranslation = glm::vec3(0.0f);
-                selectedModelNode_->transformRotationDegrees = glm::vec3(0.0f);
-                selectedModelNode_->transformScaleFactor = 1.0f;
+            if (ImGui::Button("Reset node animation")) {
+                selectedModelNode_->rotationAnimationEnabled = false;
+                selectedModelNode_->rotationAnimationInitialDegrees = glm::vec3(0.0f);
+                selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
                 shouldSaveTransformSettings = true;
             }
-        } else {
-            ImGui::TextDisabled("Transform is available for named mesh nodes only.");
+            drawNodeMaterialControls(*selectedModelNode_, shouldSaveTransformSettings);
         }
-
-        ImGui::SeparatorText("Node Animation");
-        ImGui::Checkbox(
-            "Enable rotation animation",
-            &selectedModelNode_->rotationAnimationEnabled
-        );
-        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::DragFloat3(
-            "Initial rotation (X/Y/Z)",
-            &selectedModelNode_->rotationAnimationInitialDegrees.x,
-            1.0f,
-            -360.0f,
-            360.0f,
-            "%.1f deg"
-        );
-        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::DragFloat3(
-            "Rotation speed (X/Y/Z)",
-            &selectedModelNode_->rotationAnimationSpeedDegrees.x,
-            1.0f,
-            -360.0f,
-            360.0f,
-            "%.1f deg/s"
-        );
-        shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        if (ImGui::Button("Reset node animation")) {
-            selectedModelNode_->rotationAnimationEnabled = false;
-            selectedModelNode_->rotationAnimationInitialDegrees = glm::vec3(0.0f);
-            selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
-            shouldSaveTransformSettings = true;
-        }
-        drawNodeMaterialControls(*selectedModelNode_, shouldSaveTransformSettings);
     } else {
         ImGui::TextDisabled("Select a scene object to edit its transform.");
     }
@@ -1718,7 +2124,16 @@ void Renderer::buildImGuiFrame() {
     ));
     ImGui::BeginChild("ModelHierarchy", ImVec2(kRightPanelWidth, 0.0f), true);
     ImGui::TextUnformatted("Scene Objects");
-    ImGui::TextDisabled("Imported model and generated meshes");
+    ImGui::TextDisabled("Imported model and generated GameObjects");
+    const bool canCreateParticleSystem = particleSystems_.size() < kMaximumParticleSystems;
+    ImGui::BeginDisabled(!canCreateParticleSystem);
+    if (ImGui::Button("Create Particle System")) {
+        createParticleSystemObject();
+    }
+    ImGui::EndDisabled();
+    if (!canCreateParticleSystem) {
+        ImGui::TextDisabled("Particle System limit reached (%u)", kMaximumParticleSystems);
+    }
     ImGui::Separator();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!meshData_.hierarchy.name.empty()) {
@@ -2470,6 +2885,133 @@ void Renderer::createGraphicsPipeline() {
     graphicsPipeline_ = createMaterialGraphicsPipeline(ShaderConfiguration{}, MaterialData{});
 }
 
+void Renderer::createParticlePipelines() {
+    particleAlphaPipeline_ = createParticlePipeline(false);
+    particleAdditivePipeline_ = createParticlePipeline(true);
+}
+
+VkPipeline Renderer::createParticlePipeline(bool additiveBlending) {
+    VkPipelineShaderStageCreateInfo vertexStage{};
+    vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertexStage.module = shaderModule("shader_particle.vert");
+    vertexStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragmentStage{};
+    fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragmentStage.module = shaderModule("shader_particle.frag");
+    fragmentStage.pName = "main";
+    const std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {
+        vertexStage,
+        fragmentStage
+    };
+
+    const VkVertexInputBindingDescription bindingDescription =
+        ParticleVertex::bindingDescription();
+    const auto attributeDescriptions = ParticleVertex::attributeDescriptions();
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount =
+        static_cast<std::uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = additiveBlending
+        ? VK_BLEND_FACTOR_ONE
+        : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::array<VkDynamicState, 2> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = static_cast<std::uint32_t>(shaderStages.size());
+    pipelineInfo.pStages = shaderStages.data();
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout_;
+    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.subpass = 0;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(
+            context_->device(),
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &pipeline
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create particle graphics pipeline");
+    }
+    return pipeline;
+}
+
 void Renderer::createBoundingBoxPipeline() {
     const std::filesystem::path shaderDirectory(kShaderBinaryDirectory);
     const auto vertShaderCode = readBinaryFile(shaderDirectory / "shader_bounding_box.vert.spv");
@@ -2795,6 +3337,93 @@ void Renderer::createIndexBuffer() {
     context_->copyBuffer(indexStagingBuffer.handle(), indexBuffer_->handle(), bufferSize);
 }
 
+void Renderer::createParticleBuffer() {
+    const VkDeviceSize bufferSize = sizeof(ParticleVertex) *
+        ParticleSystem::kMaximumSupportedParticles * ParticleSystem::kVerticesPerParticle *
+        kMaximumParticleSystems;
+    particleVertexBuffers_.resize(kMaxFramesInFlight);
+    for (auto& particleVertexBuffer : particleVertexBuffers_) {
+        particleVertexBuffer = std::make_unique<Buffer>(
+            *context_,
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+    }
+}
+
+void Renderer::updateParticleBuffer() {
+    if (currentFrame_ >= particleVertexBuffers_.size() || particleVertices_.empty()) {
+        return;
+    }
+    particleVertexBuffers_[currentFrame_]->upload(
+        particleVertices_.data(),
+        sizeof(ParticleVertex) * particleVertices_.size()
+    );
+}
+
+void Renderer::updateParticleSystems(
+    float deltaSeconds,
+    const glm::vec3& cameraRight,
+    const glm::vec3& cameraUp
+) {
+    particleVertices_.clear();
+    particleDrawRanges_.clear();
+    const std::size_t maximumVertices =
+        static_cast<std::size_t>(ParticleSystem::kMaximumSupportedParticles) *
+        ParticleSystem::kVerticesPerParticle * kMaximumParticleSystems;
+    particleVertices_.reserve(maximumVertices);
+
+    const auto updateNode = [this, deltaSeconds, &cameraRight, &cameraUp](
+                                const auto& self,
+                                const ModelNode& node
+                            ) -> void {
+        if (node.objectType == SceneObjectType::ParticleSystem) {
+            const auto systemIt = particleSystems_.find(node.nodeId);
+            if (systemIt != particleSystems_.end()) {
+                ParticleSystem& system = systemIt->second;
+                system.update(deltaSeconds);
+                system.buildVertices(cameraRight, cameraUp);
+
+                const std::vector<ParticleVertex>& sourceVertices = system.vertices();
+                const std::size_t availableVertices = maximumVertices - particleVertices_.size();
+                std::size_t copiedVertexCount = std::min(
+                    sourceVertices.size(),
+                    availableVertices
+                );
+                copiedVertexCount -= copiedVertexCount % ParticleSystem::kVerticesPerParticle;
+                if (copiedVertexCount > 0) {
+                    ParticleDrawRange range;
+                    range.nodeId = node.nodeId;
+                    range.firstVertex = static_cast<std::uint32_t>(particleVertices_.size());
+                    range.vertexCount = static_cast<std::uint32_t>(copiedVertexCount);
+                    range.blendMode = system.settings().blendMode;
+                    const glm::mat4 objectTransform = particleObjectTransform(node);
+                    particleDrawRanges_.push_back(range);
+                    particleVertices_.reserve(
+                        particleVertices_.size() + copiedVertexCount
+                    );
+                    for (std::size_t vertexIndex = 0; vertexIndex < copiedVertexCount; ++vertexIndex) {
+                        ParticleVertex vertex = sourceVertices[vertexIndex];
+                        vertex.position = glm::vec3(
+                            objectTransform * glm::vec4(vertex.position, 1.0f)
+                        );
+                        particleVertices_.push_back(vertex);
+                    }
+                }
+            }
+        }
+        for (const ModelNode& child : node.children) {
+            self(self, child);
+        }
+    };
+
+    updateNode(updateNode, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        updateNode(updateNode, node);
+    }
+}
+
 void Renderer::createMaterialTextures() {
     materialTextures_.resize(meshData_.materials.size());
     normalTextures_.resize(meshData_.materials.size());
@@ -2859,7 +3488,7 @@ void Renderer::createMaterialTextures() {
             normalTextures_[materialIndex] == nullptr;
     }
 
-    if (needsWhiteFallbackTexture || materialTextures_.empty()) {
+    if (needsWhiteFallbackTexture || materialTextures_.empty() || fallbackTexture_ == nullptr) {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
         fallbackTexture_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1);
     }
@@ -2874,6 +3503,48 @@ void Renderer::createMaterialTextures() {
     }
 }
 
+void Renderer::createParticleTextures() {
+    particleTextures_.clear();
+    for (const auto& [nodeId, system] : particleSystems_) {
+        const std::filesystem::path& texturePath = system.settings().texturePath;
+        if (texturePath.empty()) {
+            continue;
+        }
+        try {
+            particleTextures_.emplace(
+                nodeId,
+                std::make_unique<Texture>(*context_, texturePath)
+            );
+        } catch (const std::exception& error) {
+            std::cerr << "warning: failed to load particle texture for node "
+                      << nodeId << ": " << error.what() << '\n';
+        }
+    }
+}
+
+void Renderer::loadParticleTexture(std::uint32_t nodeId) {
+    const auto systemIt = particleSystems_.find(nodeId);
+    if (systemIt == particleSystems_.end()) {
+        return;
+    }
+
+    context_->waitIdle();
+    particleTextures_.erase(nodeId);
+    const std::filesystem::path& texturePath = systemIt->second.settings().texturePath;
+    if (!texturePath.empty()) {
+        try {
+            particleTextures_.emplace(
+                nodeId,
+                std::make_unique<Texture>(*context_, texturePath)
+            );
+        } catch (const std::exception& error) {
+            std::cerr << "warning: failed to load particle texture for node "
+                      << nodeId << ": " << error.what() << '\n';
+        }
+    }
+    updateParticleTextureDescriptors(nodeId);
+}
+
 void Renderer::rebuildMaterialResources() {
     context_->waitIdle();
     materialTextures_.clear();
@@ -2882,6 +3553,7 @@ void Renderer::rebuildMaterialResources() {
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     descriptorSets_.clear();
+    particleDescriptorSets_.clear();
     if (descriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
         descriptorPool_ = VK_NULL_HANDLE;
@@ -2907,18 +3579,20 @@ void Renderer::createUniformBuffers() {
 
 void Renderer::createDescriptorPool() {
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
-    const uint32_t descriptorCount = kMaxFramesInFlight * materialCount;
+    const uint32_t materialDescriptorCount = kMaxFramesInFlight * materialCount;
+    const uint32_t particleDescriptorCapacity =
+        kMaxFramesInFlight * kMaximumParticleSystems;
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = descriptorCount;
+    poolSizes[0].descriptorCount = materialDescriptorCount + particleDescriptorCapacity;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = descriptorCount * 4;
+    poolSizes[1].descriptorCount = materialDescriptorCount * 4 + particleDescriptorCapacity;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = descriptorCount;
+    poolInfo.maxSets = materialDescriptorCount + particleDescriptorCapacity;
 
     if (vkCreateDescriptorPool(context_->device(), &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
@@ -3020,6 +3694,92 @@ void Renderer::createDescriptorSets() {
         }
     }
     updateSceneTextureDescriptors();
+    particleDescriptorSets_.clear();
+    for (const auto& [nodeId, system] : particleSystems_) {
+        (void)system;
+        createParticleDescriptorSets(nodeId);
+    }
+}
+
+void Renderer::createParticleDescriptorSets(std::uint32_t nodeId) {
+    if (particleDescriptorSets_.contains(nodeId)) {
+        updateParticleTextureDescriptors(nodeId);
+        return;
+    }
+    if (particleDescriptorSets_.size() >= kMaximumParticleSystems) {
+        std::cerr << "warning: particle descriptor capacity reached; node "
+                  << nodeId << " will not be rendered\n";
+        return;
+    }
+
+    std::array<VkDescriptorSetLayout, kMaxFramesInFlight> layouts{};
+    layouts.fill(descriptorSetLayout_);
+    std::array<VkDescriptorSet, kMaxFramesInFlight> descriptorSets{};
+    VkDescriptorSetAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocateInfo.descriptorPool = descriptorPool_;
+    allocateInfo.descriptorSetCount = kMaxFramesInFlight;
+    allocateInfo.pSetLayouts = layouts.data();
+    if (vkAllocateDescriptorSets(
+            context_->device(),
+            &allocateInfo,
+            descriptorSets.data()
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate particle descriptor sets");
+    }
+    particleDescriptorSets_.emplace(nodeId, descriptorSets);
+    updateParticleTextureDescriptors(nodeId);
+}
+
+void Renderer::updateParticleTextureDescriptors(std::uint32_t nodeId) {
+    const auto descriptorIt = particleDescriptorSets_.find(nodeId);
+    if (descriptorIt == particleDescriptorSets_.end()) {
+        return;
+    }
+
+    const Texture* texture = fallbackTexture_.get();
+    const auto textureIt = particleTextures_.find(nodeId);
+    if (textureIt != particleTextures_.end() && textureIt->second != nullptr) {
+        texture = textureIt->second.get();
+    }
+    if (texture == nullptr) {
+        throw std::runtime_error("particle system has no usable texture fallback");
+    }
+
+    for (std::uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = uniformBuffers_[frameIndex]->handle();
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformBufferObject);
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = texture->imageView();
+        imageInfo.sampler = texture->sampler();
+
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = descriptorIt->second[frameIndex];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].descriptorCount = 1;
+        writes[0].pBufferInfo = &bufferInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = descriptorIt->second[frameIndex];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(
+            context_->device(),
+            static_cast<std::uint32_t>(writes.size()),
+            writes.data(),
+            0,
+            nullptr
+        );
+    }
 }
 
 void Renderer::updateSceneTextureDescriptors() {
@@ -3485,6 +4245,48 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         }
     }
 
+    if (!particleDrawRanges_.empty()) {
+        const VkBuffer particleBuffer = particleVertexBuffers_[currentFrame_]->handle();
+        const VkDeviceSize particleOffset = 0;
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
+        for (const ParticleDrawRange& range : particleDrawRanges_) {
+            const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
+            if (descriptorIt == particleDescriptorSets_.end()) {
+                continue;
+            }
+            const VkPipeline particlePipeline =
+                range.blendMode == ParticleSystemSettings::BlendMode::Additive
+                    ? particleAdditivePipeline_
+                    : particleAlphaPipeline_;
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+            const VkDescriptorSet& particleDescriptorSet =
+                descriptorIt->second[currentFrame_];
+            vkCmdBindDescriptorSets(
+                commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout_,
+                0,
+                1,
+                &particleDescriptorSet,
+                0,
+                nullptr
+            );
+            MaterialPushConstants particlePushConstants{};
+            particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
+                ? 1u
+                : 0u;
+            vkCmdPushConstants(
+                commandBuffer,
+                pipelineLayout_,
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,
+                sizeof(MaterialPushConstants),
+                &particlePushConstants
+            );
+            vkCmdDraw(commandBuffer, range.vertexCount, 1, range.firstVertex, 0);
+        }
+    }
+
     if (selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, boundingBoxPipeline_);
 
@@ -3556,12 +4358,26 @@ void Renderer::drawFrame() {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
     updateSceneNodeTransforms(elapsedSeconds);
+    const float particleDeltaSeconds = std::clamp(
+        elapsedSeconds - lastFrameElapsedSeconds_,
+        0.0f,
+        0.1f
+    );
+    lastFrameElapsedSeconds_ = elapsedSeconds;
+    const glm::vec3 cameraPosition(3.5f, 3.5f, 2.8f);
+    const glm::vec3 cameraTarget(0.0f);
+    const glm::vec3 cameraForward = glm::normalize(cameraTarget - cameraPosition);
+    const glm::vec3 worldUp(0.0f, 0.0f, 1.0f);
+    const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
+    const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
+    updateParticleSystems(particleDeltaSeconds, cameraRight, cameraUp);
     updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
     updateUniformBuffer();
+    updateParticleBuffer();
     updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");

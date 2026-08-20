@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iosfwd>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,7 +13,9 @@
 
 #include <vulkan/vulkan.h>
 
+#include "vulkcore/Core/Config.hpp"
 #include "vulkcore/Renderer/Mesh.hpp"
+#include "vulkcore/Renderer/ParticleSystem.hpp"
 
 struct GLFWwindow;
 
@@ -51,13 +54,28 @@ private:
     void loadTransformSettings();
     void saveTransformSettings() const;
     void createBoundingBoxPipeline();
+    void createParticlePipelines();
+    VkPipeline createParticlePipeline(bool additiveBlending);
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
+    void createParticleBuffer();
+    void updateParticleBuffer();
+    void createParticleTextures();
+    void loadParticleTexture(std::uint32_t nodeId);
+    void createParticleDescriptorSets(std::uint32_t nodeId);
+    void updateParticleTextureDescriptors(std::uint32_t nodeId);
+    void updateParticleSystems(
+        float deltaSeconds,
+        const glm::vec3& cameraRight,
+        const glm::vec3& cameraUp
+    );
+    void createParticleSystemObject();
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
     glm::mat4 nodeManualTransform(const ModelNode& node) const;
+    glm::mat4 particleObjectTransform(const ModelNode& node) const;
     glm::mat4 nodeAnimationTransform(const ModelNode& node, float elapsedSeconds) const;
     void createRenderPass();
     void createSceneRenderResources();
@@ -96,6 +114,7 @@ private:
     std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
     void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
+    void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
 
@@ -113,6 +132,8 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline_ = VK_NULL_HANDLE;
     VkPipeline boundingBoxPipeline_ = VK_NULL_HANDLE;
+    VkPipeline particleAlphaPipeline_ = VK_NULL_HANDLE;
+    VkPipeline particleAdditivePipeline_ = VK_NULL_HANDLE;
     std::array<std::vector<std::string>, kShaderStageCount> availableShaders_;
     std::unordered_map<std::string, VkShaderModule> shaderModules_;
     std::unordered_map<std::string, VkPipeline> nodeGraphicsPipelines_;
@@ -126,15 +147,28 @@ private:
     float modelScale_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
+    std::vector<std::unique_ptr<Buffer>> particleVertexBuffers_;
+    std::vector<ParticleVertex> particleVertices_;
+    struct ParticleDrawRange {
+        std::uint32_t nodeId = 0;
+        std::uint32_t firstVertex = 0;
+        std::uint32_t vertexCount = 0;
+        ParticleSystemSettings::BlendMode blendMode =
+            ParticleSystemSettings::BlendMode::Additive;
+    };
+    std::vector<ParticleDrawRange> particleDrawRanges_;
     std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
     std::vector<std::unique_ptr<Texture>> materialTextures_;
     std::vector<std::unique_ptr<Texture>> normalTextures_;
     std::vector<std::unique_ptr<Texture>> specularTextures_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> fallbackTexture_;
     std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
+    std::unordered_map<std::uint32_t, std::array<VkDescriptorSet, kMaxFramesInFlight>>
+        particleDescriptorSets_;
 
     std::vector<VkCommandBuffer> commandBuffers_;
     std::vector<VkSemaphore> imageAvailableSemaphores_;
@@ -160,6 +194,12 @@ private:
     std::array<char, 512> materialSpecularTexturePathBuffer_{};
     std::int32_t materialSpecularTexturePathMaterialIndex_ = -1;
     std::array<Vertex, 24> boundingBoxVertices_{};
+    std::unordered_map<std::uint32_t, ParticleSystem> particleSystems_;
+    std::array<char, 512> particleTexturePathBuffer_{};
+    std::uint32_t particleTexturePathNodeId_ = std::numeric_limits<std::uint32_t>::max();
+    float lastFrameElapsedSeconds_ = 0.0f;
+
+    static constexpr std::uint32_t kMaximumParticleSystems = 16;
 };
 
 } // namespace VulkCore
