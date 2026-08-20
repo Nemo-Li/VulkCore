@@ -238,6 +238,25 @@ bool findInheritedMaterialOverride(
     return false;
 }
 
+bool findInheritedRenderEnabled(
+    const ModelNode& node,
+    std::uint32_t targetNodeId,
+    bool inherited,
+    bool& result
+) {
+    const bool effectiveEnabled = inherited && node.renderEnabled;
+    if (node.nodeId == targetNodeId) {
+        result = effectiveEnabled;
+        return true;
+    }
+    for (const ModelNode& child : node.children) {
+        if (findInheritedRenderEnabled(child, targetNodeId, effectiveEnabled, result)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
     if (node.nodeId == nodeId) {
         return &node;
@@ -295,6 +314,15 @@ void saveNodeTransformSettings(std::ostream& file, const ModelNode& node) {
     }
     for (const ModelNode& child : node.children) {
         saveNodeTransformSettings(file, child);
+    }
+}
+
+void saveNodeRenderSettings(std::ostream& file, const ModelNode& node) {
+    if (!node.renderEnabled) {
+        file << "node_render " << node.nodeId << " 0\n";
+    }
+    for (const ModelNode& child : node.children) {
+        saveNodeRenderSettings(file, child);
     }
 }
 
@@ -511,11 +539,13 @@ glm::mat4 Renderer::nodeAnimationTransform(
 
 void Renderer::updateSceneNodeTransforms(float elapsedSeconds) {
     sceneNodeTransforms_.clear();
+    sceneNodeRenderEnabled_.clear();
 
     const auto updateNode = [this, elapsedSeconds](
                                 const auto& self,
                                 const ModelNode& node,
-                                const glm::mat4& parentTransform
+                                const glm::mat4& parentTransform,
+                                bool parentRenderEnabled
                             ) -> void {
         glm::mat4 transform = parentTransform * nodeManualTransform(node);
         if (node.rotationAnimationEnabled) {
@@ -523,15 +553,17 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds) {
             // transforms are accumulated in hierarchy order from root to leaf.
             transform *= nodeAnimationTransform(node, elapsedSeconds);
         }
+        const bool renderEnabled = parentRenderEnabled && node.renderEnabled;
         sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
+        sceneNodeRenderEnabled_.insert_or_assign(node.nodeId, renderEnabled);
         for (const ModelNode& child : node.children) {
-            self(self, child, transform);
+            self(self, child, transform, renderEnabled);
         }
     };
 
-    updateNode(updateNode, meshData_.hierarchy, glm::mat4(1.0f));
+    updateNode(updateNode, meshData_.hierarchy, glm::mat4(1.0f), true);
     for (const ModelNode& node : meshData_.additionalNodes) {
-        updateNode(updateNode, node, glm::mat4(1.0f));
+        updateNode(updateNode, node, glm::mat4(1.0f), true);
     }
 }
 
@@ -540,6 +572,24 @@ glm::mat4 Renderer::transformForSceneNode(std::uint32_t nodeId) const {
     return transformIt != sceneNodeTransforms_.end()
         ? transformIt->second
         : glm::mat4(1.0f);
+}
+
+bool Renderer::isSceneNodeRenderEnabled(std::uint32_t nodeId) const {
+    const auto renderStateIt = sceneNodeRenderEnabled_.find(nodeId);
+    if (renderStateIt != sceneNodeRenderEnabled_.end()) {
+        return renderStateIt->second;
+    }
+
+    bool renderEnabled = true;
+    if (findInheritedRenderEnabled(meshData_.hierarchy, nodeId, true, renderEnabled)) {
+        return renderEnabled;
+    }
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        if (findInheritedRenderEnabled(node, nodeId, true, renderEnabled)) {
+            return renderEnabled;
+        }
+    }
+    return true;
 }
 
 void Renderer::updateBoundingBoxVertices() {
@@ -1352,6 +1402,10 @@ void Renderer::loadTransformSettings() {
         glm::vec3 rotationDegrees{0.0f};
         float scaleFactor = 1.0f;
     };
+    struct PendingNodeRender {
+        std::uint32_t nodeId = 0;
+        bool enabled = true;
+    };
     struct PendingNodeShaders {
         std::uint32_t nodeId = 0;
         ShaderConfiguration configuration;
@@ -1379,6 +1433,7 @@ void Renderer::loadTransformSettings() {
     };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
     std::vector<PendingNodeTransform> pendingNodeTransforms;
+    std::vector<PendingNodeRender> pendingNodeRenderSettings;
     std::vector<PendingNodeShaders> pendingNodeShaders;
     std::vector<PendingNodeWater> pendingNodeWater;
     std::vector<PendingMaterial> pendingMaterials;
@@ -1418,6 +1473,15 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             pendingNodeTransforms.push_back(transform);
+        } else if (key == "node_render") {
+            PendingNodeRender render;
+            int enabled = 1;
+            if (!(file >> render.nodeId >> enabled) || (enabled != 0 && enabled != 1)) {
+                valid = false;
+                break;
+            }
+            render.enabled = enabled != 0;
+            pendingNodeRenderSettings.push_back(render);
         } else if (key == "node_animation") {
             PendingNodeAnimation animation;
             int enabled = 0;
@@ -1882,6 +1946,13 @@ void Renderer::loadTransformSettings() {
             kMaximumModelScaleFactor
         );
     }
+    for (const PendingNodeRender& render : pendingNodeRenderSettings) {
+        ModelNode* node = findSceneNodeById(meshData_, render.nodeId);
+        if (node == nullptr) {
+            continue;
+        }
+        node->renderEnabled = render.enabled;
+    }
     for (const PendingNodeAnimation& animation : pendingNodeAnimations) {
         ModelNode* node = findSceneNodeById(meshData_, animation.nodeId);
         if (node == nullptr) {
@@ -1997,6 +2068,10 @@ void Renderer::saveTransformSettings() const {
     saveNodeTransformSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeTransformSettings(file, node);
+    }
+    saveNodeRenderSettings(file, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        saveNodeRenderSettings(file, node);
     }
     saveNodeAnimationSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
@@ -2669,17 +2744,30 @@ void Renderer::buildImGuiFrame() {
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
         ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
+        bool renderEnabled = selectedModelNode_->renderEnabled;
+        if (ImGui::Checkbox("Render Enabled", &renderEnabled)) {
+            selectedModelNode_->renderEnabled = renderEnabled;
+            shouldSaveTransformSettings = true;
+        }
+        if (!renderEnabled) {
+            ImGui::TextDisabled("Rendering is disabled for this node and its children.");
+        }
         if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
             drawParticleSystemControls(*selectedModelNode_, shouldSaveTransformSettings);
         } else {
             if (selectedModelNode_->nodeId == sunNodeId_) {
                 ImGui::TextDisabled("Generated spherical sun mesh");
             }
+            const bool isRootNode = selectedModelNode_ == &meshData_.hierarchy;
             const bool isNamedMeshNode = selectedModelNode_->meshCount > 0 &&
                 !selectedModelNode_->name.empty() &&
                 selectedModelNode_->name != "<unnamed>";
-            if (isNamedMeshNode) {
-                ImGui::TextDisabled("Position is in scene units; rotation and scale use local axes.");
+            if (isRootNode || isNamedMeshNode) {
+                ImGui::TextDisabled(
+                    isRootNode
+                        ? "Transform applies to the whole imported model."
+                        : "Position is in scene units; rotation and scale use local axes."
+                );
                 ImGui::DragFloat3(
                     "Position (X/Y/Z)",
                     &selectedModelNode_->transformTranslation.x,
@@ -4057,6 +4145,7 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
         glm::vec3 translation{0.0f};
         glm::vec3 rotationDegrees{0.0f};
         float scaleFactor = 1.0f;
+        bool renderEnabled = true;
         ParticleSystemSettings settings;
         bool playing = false;
     };
@@ -4075,6 +4164,7 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
             node.transformTranslation,
             node.transformRotationDegrees,
             node.transformScaleFactor,
+            node.renderEnabled,
             systemIt->second.settings(),
             systemIt->second.playing(),
         });
@@ -4085,6 +4175,7 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
     context_->waitIdle();
     selectedModelNode_ = nullptr;
     sceneNodeTransforms_.clear();
+    sceneNodeRenderEnabled_.clear();
     particleSystems_.clear();
     particleDrawRanges_.clear();
     particleVertices_.clear();
@@ -4107,6 +4198,7 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
         particleNode.transformTranslation = preserved.translation;
         particleNode.transformRotationDegrees = preserved.rotationDegrees;
         particleNode.transformScaleFactor = preserved.scaleFactor;
+        particleNode.renderEnabled = preserved.renderEnabled;
         meshData_.additionalNodes.push_back(std::move(particleNode));
 
         ParticleSystem particleSystem;
@@ -4354,7 +4446,7 @@ void Renderer::updateParticleSystems(
                     availableVertices
                 );
                 copiedVertexCount -= copiedVertexCount % ParticleSystem::kVerticesPerParticle;
-                if (copiedVertexCount > 0) {
+                if (copiedVertexCount > 0 && isSceneNodeRenderEnabled(node.nodeId)) {
                     ParticleDrawRange range;
                     range.nodeId = node.nodeId;
                     range.firstVertex = static_cast<std::uint32_t>(particleVertices_.size());
@@ -4935,6 +5027,9 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     };
 
     const auto drawPart = [&](const MeshPart& part) {
+        if (!isSceneNodeRenderEnabled(part.nodeId)) {
+            return;
+        }
         const std::uint32_t materialIndex = materialIndexForPart(part);
         if (materialIndex >= materialCount || materialIndex >= materialTextures_.size()) {
             return;
@@ -5021,6 +5116,9 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     for (const MeshPart& part : meshData_.parts) {
         const std::uint32_t materialIndex = materialIndexForPart(part);
         if (materialIndex >= materialCount || part.indexCount == 0) {
+            continue;
+        }
+        if (!isSceneNodeRenderEnabled(part.nodeId)) {
             continue;
         }
         const MaterialData& material = meshData_.materials[materialIndex];
@@ -5268,6 +5366,9 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     for (const MeshPart& part : meshData_.parts) {
         const std::uint32_t materialIndex = materialIndexForPart(part);
         if (materialIndex >= materialCount || part.indexCount == 0) {
+            continue;
+        }
+        if (!isSceneNodeRenderEnabled(part.nodeId)) {
             continue;
         }
         const MaterialData& material = meshData_.materials[materialIndex];
