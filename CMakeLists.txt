@@ -178,6 +178,13 @@ add_executable(VulkCore
     src/Renderer/Buffer.cpp
     src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
+    src/Renderer/RendererFrame.cpp
+    src/Renderer/RendererPipelines.cpp
+    src/Renderer/RendererPrivate.cpp
+    src/Renderer/RendererResources.cpp
+    src/Renderer/RendererScene.cpp
+    src/Renderer/RendererSceneGraph.cpp
+    src/Renderer/RendererUI.cpp
     src/Renderer/SwapChain.cpp
     src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
