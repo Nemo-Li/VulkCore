@@ -14,6 +14,10 @@ struct Vertex {
     glm::vec3 normal;
     glm::vec2 texCoord;
     glm::vec4 color;
+    // Up to four normalized skinning influences. Static meshes leave both
+    // fields at zero and therefore continue to use the bind-pose position.
+    glm::ivec4 boneIndices{0};
+    glm::vec4 boneWeights{0.0f};
 
     static VkVertexInputBindingDescription bindingDescription() {
         VkVertexInputBindingDescription description{};
@@ -23,8 +27,8 @@ struct Vertex {
         return description;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 4> descriptions{};
+    static std::array<VkVertexInputAttributeDescription, 6> attributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 6> descriptions{};
 
         descriptions[0].binding = 0;
         descriptions[0].location = 0;
@@ -45,6 +49,16 @@ struct Vertex {
         descriptions[3].location = 3;
         descriptions[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
         descriptions[3].offset = offsetof(Vertex, color);
+
+        descriptions[4].binding = 0;
+        descriptions[4].location = 4;
+        descriptions[4].format = VK_FORMAT_R32G32B32A32_SINT;
+        descriptions[4].offset = offsetof(Vertex, boneIndices);
+
+        descriptions[5].binding = 0;
+        descriptions[5].location = 5;
+        descriptions[5].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        descriptions[5].offset = offsetof(Vertex, boneWeights);
 
         return descriptions;
     }

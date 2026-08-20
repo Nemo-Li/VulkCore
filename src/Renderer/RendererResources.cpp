@@ -176,7 +176,7 @@ void Renderer::createSunMesh(
                 sinPhi * std::sin(theta),
                 cosPhi
             );
-            meshData_.vertices.push_back({
+            const Vertex sunVertex{
                 center + normal * radius,
                 normal,
                 glm::vec2(
@@ -184,7 +184,10 @@ void Renderer::createSunMesh(
                     static_cast<float>(latitude) / static_cast<float>(kLatitudeSegments)
                 ),
                 glm::vec4(1.0f)
-            });
+            };
+            meshData_.vertices.push_back(sunVertex);
+            meshData_.bindPoseVertices.push_back(sunVertex);
+            meshData_.skinSourceVertices.push_back(sunVertex);
         }
     }
 
@@ -241,6 +244,8 @@ void Renderer::removeSunMesh() {
             sunIndexStart_ <= meshData_.indices.size() &&
             sunPart.firstIndex + sunPart.indexCount == meshData_.indices.size()) {
             meshData_.vertices.resize(sunVertexStart_);
+            meshData_.bindPoseVertices.resize(sunVertexStart_);
+            meshData_.skinSourceVertices.resize(sunVertexStart_);
             meshData_.indices.resize(sunIndexStart_);
         }
         meshData_.parts.erase(meshData_.parts.begin() + sunPartIndex_);
@@ -326,7 +331,7 @@ void Renderer::removeSunMesh() {
 
 void Renderer::rebuildSceneGeometryResources() {
     context_->waitIdle();
-    vertexBuffer_.reset();
+    vertexBuffers_.clear();
     indexBuffer_.reset();
     createVertexBuffer();
     createIndexBuffer();
@@ -341,21 +346,16 @@ void Renderer::createVertexBuffer() {
     const std::size_t vertexCount = std::max<std::size_t>(1, meshData_.vertices.size());
     const VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
-    Buffer stagingBuffer(
-        *context_,
-        bufferSize,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    );
-    stagingBuffer.upload(vertexData, bufferSize);
-
-    vertexBuffer_ = std::make_unique<Buffer>(
-        *context_,
-        bufferSize,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-    );
-    context_->copyBuffer(stagingBuffer.handle(), vertexBuffer_->handle(), bufferSize);
+    vertexBuffers_.resize(kMaxFramesInFlight);
+    for (auto& vertexBuffer : vertexBuffers_) {
+        vertexBuffer = std::make_unique<Buffer>(
+            *context_,
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+        vertexBuffer->upload(vertexData, bufferSize);
+    }
 }
 
 void Renderer::createIndexBuffer() {

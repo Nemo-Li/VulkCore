@@ -38,6 +38,7 @@ struct SkeletonBone {
     std::uint32_t nodeId = std::numeric_limits<std::uint32_t>::max();
     std::int32_t parentIndex = -1;
     glm::mat4 offsetMatrix{1.0f};
+    glm::mat4 bindPoseGlobalTransform{1.0f};
     std::uint32_t influenceCount = 0;
 };
 
@@ -54,6 +55,7 @@ struct AnimationRotationKey {
 
 struct SkeletalAnimationChannel {
     std::string nodeName;
+    std::uint32_t nodeId = std::numeric_limits<std::uint32_t>::max();
     std::int32_t boneIndex = -1;
     AnimationBehavior preBehavior = AnimationBehavior::Default;
     AnimationBehavior postBehavior = AnimationBehavior::Default;
@@ -68,6 +70,24 @@ struct SkeletalAnimationClip {
     double ticksPerSecond = 0.0;
     std::uint32_t meshChannelCount = 0;
     std::vector<SkeletalAnimationChannel> channels;
+};
+
+// Runtime playback state for one imported model instance. The ranges point
+// into MeshData::skeletonBones and MeshData::skeletalAnimations after scene
+// instances have been appended into the renderer's flattened scene data.
+struct SkeletalAnimationInstance {
+    std::uint32_t rootNodeId = 0;
+    std::uint32_t boneStart = 0;
+    std::uint32_t boneCount = 0;
+    std::uint32_t animationStart = 0;
+    std::uint32_t animationCount = 0;
+    glm::mat4 globalInverseTransform{1.0f};
+    std::uint32_t activeClip = 0;
+    float timeSeconds = 0.0f;
+    float playbackSpeed = 1.0f;
+    bool enabled = true;
+    bool playing = true;
+    bool looping = true;
 };
 
 // Shader selections belong to a Material. Empty entries mean "use the
@@ -171,6 +191,7 @@ struct ModelNode {
     std::uint32_t nodeId = 0;
     SceneObjectType objectType = SceneObjectType::ImportedMesh;
     std::uint32_t meshCount = 0;
+    glm::mat4 localTransform{1.0f};
     glm::mat4 globalTransform{1.0f};
     // Indices into MeshData::parts for this node's directly attached meshes.
     std::vector<std::uint32_t> meshPartIndices;
@@ -196,6 +217,13 @@ struct ModelNode {
 
 struct MeshData {
     std::vector<Vertex> vertices;
+    // Immutable flattened bind-pose vertices used to restore disabled/paused
+    // skinning without accumulating floating-point deformation errors.
+    std::vector<Vertex> bindPoseVertices;
+    // Skinned vertices must be evaluated from the mesh-local coordinates that
+    // Assimp uses for aiBone::mOffsetMatrix. Static vertices may mirror the
+    // flattened render vertex here.
+    std::vector<Vertex> skinSourceVertices;
     std::vector<uint32_t> indices;
     std::vector<MaterialData> materials;
     std::vector<MeshPart> parts;
@@ -203,6 +231,7 @@ struct MeshData {
     std::size_t skinnedMeshCount = 0;
     std::size_t skinWeightCount = 0;
     std::vector<SkeletalAnimationClip> skeletalAnimations;
+    std::vector<SkeletalAnimationInstance> skeletalAnimationInstances;
     ModelNode hierarchy;
     // Nodes that live alongside the imported root node, such as generated
     // scene primitives. They are intentionally not children of hierarchy so
