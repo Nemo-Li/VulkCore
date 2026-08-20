@@ -504,10 +504,12 @@ void Renderer::drawFrame() {
         0.1f
     );
     lastFrameElapsedSeconds_ = elapsedSeconds;
-    const glm::vec3 cameraPosition(3.5f, 3.5f, 2.8f);
     const glm::vec3 cameraTarget(0.0f);
+    const glm::vec3 cameraPosition = cameraPosition_;
     const glm::vec3 cameraForward = glm::normalize(cameraTarget - cameraPosition);
-    const glm::vec3 worldUp(0.0f, 0.0f, 1.0f);
+    const glm::vec3 worldUp = std::abs(glm::dot(cameraForward, glm::vec3(0.0f, 0.0f, 1.0f))) > 0.99f
+        ? glm::vec3(0.0f, 1.0f, 0.0f)
+        : glm::vec3(0.0f, 0.0f, 1.0f);
     const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
     const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
     updateParticleSystems(particleDeltaSeconds, cameraRight, cameraUp);
@@ -598,4 +600,3 @@ VkShaderModule Renderer::createShaderModule(const std::vector<char>& code) const
 
 
 } // namespace VulkCore
-

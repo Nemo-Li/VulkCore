@@ -7,6 +7,7 @@
 #include <iosfwd>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -71,8 +72,13 @@ private:
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void clearSceneData();
+    const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
-    void appendImportedModel(MeshData importedMesh, const std::filesystem::path& path);
+    void appendImportedModel(
+        MeshData importedMesh,
+        const std::filesystem::path& path,
+        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt
+    );
     void synchronizeModelResourceMaterial(
         const std::filesystem::path& path,
         std::size_t materialIndex,
@@ -146,7 +152,10 @@ private:
         bool& shouldSaveSettings,
         const std::filesystem::path* modelResourcePath = nullptr
     );
-    bool importModelResource(const std::filesystem::path& path);
+    bool importModelResource(
+        const std::filesystem::path& path,
+        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt
+    );
     void discoverModelResources();
     void selectModelResource(const std::filesystem::path& path);
     void discoverShaderBinaries();
@@ -234,6 +243,7 @@ private:
     uint32_t currentFrame_ = 0;
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
+    glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
     glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
     float ambientLightIntensity_ = 1.0f;
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};

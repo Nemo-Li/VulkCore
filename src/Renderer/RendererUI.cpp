@@ -57,7 +57,7 @@ void Renderer::shutdownImGui() {
 
 void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
     ImGui::SeparatorText("Shader Demo Lab");
-    ImGui::TextDisabled(
+    ImGui::TextWrapped(
         "Reference-aligned material and screen-space techniques; all demos use the shared renderer ABI."
     );
 
@@ -100,7 +100,7 @@ void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
     ImGui::SeparatorText("Surface shader preset");
     if (selectedModelNode_ == nullptr ||
         selectedModelNode_->objectType != SceneObjectType::ImportedMesh) {
-        ImGui::TextDisabled("Select an imported mesh node to apply a material shader preset.");
+        ImGui::TextWrapped("Select an imported mesh node to apply a material shader preset.");
         return;
     }
     const ModelNode& node = *selectedModelNode_;
@@ -115,7 +115,7 @@ void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
         );
     }
     if (materialIndex < 0 || static_cast<std::size_t>(materialIndex) >= meshData_.materials.size()) {
-        ImGui::TextDisabled("The selected node has no material binding.");
+        ImGui::TextWrapped("The selected node has no material binding.");
         return;
     }
     MaterialData& material = meshData_.materials[materialIndex];
@@ -146,7 +146,7 @@ void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
     }
     ImGui::TextWrapped("%s", kSurfaceShaderDemos[currentPreset].description);
     if (currentPreset >= 10) {
-        ImGui::TextDisabled("Water presets render after the opaque pass and sample scene color/depth.");
+        ImGui::TextWrapped("Water presets render after the opaque pass and sample scene color/depth.");
     }
 }
 
@@ -175,7 +175,7 @@ void Renderer::createParticleSystemObject() {
 void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings) {
     const auto systemIt = particleSystems_.find(node.nodeId);
     if (systemIt == particleSystems_.end()) {
-        ImGui::TextDisabled("Particle component is not available for this object.");
+        ImGui::TextWrapped("Particle component is not available for this object.");
         return;
     }
     ParticleSystem& particleSystem = systemIt->second;
@@ -193,8 +193,8 @@ void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSetti
     }
 
     ImGui::SeparatorText("Particle System");
-    ImGui::Text("GameObject: %s", node.name.c_str());
-    ImGui::TextDisabled("CPU simulation + camera-facing billboard batch");
+    ImGui::TextWrapped("GameObject: %s", node.name.c_str());
+    ImGui::TextWrapped("CPU simulation + camera-facing billboard batch");
 
     ImGui::SeparatorText("GameObject Transform");
     ImGui::DragFloat3(
@@ -350,9 +350,9 @@ void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSetti
         shouldSaveSettings = true;
     }
     if (particleTextures_.contains(node.nodeId)) {
-        ImGui::TextDisabled("Texture loaded; RGBA is multiplied by particle color.");
+        ImGui::TextWrapped("Texture loaded; RGBA is multiplied by particle color.");
     } else {
-        ImGui::TextDisabled("No valid texture; using the soft-circle fallback.");
+        ImGui::TextWrapped("No valid texture; using the soft-circle fallback.");
     }
     if (ImGui::Button("Reset particle settings")) {
         particleSystem.setSettings(ParticleSystemSettings{});
@@ -369,7 +369,7 @@ void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSetti
 void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     ImGui::TextUnformatted("Resource Manager");
     ImGui::SameLine();
-    ImGui::TextDisabled("Import, inspect, and remap render resources");
+    ImGui::TextWrapped("Import, inspect, and remap render resources");
 
     constexpr float kImportButtonWidth = 108.0f;
     const float importPathWidth = std::max(
@@ -394,7 +394,9 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         const ImVec4 color = resourceImportFailed_
             ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f)
             : ImVec4(0.42f, 0.88f, 0.56f, 1.0f);
-        ImGui::TextColored(color, "%s", resourceImportStatus_.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        ImGui::TextWrapped("%s", resourceImportStatus_.c_str());
+        ImGui::PopStyleColor();
     }
 
     constexpr float kSceneSaveButtonWidth = 96.0f;
@@ -423,7 +425,9 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         const ImVec4 color = sceneStatusFailed_
             ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f)
             : ImVec4(0.42f, 0.88f, 0.56f, 1.0f);
-        ImGui::TextColored(color, "%s", sceneStatus_.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        ImGui::TextWrapped("%s", sceneStatus_.c_str());
+        ImGui::PopStyleColor();
     }
 
     ImGui::Separator();
@@ -498,10 +502,15 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     };
 
     ImGui::TableSetColumnIndex(0);
-    ImGui::BeginChild("ResourceLibrary", ImVec2(0.0f, 0.0f), false);
+    ImGui::BeginChild(
+        "ResourceLibrary",
+        ImVec2(0.0f, 0.0f),
+        false,
+        ImGuiWindowFlags_NoScrollbar
+    );
     ImGui::TextUnformatted("Assets");
-    ImGui::TextDisabled("Model resources under assets");
-    ImGui::TextDisabled("Select a model to inspect and edit its cached materials");
+    ImGui::TextWrapped("Model resources under assets");
+    ImGui::TextWrapped("Select a model to inspect and edit its cached materials");
     ImGui::Separator();
 
     const auto modelResourceLabel = [this](const std::filesystem::path& path) {
@@ -540,7 +549,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         std::to_string(modelResourcePaths_.size()) + ")";
     if (ImGui::TreeNodeEx(modelsLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
         if (modelResourcePaths_.empty()) {
-            ImGui::TextDisabled("No model resources found under assets.");
+            ImGui::TextWrapped("No model resources found under assets.");
         }
         for (std::size_t modelIndex = 0;
              modelIndex < modelResourcePaths_.size();
@@ -563,7 +572,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         std::to_string(sceneResourcePaths_.size()) + ")";
     if (ImGui::TreeNodeEx(scenesLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
         if (sceneResourcePaths_.empty()) {
-            ImGui::TextDisabled("No scene files found. Save one above.");
+            ImGui::TextWrapped("No scene files found. Save one above.");
         }
         for (std::size_t sceneIndex = 0;
              sceneIndex < sceneResourcePaths_.size();
@@ -578,7 +587,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             }
             if (selected) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("[active]");
+                ImGui::TextWrapped("[active]");
             }
             ImGui::PopID();
         }
@@ -650,25 +659,30 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             }
         }
         if (!hasTextureResource) {
-            ImGui::TextDisabled("No referenced textures");
+            ImGui::TextWrapped("No referenced textures");
         }
         ImGui::TreePop();
     }
     ImGui::EndChild();
 
     ImGui::TableSetColumnIndex(1);
-    ImGui::BeginChild("ResourceModelHierarchy", ImVec2(0.0f, 0.0f), false);
+    ImGui::BeginChild(
+        "ResourceModelHierarchy",
+        ImVec2(0.0f, 0.0f),
+        false,
+        ImGuiWindowFlags_NoScrollbar
+    );
     ImGui::TextUnformatted("Model Hierarchy");
     const MeshData* hierarchyData = selectedResourceType_ == ResourceSelectionType::Model
         ? selectedResourceModelData
         : &meshData_;
     if (hierarchyData == nullptr) {
-        ImGui::TextDisabled("Unable to inspect the selected model resource.");
+        ImGui::TextWrapped("Unable to inspect the selected model resource.");
         if (!selectedModelPreviewError_.empty()) {
             ImGui::TextWrapped("%s", selectedModelPreviewError_.c_str());
         }
     } else {
-        ImGui::TextDisabled(
+        ImGui::TextWrapped(
             "%zu nodes / %zu mesh nodes",
             countModelNodes(hierarchyData->hierarchy),
             countMeshNodes(hierarchyData->hierarchy)
@@ -682,26 +696,31 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 drawModelHierarchy(meshData_.hierarchy);
             }
         } else {
-            ImGui::TextDisabled("No model hierarchy available for this resource.");
+            ImGui::TextWrapped("No model hierarchy available for this resource.");
         }
     }
     ImGui::EndChild();
 
     ImGui::TableSetColumnIndex(2);
-    ImGui::BeginChild("ResourceInspector", ImVec2(0.0f, 0.0f), false);
+    ImGui::BeginChild(
+        "ResourceInspector",
+        ImVec2(0.0f, 0.0f),
+        false,
+        ImGuiWindowFlags_NoScrollbar
+    );
     ImGui::TextUnformatted("Inspector");
     ImGui::Separator();
 
     if (selectedResourceType_ == ResourceSelectionType::Model) {
         if (selectedResourceModelData == nullptr) {
-            ImGui::TextDisabled("Unable to inspect the selected model resource.");
+            ImGui::TextWrapped("Unable to inspect the selected model resource.");
             if (!selectedModelPreviewError_.empty()) {
                 ImGui::TextWrapped("%s", selectedModelPreviewError_.c_str());
             }
         } else {
             const MeshData& modelData = *selectedResourceModelData;
             const std::string modelName = selectedModelResourcePath_.filename().string();
-            ImGui::Text("Model: %s", modelName.empty() ? "Unnamed model" : modelName.c_str());
+            ImGui::TextWrapped("Model: %s", modelName.empty() ? "Unnamed model" : modelName.c_str());
             ImGui::TextWrapped("Source: %s", selectedModelResourcePath_.string().c_str());
             ImGui::TextColored(
                 ImVec4(0.52f, 0.72f, 1.0f, 1.0f),
@@ -711,7 +730,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 normalizedPath(selectedModelResourcePath_).string()
             );
             if (cacheIt != modelResourceCache_.end()) {
-                ImGui::Text(
+                ImGui::TextWrapped(
                     "%zu texture candidates from adjacent tex folder",
                     cacheIt->second.texturePaths.size()
                 );
@@ -740,9 +759,15 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 ImGui::Text("Bounds max: (%.2f, %.2f, %.2f)", maximum.x, maximum.y, maximum.z);
             }
             ImGui::SeparatorText("Engine-ready import");
-            ImGui::BulletText("Triangulated mesh with 32-bit indices");
-            ImGui::BulletText("Position, generated/preserved normals, UV0, vertex color");
-            ImGui::BulletText("Base Color, Normal, and Specular texture slots");
+            ImGui::Bullet();
+            ImGui::SameLine();
+            ImGui::TextWrapped("Triangulated mesh with 32-bit indices");
+            ImGui::Bullet();
+            ImGui::SameLine();
+            ImGui::TextWrapped("Position, generated/preserved normals, UV0, vertex color");
+            ImGui::Bullet();
+            ImGui::SameLine();
+            ImGui::TextWrapped("Base Color, Normal, and Specular texture slots");
 
             if (!modelData.materials.empty()) {
                 ImGui::SeparatorText("Materials in Model");
@@ -753,26 +778,28 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                     const std::string materialLabel = material.name.empty()
                         ? "Material " + std::to_string(materialIndex)
                         : material.name;
-                    ImGui::BulletText("%s", materialLabel.c_str());
+                    ImGui::Bullet();
+                    ImGui::SameLine();
+                    ImGui::TextWrapped("%s", materialLabel.c_str());
                 }
             }
 
-            ImGui::TextDisabled(
+            ImGui::TextWrapped(
                 "Select a material or texture in Assets to edit this cached model resource."
             );
-            ImGui::TextDisabled("Import this resource to append another model to the scene.");
+            ImGui::TextWrapped("Import this resource to append another model to the scene.");
             if (ImGui::Button("Import Model to Scene")) {
                 if (importModelResource(selectedModelResourcePath_)) {
                     saveTransformSettings();
                 }
             }
             if (selectedModelNode_ == nullptr) {
-            ImGui::TextDisabled("Select a hierarchy node to inspect its material bindings.");
+            ImGui::TextWrapped("Select a hierarchy node to inspect its material bindings.");
             } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
-            ImGui::TextDisabled("The selected object is a Particle System, not a model node.");
+            ImGui::TextWrapped("The selected object is a Particle System, not a model node.");
             } else {
             ImGui::SeparatorText("Selected Model Node");
-            ImGui::Text("%s  (ID %u)",
+            ImGui::TextWrapped("%s  (ID %u)",
                 selectedModelNode_->name.c_str(),
                 selectedModelNode_->nodeId
             );
@@ -812,13 +839,13 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                     ImGui::TableSetColumnIndex(0);
                     ImGui::Text("%zu", bindingIndex);
                     ImGui::TableSetColumnIndex(1);
-                    ImGui::TextUnformatted(importedName);
+                    ImGui::TextWrapped("%s", importedName);
                     ImGui::TableSetColumnIndex(2);
-                    ImGui::TextUnformatted(effectiveName);
+                    ImGui::TextWrapped("%s", effectiveName);
                 }
                 ImGui::EndTable();
             } else if (selectedModelNode_->meshPartIndices.empty()) {
-                ImGui::TextDisabled(
+                ImGui::TextWrapped(
                     "This grouping node has no direct mesh; select a mesh-bearing child."
                 );
             }
@@ -828,7 +855,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     } else if (selectedResourceMaterialIndex_ < 0 ||
                static_cast<std::size_t>(selectedResourceMaterialIndex_) >=
                    resourceMaterials->size()) {
-        ImGui::TextDisabled("The selected resource is no longer available.");
+        ImGui::TextWrapped("The selected resource is no longer available.");
     } else {
         const std::size_t materialIndex = static_cast<std::size_t>(
             selectedResourceMaterialIndex_
@@ -838,8 +865,8 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             ? &selectedModelResourcePath_
             : nullptr;
         if (selectedResourceType_ == ResourceSelectionType::Material) {
-            ImGui::Text("Material #%zu", materialIndex);
-            ImGui::Text("Name: %s", material.name.c_str());
+            ImGui::TextWrapped("Material #%zu", materialIndex);
+            ImGui::TextWrapped("Name: %s", material.name.c_str());
             ImGui::SeparatorText("Referenced textures");
             for (std::size_t slotIndex = 0; slotIndex < textureSlotLabels.size(); ++slotIndex) {
                 const auto slot = static_cast<ResourceTextureSlot>(slotIndex);
@@ -857,14 +884,14 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                         path.string().c_str()
                     );
                 } else if (!embedded.empty()) {
-                    ImGui::Text(
+                    ImGui::TextWrapped(
                         "%s [loaded]: embedded %ux%u",
                         textureSlotLabels[slotIndex],
                         embedded.width,
                         embedded.height
                     );
                 } else {
-                    ImGui::TextDisabled("%s: engine fallback", textureSlotLabels[slotIndex]);
+                    ImGui::TextWrapped("%s: engine fallback", textureSlotLabels[slotIndex]);
                 }
             }
         } else {
@@ -879,14 +906,14 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 material,
                 selectedResourceTextureSlot_
             );
-            ImGui::Text("Texture: %s", textureSlotLabels[slotIndex]);
-            ImGui::Text("Material: %s", material.name.c_str());
+            ImGui::TextWrapped("Texture: %s", textureSlotLabels[slotIndex]);
+            ImGui::TextWrapped("Material: %s", material.name.c_str());
             if (!path.empty()) {
                 ImGui::TextWrapped("Source: %s", path.string().c_str());
             } else if (!embedded.empty()) {
-                ImGui::Text("Source: embedded (%ux%u)", embedded.width, embedded.height);
+                ImGui::TextWrapped("Source: embedded (%ux%u)", embedded.width, embedded.height);
             } else {
-                ImGui::TextDisabled("Source: engine fallback texture");
+                ImGui::TextWrapped("Source: engine fallback texture");
             }
             const bool loaded = editingCachedModelMaterials
                 ? (!path.empty() || !embedded.empty())
@@ -894,12 +921,13 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             const char* resourceState = editingCachedModelMaterials
                 ? (loaded ? "Cached texture configuration" : "Using engine fallback")
                 : (loaded ? "GPU resource loaded" : "Using engine fallback");
-            ImGui::TextColored(
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
                 loaded ? ImVec4(0.42f, 0.88f, 0.56f, 1.0f)
-                       : ImVec4(1.0f, 0.72f, 0.28f, 1.0f),
-                "%s",
-                resourceState
+                       : ImVec4(1.0f, 0.72f, 0.28f, 1.0f)
             );
+            ImGui::TextWrapped("%s", resourceState);
+            ImGui::PopStyleColor();
         }
         ImGui::SeparatorText("Material Mapping");
         drawMaterialControls(
@@ -929,6 +957,7 @@ void Renderer::buildImGuiFrame() {
         ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoBackground;
 
     ImGui::Begin("VulkCore Main Screen", nullptr, kMainWindowFlags);
@@ -953,7 +982,8 @@ void Renderer::buildImGuiFrame() {
     ImGui::BeginChild(
         "SceneToolbar",
         ImVec2(std::max(320.0f, mainWindowWidth - kPanelMargin * 2.0f), kToolbarHeight),
-        true
+        true,
+        ImGuiWindowFlags_NoScrollbar
     );
     ImGui::TextUnformatted("Scene Tools");
     ImGui::SameLine();
@@ -964,7 +994,7 @@ void Renderer::buildImGuiFrame() {
     ImGui::EndDisabled();
     if (!canCreateParticleSystem) {
         ImGui::SameLine();
-        ImGui::TextDisabled("Particle System limit reached (%u)", kMaximumParticleSystems);
+        ImGui::TextWrapped("Particle System limit reached (%u)", kMaximumParticleSystems);
     }
     ImGui::SameLine();
     if (ImGui::Button(sunPresent_ ? "Remove Sun" : "Add Sun")) {
@@ -986,22 +1016,43 @@ void Renderer::buildImGuiFrame() {
     ImGui::BeginChild(
         "SceneControls",
         ImVec2(kLeftPanelWidth, topPanelHeight),
-        true
+        true,
+        ImGuiWindowFlags_NoScrollbar
     );
     ImGui::TextUnformatted("VulkCore");
-    ImGui::TextDisabled("Vulkan scene rendered with Dear ImGui UI");
+    ImGui::TextWrapped("Vulkan scene rendered with Dear ImGui UI");
     ImGui::Separator();
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
     bool shouldSaveTransformSettings = false;
+    ImGui::SeparatorText("Camera");
+    ImGui::TextWrapped("The camera looks at the scene origin.");
+    ImGui::DragFloat3(
+        "Camera position (X/Y/Z)",
+        &cameraPosition_.x,
+        0.01f,
+        -100.0f,
+        100.0f,
+        "%.2f"
+    );
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (glm::length(cameraPosition_) < 0.05f) {
+            cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
+        }
+        shouldSaveTransformSettings = true;
+    }
+    if (ImGui::Button("Reset camera position")) {
+        cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
+        shouldSaveTransformSettings = true;
+    }
     bool removeSelectedNodeRequested = false;
     std::uint32_t selectedNodeIdToRemove = std::numeric_limits<std::uint32_t>::max();
     ImGui::SeparatorText("Transform");
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
-        ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
+        ImGui::TextWrapped("Node: %s", selectedModelNode_->name.c_str());
         selectedNodeIdToRemove = selectedModelNode_->nodeId;
-        ImGui::TextDisabled("Remove this node and all of its children from the scene.");
+        ImGui::TextWrapped("Remove this node and all of its children from the scene.");
         if (ImGui::Button("Remove from Scene")) {
             removeSelectedNodeRequested = true;
         }
@@ -1011,13 +1062,13 @@ void Renderer::buildImGuiFrame() {
             shouldSaveTransformSettings = true;
         }
         if (!renderEnabled) {
-            ImGui::TextDisabled("Rendering is disabled for this node and its children.");
+            ImGui::TextWrapped("Rendering is disabled for this node and its children.");
         }
         if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
             drawParticleSystemControls(*selectedModelNode_, shouldSaveTransformSettings);
         } else {
             if (selectedModelNode_->nodeId == sunNodeId_) {
-                ImGui::TextDisabled("Generated spherical sun mesh");
+                ImGui::TextWrapped("Generated spherical sun mesh");
             }
             const bool isRootNode = selectedModelNode_ == &meshData_.hierarchy;
             const bool isImportedModelRoot = std::any_of(
@@ -1031,7 +1082,7 @@ void Renderer::buildImGuiFrame() {
                 !selectedModelNode_->name.empty() &&
                 selectedModelNode_->name != "<unnamed>";
             if (isRootNode || isImportedModelRoot || isNamedMeshNode) {
-                ImGui::TextDisabled(
+                ImGui::TextWrapped(
                     isRootNode
                         ? "Transform applies to the scene root."
                         : isImportedModelRoot
@@ -1071,7 +1122,7 @@ void Renderer::buildImGuiFrame() {
                     shouldSaveTransformSettings = true;
                 }
             } else {
-                ImGui::TextDisabled("Transform is available for named mesh nodes only.");
+                ImGui::TextWrapped("Transform is available for named mesh nodes only.");
             }
 
             ImGui::SeparatorText("Node Animation");
@@ -1106,7 +1157,7 @@ void Renderer::buildImGuiFrame() {
             }
         }
     } else {
-        ImGui::TextDisabled("Select a scene object to edit its transform.");
+        ImGui::TextWrapped("Select a scene object to edit its transform.");
     }
     drawShaderDemoControls(shouldSaveTransformSettings);
     ImGui::Spacing();
@@ -1174,10 +1225,11 @@ void Renderer::buildImGuiFrame() {
     ImGui::BeginChild(
         "ModelHierarchy",
         ImVec2(kRightPanelWidth, topPanelHeight),
-        true
+        true,
+        ImGuiWindowFlags_NoScrollbar
     );
     ImGui::TextUnformatted("Scene Objects");
-    ImGui::TextDisabled("Imported model and generated GameObjects");
+    ImGui::TextWrapped("Imported model and generated GameObjects");
     ImGui::Separator();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!meshData_.hierarchy.name.empty()) {
@@ -1187,7 +1239,7 @@ void Renderer::buildImGuiFrame() {
         drawModelHierarchy(node);
     }
     if (meshData_.hierarchy.name.empty() && meshData_.additionalNodes.empty()) {
-        ImGui::TextDisabled("No model hierarchy available");
+        ImGui::TextWrapped("No model hierarchy available");
     }
     const bool rightPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
@@ -1200,7 +1252,8 @@ void Renderer::buildImGuiFrame() {
             std::max(320.0f, mainWindowWidth - kPanelMargin * 2.0f),
             std::max(160.0f, mainWindowHeight - resourcePanelY - kPanelMargin)
         ),
-        true
+        true,
+        ImGuiWindowFlags_NoScrollbar
     );
     drawResourceManager(shouldSaveTransformSettings);
     const bool resourcePanelHovered = ImGui::IsWindowHovered();
@@ -1227,4 +1280,3 @@ void Renderer::buildImGuiFrame() {
 
 
 } // namespace VulkCore
-
