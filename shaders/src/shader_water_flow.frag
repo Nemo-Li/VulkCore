@@ -3,6 +3,7 @@
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
+layout(location = 3) in vec3 fragWorldPosition;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 model;
@@ -10,15 +11,20 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 projection;
     vec4 time;
     vec4 viewport;
+    vec4 ambientLight;
+    vec4 sunLightDirection;
+    vec4 sunLightColor;
 } ubo;
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 2) uniform sampler2D sceneColorTexture;
+layout(set = 0, binding = 3) uniform sampler2D normalTexture;
+layout(set = 0, binding = 4) uniform sampler2D specularTexture;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
-    uint hasTexture;
+    uint textureFlags;
     float metallic;
     float roughness;
     float opacity;
@@ -35,6 +41,31 @@ vec2 proceduralFlow(vec2 uv) {
     float x = sin(uv.y * 6.0 + sin(uv.x * 2.0) * 1.8);
     float y = cos(uv.x * 4.0 - sin(uv.y * 3.0) * 1.2);
     return normalize(vec2(x * 0.8, y * 0.8) + vec2(0.001)) * 0.34;
+}
+
+vec3 applyNormalMap(vec3 geometricNormal, vec3 worldPosition, vec2 uv) {
+    vec3 positionDerivativeX = dFdx(worldPosition);
+    vec3 positionDerivativeY = dFdy(worldPosition);
+    vec2 uvDerivativeX = dFdx(uv);
+    vec2 uvDerivativeY = dFdy(uv);
+    float determinant = uvDerivativeX.x * uvDerivativeY.y -
+        uvDerivativeX.y * uvDerivativeY.x;
+    if (abs(determinant) < 0.0001) {
+        return normalize(geometricNormal);
+    }
+
+    vec3 tangent = normalize(
+        (positionDerivativeX * uvDerivativeY.y - positionDerivativeY * uvDerivativeX.y) /
+        determinant
+    );
+    tangent = normalize(tangent - geometricNormal * dot(geometricNormal, tangent));
+    vec3 bitangent = normalize(cross(geometricNormal, tangent));
+    vec3 tangentNormal = texture(normalTexture, uv).xyz * 2.0 - 1.0;
+    return normalize(
+        tangent * tangentNormal.x +
+        bitangent * tangentNormal.y +
+        geometricNormal * tangentNormal.z
+    );
 }
 
 vec2 configuredFlow(
@@ -100,7 +131,11 @@ void main() {
         fragTexCoord + vec2(0.0, epsilon), time, flowDirection,
         flowSpeed, flowStrength, flowTurbulence, waveScale
     ) - wave;
-    vec3 normal = normalize(fragNormal + vec3(
+    vec3 normal = normalize(fragNormal);
+    if ((material.textureFlags & 2u) != 0u) {
+        normal = applyNormalMap(normal, fragWorldPosition, fragTexCoord);
+    }
+    normal = normalize(normal + vec3(
         -slopeX * (0.9 + flowTurbulence * 0.8) * flowStrength,
         -slopeY * (0.9 + flowTurbulence * 0.8) * flowStrength,
         0.0
@@ -110,7 +145,7 @@ void main() {
     // the reference shader. The procedural field acts as the fallback when
     // the node is using its regular diffuse texture rather than a flow map.
     vec2 sampledFlow = vec2(0.0);
-    if (material.hasTexture != 0u) {
+    if ((material.textureFlags & 1u) != 0u) {
         sampledFlow = texture(textureSampler, fragTexCoord * 0.35).rg * 2.0 - 1.0;
         sampledFlow = clamp(sampledFlow, vec2(-1.0), vec2(1.0));
     }
@@ -125,17 +160,17 @@ void main() {
     vec2 uvB = fragTexCoord + flow * (phase - 0.5);
     float blendFactor = 0.5 + 0.5 * sin(time * max(flowSpeed, 0.01) * 2.4);
     vec3 movingTexture = vec3(1.0);
-    if (material.hasTexture != 0u) {
+    if ((material.textureFlags & 1u) != 0u) {
         vec3 sampleA = texture(textureSampler, uvA).rgb;
         vec3 sampleB = texture(textureSampler, uvB).rgb;
         movingTexture = mix(sampleA, sampleB, blendFactor);
     }
 
-    vec3 lightDirection = normalize(vec3(0.45, 0.55, 0.75));
+    vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     vec3 viewDirection = normalize(vec3(0.42, 0.48, 0.77));
-    const vec3 ambientLight = vec3(0.07, 0.13, 0.18);
-    const vec3 diffuseLight = vec3(0.72, 0.84, 0.94);
-    const vec3 specularLight = vec3(0.78, 0.94, 1.0);
+    vec3 ambientLight = max(ubo.ambientLight.rgb, vec3(0.0)) * max(ubo.ambientLight.a, 0.0);
+    vec3 diffuseLight = max(ubo.sunLightColor.rgb, vec3(0.0)) * max(ubo.sunLightDirection.w, 0.0);
+    vec3 specularLight = mix(vec3(0.78, 0.94, 1.0), diffuseLight, 0.35);
     float diffuseFactor = max(dot(normal, lightDirection), 0.0);
     float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
     vec3 halfwayDirection = normalize(lightDirection + viewDirection);
@@ -143,6 +178,10 @@ void main() {
     float metallic = clamp(material.metallic, 0.0, 1.0);
     float opacity = clamp(material.opacity, 0.0, 1.0);
     float specular = pow(max(dot(normal, halfwayDirection), 0.0), mix(96.0, 16.0, roughness));
+    float specularMapFactor = 1.0;
+    if ((material.textureFlags & 4u) != 0u) {
+        specularMapFactor = texture(specularTexture, fragTexCoord).r;
+    }
 
     vec3 waterColor = mix(
         vec3(0.01, 0.12, 0.2),
@@ -165,7 +204,7 @@ void main() {
     vec3 refractedColor = mix(waterColor, sceneRefraction, 0.48);
     vec3 reflectedColor = mix(vec3(0.08, 0.3, 0.42), sceneReflection, 0.78);
     waterColor = mix(refractedColor, reflectedColor, 0.2 + fresnel * 0.7);
-    waterColor += specularLight * specular * mix(0.75, 1.15, metallic);
+    waterColor += specularLight * specular * mix(0.75, 1.15, metallic) * specularMapFactor;
 
     outColor = vec4(waterColor, (0.72 + fresnel * 0.2) * opacity);
 }

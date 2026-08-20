@@ -50,6 +50,7 @@ private:
     void buildImGuiFrame();
     void loadTransformSettings();
     void saveTransformSettings() const;
+    void loadSunNodeSettings();
     void createBoundingBoxPipeline();
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
@@ -63,12 +64,18 @@ private:
         const glm::mat4& parentAnimation,
         bool& found
     ) const;
+    glm::mat4 animationTransformForSceneNode(
+        std::uint32_t targetNodeId,
+        float elapsedSeconds,
+        bool& found
+    ) const;
     void createRenderPass();
     void createSceneRenderResources();
     void destroySceneRenderResources();
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
     void createMeshData();
+    void createSunMesh();
     void createVertexBuffer();
     void createIndexBuffer();
     void createMaterialTextures();
@@ -96,6 +103,7 @@ private:
         const MaterialData& material
     ) const;
     std::uint32_t materialIndexForPart(const MeshPart& part) const;
+    std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
     void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -130,7 +138,10 @@ private:
     std::unique_ptr<Buffer> indexBuffer_;
     std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
     std::vector<std::unique_ptr<Texture>> materialTextures_;
+    std::vector<std::unique_ptr<Texture>> normalTextures_;
+    std::vector<std::unique_ptr<Texture>> specularTextures_;
     std::unique_ptr<Texture> fallbackTexture_;
+    std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
@@ -147,11 +158,22 @@ private:
     glm::vec3 modelTranslation_{0.0f};
     glm::vec3 modelRotationDegrees_{0.0f};
     float rotationSpeedDegrees_ = 12.0f;
+    glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
+    float ambientLightIntensity_ = 1.0f;
+    glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};
+    glm::vec3 sunLightColor_{0.82f, 0.86f, 0.9f};
+    float sunLightIntensity_ = 1.0f;
+    std::uint32_t sunNodeId_ = 0;
+    std::uint32_t sunMaterialIndex_ = 0;
     ModelNode* selectedModelNode_ = nullptr;
     std::array<char, 128> materialNameBuffer_{};
     std::int32_t materialNameMaterialIndex_ = -1;
     std::array<char, 512> materialTexturePathBuffer_{};
     std::int32_t materialTexturePathMaterialIndex_ = -1;
+    std::array<char, 512> materialNormalTexturePathBuffer_{};
+    std::int32_t materialNormalTexturePathMaterialIndex_ = -1;
+    std::array<char, 512> materialSpecularTexturePathBuffer_{};
+    std::int32_t materialSpecularTexturePathMaterialIndex_ = -1;
     std::array<Vertex, 24> boundingBoxVertices_{};
 };
 

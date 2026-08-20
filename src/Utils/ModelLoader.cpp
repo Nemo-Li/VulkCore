@@ -56,6 +56,32 @@ std::filesystem::path defaultDiffuseTexturePath(
     return modelPath.parent_path() / "tex" / (materialName + "-diffuse.png");
 }
 
+std::filesystem::path defaultMaterialTexturePath(
+    const std::filesystem::path& modelPath,
+    const std::string& materialName,
+    const char* textureName
+) {
+    return modelPath.parent_path() / "tex" / (materialName + "-" + textureName + ".png");
+}
+
+std::filesystem::path replaceDiffuseTextureName(
+    const std::filesystem::path& diffusePath,
+    const char* textureName
+) {
+    std::string filename = diffusePath.filename().string();
+    const std::string diffuseSuffix = "-diffuse";
+    const std::size_t suffixPosition = filename.rfind(diffuseSuffix);
+    if (suffixPosition != std::string::npos) {
+        filename.replace(suffixPosition, diffuseSuffix.size(), "-" + std::string(textureName));
+        return diffusePath.parent_path() / filename;
+    }
+
+    const std::filesystem::path stem = diffusePath.stem();
+    const std::string extension = diffusePath.extension().string();
+    return diffusePath.parent_path() /
+        (stem.string() + "-" + textureName + extension);
+}
+
 std::string stripNumericSuffix(std::string materialName) {
     const std::size_t dotPosition = materialName.rfind('.');
     if (dotPosition == std::string::npos || dotPosition == 0 || dotPosition + 1 >= materialName.size()) {
@@ -291,6 +317,8 @@ VulkCore::MaterialData readMaterial(
     if (material == nullptr) {
         materialData.name = "unnamed";
         materialData.texturePath = defaultDiffuseTexturePath(modelPath, "unnamed");
+        materialData.normalTexturePath = defaultMaterialTexturePath(modelPath, "unnamed", "normal");
+        materialData.specularTexturePath = defaultMaterialTexturePath(modelPath, "unnamed", "specular");
         std::cerr << "[VulkCore][FBX] material[" << materialIndex
                   << "] has no material data; default texture='"
                   << materialData.texturePath.string() << "'\n";
@@ -316,6 +344,9 @@ VulkCore::MaterialData readMaterial(
     aiString texturePath;
     bool hasBaseTextureReference = false;
     bool hasEmbeddedBaseTexture = false;
+    bool hasEmbeddedNormalTexture = false;
+    bool hasEmbeddedSpecularTexture = false;
+    std::filesystem::path externalDiffuseTexturePath;
     for (int textureTypeValue = aiTextureType_DIFFUSE;
          textureTypeValue <= aiTextureType_UNKNOWN;
          ++textureTypeValue) {
@@ -328,9 +359,15 @@ VulkCore::MaterialData readMaterial(
 
             const bool isBaseTexture =
                 textureType == aiTextureType_BASE_COLOR || textureType == aiTextureType_DIFFUSE;
+            const bool isNormalTexture =
+                textureType == aiTextureType_NORMALS || textureType == aiTextureType_HEIGHT;
+            const bool isSpecularTexture = textureType == aiTextureType_SPECULAR;
             hasBaseTextureReference = hasBaseTextureReference || isBaseTexture;
             const aiTexture* embeddedTexture = scene.GetEmbeddedTexture(texturePath.C_Str());
             const std::filesystem::path resolvedPath = resolveTexturePath(modelPath, texturePath);
+            if (isBaseTexture && externalDiffuseTexturePath.empty() && !resolvedPath.empty()) {
+                externalDiffuseTexturePath = resolvedPath;
+            }
 
             std::cerr << "[VulkCore][FBX]   "
                       << aiTextureTypeToString(textureType) << "[" << textureIndex << "] "
@@ -346,13 +383,19 @@ VulkCore::MaterialData readMaterial(
             }
             std::cerr << '\n';
 
-            if (hasEmbeddedBaseTexture || !isBaseTexture) {
-                continue;
-            }
-
-            if (embeddedTexture != nullptr) {
+            if (isBaseTexture && !hasEmbeddedBaseTexture && embeddedTexture != nullptr) {
                 materialData.embeddedTexture = copyEmbeddedTexture(scene, texturePath);
                 hasEmbeddedBaseTexture = !materialData.embeddedTexture.empty();
+            } else if (isNormalTexture && !hasEmbeddedNormalTexture && embeddedTexture != nullptr) {
+                materialData.embeddedNormalTexture = copyEmbeddedTexture(scene, texturePath);
+                hasEmbeddedNormalTexture = !materialData.embeddedNormalTexture.empty();
+            } else if (isSpecularTexture && !hasEmbeddedSpecularTexture && embeddedTexture != nullptr) {
+                materialData.embeddedSpecularTexture = copyEmbeddedTexture(scene, texturePath);
+                hasEmbeddedSpecularTexture = !materialData.embeddedSpecularTexture.empty();
+            } else if (isNormalTexture && materialData.normalTexturePath.empty() && !resolvedPath.empty()) {
+                materialData.normalTexturePath = resolvedPath;
+            } else if (isSpecularTexture && materialData.specularTexturePath.empty() && !resolvedPath.empty()) {
+                materialData.specularTexturePath = resolvedPath;
             }
         }
     }
@@ -365,6 +408,19 @@ VulkCore::MaterialData readMaterial(
                           : "no Base Color/Diffuse texture")
                   << "; material key='" << textureMaterialName
                   << "'; default texture='" << materialData.texturePath.string() << "'\n";
+    }
+
+    if (!hasEmbeddedNormalTexture && materialData.normalTexturePath.empty()) {
+        const std::filesystem::path diffusePath = externalDiffuseTexturePath.empty()
+            ? defaultDiffuseTexturePath(modelPath, textureMaterialName)
+            : externalDiffuseTexturePath;
+        materialData.normalTexturePath = replaceDiffuseTextureName(diffusePath, "normal");
+    }
+    if (!hasEmbeddedSpecularTexture && materialData.specularTexturePath.empty()) {
+        const std::filesystem::path diffusePath = externalDiffuseTexturePath.empty()
+            ? defaultDiffuseTexturePath(modelPath, textureMaterialName)
+            : externalDiffuseTexturePath;
+        materialData.specularTexturePath = replaceDiffuseTextureName(diffusePath, "specular");
     }
 
     return materialData;

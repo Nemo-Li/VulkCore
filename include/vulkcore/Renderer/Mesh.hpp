@@ -80,6 +80,8 @@ struct MaterialData {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float opacity = 1.0f;
+    glm::vec3 emissionColor{0.0f};
+    float emissionStrength = 0.0f;
     enum class BlendMode : std::uint8_t {
         Opaque = 0,
         AlphaBlend,
@@ -95,6 +97,10 @@ struct MaterialData {
     WaterShaderSettings waterShaderSettings;
     std::filesystem::path texturePath;
     EmbeddedTextureData embeddedTexture;
+    std::filesystem::path normalTexturePath;
+    EmbeddedTextureData embeddedNormalTexture;
+    std::filesystem::path specularTexturePath;
+    EmbeddedTextureData embeddedSpecularTexture;
 };
 
 struct MeshPart {
@@ -132,6 +138,10 @@ struct MeshData {
     std::vector<MaterialData> materials;
     std::vector<MeshPart> parts;
     ModelNode hierarchy;
+    // Nodes that live alongside the imported root node, such as generated
+    // scene primitives. They are intentionally not children of hierarchy so
+    // the scene tree can present multiple top-level objects.
+    std::vector<ModelNode> additionalNodes;
 };
 
 } // namespace VulkCore
