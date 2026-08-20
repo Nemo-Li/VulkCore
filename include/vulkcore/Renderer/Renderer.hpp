@@ -50,25 +50,15 @@ private:
     void buildImGuiFrame();
     void loadTransformSettings();
     void saveTransformSettings() const;
-    void loadSunNodeSettings();
     void createBoundingBoxPipeline();
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
     void selectModelNode(ModelNode& node);
+    void updateSceneNodeTransforms(float elapsedSeconds);
+    glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
+    glm::mat4 nodeManualTransform(const ModelNode& node) const;
     glm::mat4 nodeAnimationTransform(const ModelNode& node, float elapsedSeconds) const;
-    glm::mat4 animationTransformForNode(
-        const ModelNode& node,
-        std::uint32_t targetNodeId,
-        float elapsedSeconds,
-        const glm::mat4& parentAnimation,
-        bool& found
-    ) const;
-    glm::mat4 animationTransformForSceneNode(
-        std::uint32_t targetNodeId,
-        float elapsedSeconds,
-        bool& found
-    ) const;
     void createRenderPass();
     void createSceneRenderResources();
     void destroySceneRenderResources();
@@ -131,9 +121,9 @@ private:
     std::unordered_set<std::string> failedNodeComputePipelineKeys_;
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
+    std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
-    float modelScaleFactor_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
     std::unique_ptr<Buffer> indexBuffer_;
     std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
@@ -153,11 +143,6 @@ private:
     uint32_t currentFrame_ = 0;
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
-    bool showImGuiDemo_ = false;
-    bool autoRotate_ = false;
-    glm::vec3 modelTranslation_{0.0f};
-    glm::vec3 modelRotationDegrees_{0.0f};
-    float rotationSpeedDegrees_ = 12.0f;
     glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
     float ambientLightIntensity_ = 1.0f;
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};

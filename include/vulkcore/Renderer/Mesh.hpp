@@ -124,6 +124,12 @@ struct ModelNode {
     bool hasBounds = false;
     glm::vec3 boundsMinimum{0.0f};
     glm::vec3 boundsMaximum{0.0f};
+    // Editable transform owned by this node. Position is expressed in the
+    // renderer's normalized scene units; rotation and scale use this node's
+    // local model axes and pivot.
+    glm::vec3 transformTranslation{0.0f};
+    glm::vec3 transformRotationDegrees{0.0f};
+    float transformScaleFactor = 1.0f;
     bool rotationAnimationEnabled = false;
     glm::vec3 rotationAnimationInitialDegrees{0.0f};
     glm::vec3 rotationAnimationSpeedDegrees{0.0f};
