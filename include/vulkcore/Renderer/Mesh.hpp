@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,53 @@ struct EmbeddedTextureData {
     bool empty() const {
         return data.empty() || width == 0 || height == 0;
     }
+};
+
+enum class AnimationBehavior : std::uint8_t {
+    Default = 0,
+    Constant,
+    Linear,
+    Repeat,
+};
+
+struct SkeletonBone {
+    std::string name;
+    // Assimp bones are resolved against the imported node hierarchy. A bone
+    // can still be kept when its node is missing so the Inspector can report
+    // incomplete source data instead of dropping it.
+    std::uint32_t nodeId = std::numeric_limits<std::uint32_t>::max();
+    std::int32_t parentIndex = -1;
+    glm::mat4 offsetMatrix{1.0f};
+    std::uint32_t influenceCount = 0;
+};
+
+struct AnimationVectorKey {
+    double timeTicks = 0.0;
+    glm::vec3 value{0.0f};
+};
+
+struct AnimationRotationKey {
+    double timeTicks = 0.0;
+    // Quaternion components are stored as (x, y, z, w), matching Assimp.
+    glm::vec4 value{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+struct SkeletalAnimationChannel {
+    std::string nodeName;
+    std::int32_t boneIndex = -1;
+    AnimationBehavior preBehavior = AnimationBehavior::Default;
+    AnimationBehavior postBehavior = AnimationBehavior::Default;
+    std::vector<AnimationVectorKey> positionKeys;
+    std::vector<AnimationRotationKey> rotationKeys;
+    std::vector<AnimationVectorKey> scalingKeys;
+};
+
+struct SkeletalAnimationClip {
+    std::string name;
+    double durationTicks = 0.0;
+    double ticksPerSecond = 0.0;
+    std::uint32_t meshChannelCount = 0;
+    std::vector<SkeletalAnimationChannel> channels;
 };
 
 // Shader selections belong to a Material. Empty entries mean "use the
@@ -151,6 +199,10 @@ struct MeshData {
     std::vector<uint32_t> indices;
     std::vector<MaterialData> materials;
     std::vector<MeshPart> parts;
+    std::vector<SkeletonBone> skeletonBones;
+    std::size_t skinnedMeshCount = 0;
+    std::size_t skinWeightCount = 0;
+    std::vector<SkeletalAnimationClip> skeletalAnimations;
     ModelNode hierarchy;
     // Nodes that live alongside the imported root node, such as generated
     // scene primitives. They are intentionally not children of hierarchy so

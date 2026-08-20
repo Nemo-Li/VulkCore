@@ -1,6 +1,7 @@
 #include "vulkcore/Utils/ModelLoader.hpp"
 
 #include <assimp/Importer.hpp>
+#include <assimp/anim.h>
 #include <assimp/config.h>
 #include <assimp/material.h>
 #include <assimp/matrix3x3.h>
@@ -17,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include <glm/mat4x4.hpp>
@@ -426,6 +428,222 @@ VulkCore::MaterialData readMaterial(
     return materialData;
 }
 
+VulkCore::AnimationBehavior readAnimationBehavior(aiAnimBehaviour behavior) {
+    switch (behavior) {
+    case aiAnimBehaviour_DEFAULT:
+        return VulkCore::AnimationBehavior::Default;
+    case aiAnimBehaviour_CONSTANT:
+        return VulkCore::AnimationBehavior::Constant;
+    case aiAnimBehaviour_LINEAR:
+        return VulkCore::AnimationBehavior::Linear;
+    case aiAnimBehaviour_REPEAT:
+        return VulkCore::AnimationBehavior::Repeat;
+    case _aiAnimBehaviour_Force32Bit:
+        break;
+    }
+    return VulkCore::AnimationBehavior::Default;
+}
+
+void collectModelNodeMetadata(
+    const VulkCore::ModelNode& node,
+    std::unordered_map<std::string, std::uint32_t>& nodeIds,
+    std::unordered_map<std::uint32_t, std::uint32_t>& parentNodeIds
+) {
+    if (!node.name.empty()) {
+        nodeIds.emplace(node.name, node.nodeId);
+    }
+    for (const VulkCore::ModelNode& child : node.children) {
+        parentNodeIds[child.nodeId] = node.nodeId;
+        collectModelNodeMetadata(child, nodeIds, parentNodeIds);
+    }
+}
+
+void readSkeleton(
+    const aiScene& scene,
+    VulkCore::MeshData& meshData
+) {
+    std::unordered_map<std::string, std::uint32_t> boneIndices;
+    boneIndices.reserve(scene.mNumMeshes);
+
+    for (unsigned int meshIndex = 0; meshIndex < scene.mNumMeshes; ++meshIndex) {
+        const aiMesh* mesh = scene.mMeshes[meshIndex];
+        if (mesh == nullptr || mesh->mNumBones == 0 || mesh->mBones == nullptr) {
+            continue;
+        }
+
+        ++meshData.skinnedMeshCount;
+        for (unsigned int boneIndex = 0; boneIndex < mesh->mNumBones; ++boneIndex) {
+            const aiBone* bone = mesh->mBones[boneIndex];
+            if (bone == nullptr) {
+                continue;
+            }
+
+            const std::string boneName = bone->mName.length > 0
+                ? bone->mName.C_Str()
+                : "<unnamed bone>";
+            auto [boneIt, inserted] = boneIndices.emplace(
+                boneName,
+                static_cast<std::uint32_t>(meshData.skeletonBones.size())
+            );
+            if (inserted) {
+                VulkCore::SkeletonBone skeletonBone;
+                skeletonBone.name = boneName;
+                skeletonBone.offsetMatrix = toGlmMatrix(bone->mOffsetMatrix);
+                meshData.skeletonBones.push_back(std::move(skeletonBone));
+            }
+
+            VulkCore::SkeletonBone& skeletonBone =
+                meshData.skeletonBones[boneIt->second];
+            skeletonBone.influenceCount += bone->mNumWeights;
+            meshData.skinWeightCount += bone->mNumWeights;
+        }
+    }
+
+    if (meshData.skeletonBones.empty()) {
+        return;
+    }
+
+    std::unordered_map<std::string, std::uint32_t> nodeIds;
+    std::unordered_map<std::uint32_t, std::uint32_t> parentNodeIds;
+    collectModelNodeMetadata(meshData.hierarchy, nodeIds, parentNodeIds);
+
+    std::unordered_map<std::uint32_t, std::uint32_t> nodeBoneIndices;
+    for (std::size_t boneIndex = 0;
+         boneIndex < meshData.skeletonBones.size();
+         ++boneIndex) {
+        VulkCore::SkeletonBone& bone = meshData.skeletonBones[boneIndex];
+        const auto nodeIt = nodeIds.find(bone.name);
+        if (nodeIt == nodeIds.end()) {
+            continue;
+        }
+
+        bone.nodeId = nodeIt->second;
+        nodeBoneIndices.emplace(bone.nodeId, static_cast<std::uint32_t>(boneIndex));
+    }
+
+    for (VulkCore::SkeletonBone& bone : meshData.skeletonBones) {
+        if (bone.nodeId == std::numeric_limits<std::uint32_t>::max()) {
+            continue;
+        }
+        std::uint32_t currentNodeId = bone.nodeId;
+        while (true) {
+            const auto parentIt = parentNodeIds.find(currentNodeId);
+            if (parentIt == parentNodeIds.end()) {
+                break;
+            }
+            currentNodeId = parentIt->second;
+            const auto parentBoneIt = nodeBoneIndices.find(currentNodeId);
+            if (parentBoneIt != nodeBoneIndices.end()) {
+                bone.parentIndex = static_cast<std::int32_t>(parentBoneIt->second);
+                break;
+            }
+        }
+    }
+
+    std::cerr << "[VulkCore][FBX] skeleton has "
+              << meshData.skeletonBones.size() << " bone(s), "
+              << meshData.skinnedMeshCount << " skinned mesh(es), and "
+              << meshData.skinWeightCount << " weight(s)\n";
+}
+
+void readSkeletalAnimations(
+    const aiScene& scene,
+    const VulkCore::MeshData& meshData,
+    std::vector<VulkCore::SkeletalAnimationClip>& animations
+) {
+    if (scene.mNumAnimations == 0 || scene.mAnimations == nullptr) {
+        return;
+    }
+
+    std::unordered_map<std::string, std::int32_t> boneIndices;
+    boneIndices.reserve(meshData.skeletonBones.size());
+    for (std::size_t boneIndex = 0;
+         boneIndex < meshData.skeletonBones.size();
+         ++boneIndex) {
+        boneIndices.emplace(
+            meshData.skeletonBones[boneIndex].name,
+            static_cast<std::int32_t>(boneIndex)
+        );
+    }
+
+    animations.reserve(scene.mNumAnimations);
+    for (unsigned int animationIndex = 0;
+         animationIndex < scene.mNumAnimations;
+         ++animationIndex) {
+        const aiAnimation* animation = scene.mAnimations[animationIndex];
+        if (animation == nullptr) {
+            continue;
+        }
+
+        VulkCore::SkeletalAnimationClip clip;
+        clip.name = animation->mName.length > 0
+            ? animation->mName.C_Str()
+            : "Animation " + std::to_string(animationIndex);
+        clip.durationTicks = animation->mDuration;
+        clip.ticksPerSecond = animation->mTicksPerSecond;
+        clip.meshChannelCount = animation->mNumMeshChannels;
+        clip.channels.reserve(animation->mNumChannels);
+
+        for (unsigned int channelIndex = 0;
+             channelIndex < animation->mNumChannels;
+             ++channelIndex) {
+            if (animation->mChannels == nullptr) {
+                break;
+            }
+            const aiNodeAnim* channel = animation->mChannels[channelIndex];
+            if (channel == nullptr) {
+                continue;
+            }
+
+            VulkCore::SkeletalAnimationChannel animationChannel;
+            animationChannel.nodeName = channel->mNodeName.length > 0
+                ? channel->mNodeName.C_Str()
+                : "<unnamed node>";
+            const auto boneIt = boneIndices.find(animationChannel.nodeName);
+            if (boneIt != boneIndices.end()) {
+                animationChannel.boneIndex = boneIt->second;
+            }
+            animationChannel.preBehavior = readAnimationBehavior(channel->mPreState);
+            animationChannel.postBehavior = readAnimationBehavior(channel->mPostState);
+
+            animationChannel.positionKeys.reserve(channel->mNumPositionKeys);
+            for (unsigned int keyIndex = 0;
+                 keyIndex < channel->mNumPositionKeys;
+                 ++keyIndex) {
+                const aiVectorKey& key = channel->mPositionKeys[keyIndex];
+                animationChannel.positionKeys.push_back({
+                    key.mTime,
+                    {key.mValue.x, key.mValue.y, key.mValue.z}
+                });
+            }
+
+            animationChannel.rotationKeys.reserve(channel->mNumRotationKeys);
+            for (unsigned int keyIndex = 0;
+                 keyIndex < channel->mNumRotationKeys;
+                 ++keyIndex) {
+                const aiQuatKey& key = channel->mRotationKeys[keyIndex];
+                animationChannel.rotationKeys.push_back({
+                    key.mTime,
+                    {key.mValue.x, key.mValue.y, key.mValue.z, key.mValue.w}
+                });
+            }
+
+            animationChannel.scalingKeys.reserve(channel->mNumScalingKeys);
+            for (unsigned int keyIndex = 0;
+                 keyIndex < channel->mNumScalingKeys;
+                 ++keyIndex) {
+                const aiVectorKey& key = channel->mScalingKeys[keyIndex];
+                animationChannel.scalingKeys.push_back({
+                    key.mTime,
+                    {key.mValue.x, key.mValue.y, key.mValue.z}
+                });
+            }
+            clip.channels.push_back(std::move(animationChannel));
+        }
+        animations.push_back(std::move(clip));
+    }
+}
+
 } // namespace
 
 namespace VulkCore {
@@ -482,6 +700,11 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
         nextNodeId,
         meshData
     );
+    readSkeleton(*scene, meshData);
+    readSkeletalAnimations(*scene, meshData, meshData.skeletalAnimations);
+
+    std::cerr << "[VulkCore][FBX] parsed "
+              << meshData.skeletalAnimations.size() << " skeletal animation clip(s)\n";
 
     if (meshData.vertices.empty() || meshData.indices.empty() || meshData.parts.empty()) {
         throw std::runtime_error("model contains no renderable triangle mesh: " + path.string());
