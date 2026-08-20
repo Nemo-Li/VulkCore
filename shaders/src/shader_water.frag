@@ -19,9 +19,9 @@ layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
     uint hasTexture;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    float metallic;
+    float roughness;
+    float opacity;
     vec4 waterFlow;
     vec4 waterSurface;
 } material;
@@ -90,7 +90,10 @@ void main() {
     float diffuseFactor = max(dot(normal, lightDirection), 0.0);
     float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
     vec3 halfwayDirection = normalize(lightDirection + viewDirection);
-    float sparkle = pow(max(dot(normal, halfwayDirection), 0.0), 80.0);
+    float roughness = clamp(material.roughness, 0.04, 1.0);
+    float metallic = clamp(material.metallic, 0.0, 1.0);
+    float opacity = clamp(material.opacity, 0.0, 1.0);
+    float sparkle = pow(max(dot(normal, halfwayDirection), 0.0), mix(128.0, 24.0, roughness));
 
     vec3 deepWater = vec3(0.015, 0.16, 0.24);
     vec3 shallowWater = vec3(0.04, 0.48, 0.58);
@@ -116,7 +119,7 @@ void main() {
     vec3 refractedColor = mix(waterColor * (ambientLight + diffuseLight * diffuseFactor), sceneRefraction, 0.42);
     vec3 reflectedColor = mix(skyReflection, sceneReflection, 0.72);
     vec3 color = mix(refractedColor, reflectedColor, 0.22 + fresnel * 0.68);
-    color += specularLight * sparkle * 0.7;
+    color += specularLight * sparkle * mix(0.7, 1.1, metallic);
 
-    outColor = vec4(color, 0.76 + fresnel * 0.18);
+    outColor = vec4(color, (0.76 + fresnel * 0.18) * opacity);
 }

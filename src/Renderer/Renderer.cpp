@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <stdexcept>
 #include <string_view>
@@ -40,7 +41,9 @@ struct MaterialPushConstants {
     glm::mat4 nodeTransform{1.0f};
     glm::vec4 baseColor;
     std::uint32_t hasTexture = 0;
-    std::array<std::uint32_t, 3> padding{};
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    float opacity = 1.0f;
     glm::vec4 waterFlow{};
     glm::vec4 waterSurface{};
 };
@@ -131,10 +134,59 @@ const char* defaultShaderForStage(ShaderStage stage) {
     }
 }
 
-bool isWaterShaderConfiguration(const NodeShaderConfiguration& configuration) {
+bool isWaterShaderConfiguration(const ShaderConfiguration& configuration) {
     const std::string& fragmentShader = configuration.shader(ShaderStage::Fragment);
     return fragmentShader == "shader_water.frag" ||
         fragmentShader == "shader_water_flow.frag";
+}
+
+bool isTransparentMaterial(const MaterialData& material) {
+    return material.blendMode != MaterialData::BlendMode::Opaque;
+}
+
+const char* materialBlendModeLabel(MaterialData::BlendMode mode) {
+    switch (mode) {
+    case MaterialData::BlendMode::Opaque:
+        return "Opaque";
+    case MaterialData::BlendMode::AlphaBlend:
+        return "Alpha blend";
+    case MaterialData::BlendMode::Additive:
+        return "Additive";
+    case MaterialData::BlendMode::Multiply:
+        return "Multiply";
+    }
+    return "Opaque";
+}
+
+bool findInheritedMaterialOverride(
+    const ModelNode& node,
+    std::uint32_t targetNodeId,
+    std::int32_t inherited,
+    std::int32_t& result
+) {
+    if (node.materialOverride >= 0) {
+        inherited = node.materialOverride;
+    }
+    if (node.nodeId == targetNodeId) {
+        result = inherited;
+        return true;
+    }
+    for (const ModelNode& child : node.children) {
+        if (findInheritedMaterialOverride(child, targetNodeId, inherited, result)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::int32_t inheritedMaterialOverride(
+    const ModelNode& node,
+    std::uint32_t targetNodeId,
+    std::int32_t inherited
+) {
+    std::int32_t result = inherited;
+    findInheritedMaterialOverride(node, targetNodeId, inherited, result);
+    return result;
 }
 
 ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
@@ -155,20 +207,6 @@ bool hasNodeAnimationSettings(const ModelNode& node) {
         node.rotationAnimationSpeedDegrees != glm::vec3(0.0f);
 }
 
-bool hasNodeShaderSettings(const ModelNode& node) {
-    return !node.shaderConfiguration.empty();
-}
-
-bool hasNodeWaterSettings(const ModelNode& node) {
-    const WaterShaderSettings& settings = node.waterShaderSettings;
-    return settings.flowDirection != glm::vec2(0.0f, 1.0f) ||
-        settings.flowSpeed != 0.12f ||
-        settings.flowStrength != 1.0f ||
-        settings.flowTurbulence != 0.35f ||
-        settings.waveScale != 1.0f ||
-        settings.waveHeight != 0.025f;
-}
-
 void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     if (hasNodeAnimationSettings(node)) {
         file << "node_animation " << node.nodeId << ' '
@@ -185,30 +223,40 @@ void saveNodeAnimationSettings(std::ostream& file, const ModelNode& node) {
     }
 }
 
-void saveNodeShaderSettings(std::ostream& file, const ModelNode& node) {
-    if (hasNodeShaderSettings(node)) {
-        file << "node_shaders " << node.nodeId;
-        for (const std::string& shaderName : node.shaderConfiguration.shaderNames) {
-            file << ' ' << (shaderName.empty() ? "-" : shaderName);
-        }
-        file << "\n";
+void saveNodeMaterialSettings(std::ostream& file, const ModelNode& node) {
+    if (node.materialOverride >= 0) {
+        file << "node_material " << node.nodeId << ' '
+             << node.materialOverride << "\n";
     }
     for (const ModelNode& child : node.children) {
-        saveNodeShaderSettings(file, child);
+        saveNodeMaterialSettings(file, child);
     }
 }
 
-void saveNodeWaterSettings(std::ostream& file, const ModelNode& node) {
-    if (hasNodeWaterSettings(node)) {
-        const WaterShaderSettings& settings = node.waterShaderSettings;
-        file << "node_water " << node.nodeId << ' '
-             << settings.flowDirection.x << ' ' << settings.flowDirection.y << ' '
-             << settings.flowSpeed << ' ' << settings.flowStrength << ' '
-             << settings.flowTurbulence << ' ' << settings.waveScale << ' '
-             << settings.waveHeight << "\n";
-    }
-    for (const ModelNode& child : node.children) {
-        saveNodeWaterSettings(file, child);
+void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& materials) {
+    for (std::size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex) {
+        const MaterialData& material = materials[materialIndex];
+        if (!material.userCreated && !material.userModified) {
+            continue;
+        }
+        file << "material " << materialIndex << ' '
+             << std::quoted(material.name) << ' '
+             << material.baseColor.r << ' ' << material.baseColor.g << ' '
+             << material.baseColor.b << ' ' << material.baseColor.a << ' '
+             << material.metallic << ' ' << material.roughness << ' '
+             << material.opacity << ' '
+             << static_cast<int>(material.blendMode) << ' '
+             << (material.depthWrite ? 1 : 0) << ' '
+             << (material.doubleSided ? 1 : 0) << ' '
+             << std::quoted(material.texturePath.string());
+        for (const std::string& shaderName : material.shaderConfiguration.shaderNames) {
+            file << ' ' << (shaderName.empty() ? "-" : shaderName);
+        }
+        const WaterShaderSettings& water = material.waterShaderSettings;
+        file << ' ' << water.flowDirection.x << ' ' << water.flowDirection.y
+             << ' ' << water.flowSpeed << ' ' << water.flowStrength
+             << ' ' << water.flowTurbulence << ' ' << water.waveScale
+             << ' ' << water.waveHeight << "\n";
     }
 }
 
@@ -359,8 +407,177 @@ void Renderer::drawModelHierarchy(ModelNode& node) {
     ImGui::PopID();
 }
 
-void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings) {
-    ImGui::SeparatorText("Node Shaders");
+void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings) {
+    ImGui::SeparatorText("Node Material");
+    ImGui::TextDisabled("A material override applies to this node and its children.");
+
+    const std::int32_t inheritedOverride = inheritedMaterialOverride(
+        meshData_.hierarchy,
+        node.nodeId,
+        -1
+    );
+    const std::int32_t localOverride = node.materialOverride;
+    const std::int32_t effectiveOverride = localOverride >= 0
+        ? localOverride
+        : inheritedOverride;
+    const bool hasEffectiveMaterial = effectiveOverride >= 0 &&
+        static_cast<std::size_t>(effectiveOverride) < meshData_.materials.size();
+    const char* preview = localOverride >= 0
+        ? (hasEffectiveMaterial ? meshData_.materials[effectiveOverride].name.c_str() : "<Invalid material>")
+        : (inheritedOverride >= 0 ? "<Inherited material>" : "<Use mesh material>");
+
+    if (ImGui::BeginCombo("Material", preview)) {
+        const bool useMeshMaterial = node.materialOverride < 0;
+        if (ImGui::Selectable("<Use mesh material>", useMeshMaterial)) {
+            node.materialOverride = -1;
+            shouldSaveSettings = true;
+        }
+        for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
+            const bool selected = node.materialOverride == static_cast<std::int32_t>(materialIndex);
+            const std::string label = meshData_.materials[materialIndex].name.empty()
+                ? "Material " + std::to_string(materialIndex)
+                : meshData_.materials[materialIndex].name;
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                node.materialOverride = static_cast<std::int32_t>(materialIndex);
+                shouldSaveSettings = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    if (ImGui::Button("Create new Material")) {
+        MaterialData material;
+        material.name = "CustomMaterial_" + std::to_string(meshData_.materials.size());
+        material.userCreated = true;
+        meshData_.materials.push_back(material);
+        node.materialOverride = static_cast<std::int32_t>(meshData_.materials.size() - 1);
+        rebuildMaterialResources();
+        shouldSaveSettings = true;
+    }
+    if (hasEffectiveMaterial) {
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate for Node")) {
+            MaterialData material = meshData_.materials[effectiveOverride];
+            material.name += "_Copy";
+            material.userCreated = true;
+            meshData_.materials.push_back(std::move(material));
+            node.materialOverride = static_cast<std::int32_t>(meshData_.materials.size() - 1);
+            rebuildMaterialResources();
+            shouldSaveSettings = true;
+        }
+    }
+
+    if (!hasEffectiveMaterial) {
+        ImGui::TextDisabled("Select or create a material to edit its parameters.");
+        return;
+    }
+
+    MaterialData& material = meshData_.materials[effectiveOverride];
+    const auto markMaterialChanged = [&]() {
+        material.userModified = true;
+        shouldSaveSettings = true;
+    };
+    ImGui::Text("Editing: %s", material.name.c_str());
+    if (materialNameMaterialIndex_ != effectiveOverride) {
+        materialNameMaterialIndex_ = effectiveOverride;
+        materialNameBuffer_.fill('\0');
+        const std::size_t copyCount = std::min(
+            material.name.size(),
+            materialNameBuffer_.size() - 1
+        );
+        std::copy_n(material.name.data(), copyCount, materialNameBuffer_.data());
+    }
+    if (ImGui::InputText("Name", materialNameBuffer_.data(), materialNameBuffer_.size())) {
+        material.name = materialNameBuffer_.data();
+        markMaterialChanged();
+    }
+    ImGui::ColorEdit4("Base color", &material.baseColor.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
+    ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
+    ImGui::SliderFloat("Roughness", &material.roughness, 0.04f, 1.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
+    ImGui::SliderFloat("Opacity", &material.opacity, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
+
+    const std::array<MaterialData::BlendMode, 4> blendModes = {
+        MaterialData::BlendMode::Opaque,
+        MaterialData::BlendMode::AlphaBlend,
+        MaterialData::BlendMode::Additive,
+        MaterialData::BlendMode::Multiply,
+    };
+    const char* blendPreview = materialBlendModeLabel(material.blendMode);
+    if (ImGui::BeginCombo("Blend mode", blendPreview)) {
+        for (const MaterialData::BlendMode blendMode : blendModes) {
+            const bool selected = material.blendMode == blendMode;
+            if (ImGui::Selectable(materialBlendModeLabel(blendMode), selected)) {
+                material.blendMode = blendMode;
+                markMaterialChanged();
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::Checkbox("Depth write", &material.depthWrite)) {
+        markMaterialChanged();
+    }
+    if (ImGui::Checkbox("Double-sided", &material.doubleSided)) {
+        markMaterialChanged();
+    }
+
+    if (materialTexturePathMaterialIndex_ != effectiveOverride) {
+        materialTexturePathMaterialIndex_ = effectiveOverride;
+        materialTexturePathBuffer_.fill('\0');
+        const std::string path = material.texturePath.string();
+        const std::size_t copyCount = std::min(
+            path.size(),
+            materialTexturePathBuffer_.size() - 1
+        );
+        std::copy_n(path.data(), copyCount, materialTexturePathBuffer_.data());
+    }
+    ImGui::InputText(
+        "Base color texture",
+        materialTexturePathBuffer_.data(),
+        materialTexturePathBuffer_.size()
+    );
+    if (ImGui::Button("Load material texture")) {
+        material.texturePath = materialTexturePathBuffer_.data();
+        material.embeddedTexture = EmbeddedTextureData{};
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear texture")) {
+        material.texturePath.clear();
+        material.embeddedTexture = EmbeddedTextureData{};
+        materialTexturePathBuffer_.fill('\0');
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+
+    drawMaterialShaderControls(material, shouldSaveSettings);
+}
+
+void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings) {
+    const auto markMaterialChanged = [&]() {
+        material.userModified = true;
+        shouldSaveSettings = true;
+    };
+
+    ImGui::SeparatorText("Material Shaders");
     ImGui::TextDisabled("Empty stages fall back to the default shader.");
 
     const std::array<ShaderStage, kShaderStageCount> stages = {
@@ -372,15 +589,15 @@ void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings)
         ShaderStage::Compute
     };
     for (const ShaderStage stage : stages) {
-        std::string preview = node.shaderConfiguration.shader(stage).empty()
+        std::string preview = material.shaderConfiguration.shader(stage).empty()
             ? "<Default>"
-            : node.shaderConfiguration.shader(stage);
+            : material.shaderConfiguration.shader(stage);
         ImGui::PushID(static_cast<int>(stage));
         if (ImGui::BeginCombo(shaderStageLabel(stage), preview.c_str())) {
-            const bool defaultSelected = node.shaderConfiguration.shader(stage).empty();
+            const bool defaultSelected = material.shaderConfiguration.shader(stage).empty();
             if (ImGui::Selectable("<Default>", defaultSelected)) {
-                node.shaderConfiguration.shader(stage).clear();
-                shouldSaveSettings = true;
+                material.shaderConfiguration.shader(stage).clear();
+                markMaterialChanged();
             }
             if (defaultSelected) {
                 ImGui::SetItemDefaultFocus();
@@ -388,10 +605,10 @@ void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings)
 
             const auto& shaders = availableShaders_[static_cast<std::size_t>(stage)];
             for (const std::string& shaderName : shaders) {
-                const bool selected = node.shaderConfiguration.shader(stage) == shaderName;
+                const bool selected = material.shaderConfiguration.shader(stage) == shaderName;
                 if (ImGui::Selectable(shaderName.c_str(), selected)) {
-                    node.shaderConfiguration.shader(stage) = shaderName;
-                    shouldSaveSettings = true;
+                    material.shaderConfiguration.shader(stage) = shaderName;
+                    markMaterialChanged();
                 }
                 if (selected) {
                     ImGui::SetItemDefaultFocus();
@@ -403,54 +620,54 @@ void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings)
     }
 
     if (ImGui::Button("Apply water shader")) {
-        node.shaderConfiguration = NodeShaderConfiguration{};
-        node.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
-        node.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water.frag";
-        shouldSaveSettings = true;
+        material.shaderConfiguration = ShaderConfiguration{};
+        material.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
+        material.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water.frag";
+        markMaterialChanged();
     }
     ImGui::SameLine();
     if (ImGui::Button("Apply flowing water")) {
-        node.shaderConfiguration = NodeShaderConfiguration{};
-        node.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
-        node.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water_flow.frag";
-        shouldSaveSettings = true;
+        material.shaderConfiguration = ShaderConfiguration{};
+        material.shaderConfiguration.shader(ShaderStage::Vertex) = "shader_water.vert";
+        material.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_water_flow.frag";
+        markMaterialChanged();
     }
 
-    if (isWaterShaderConfiguration(node.shaderConfiguration)) {
+    if (isWaterShaderConfiguration(material.shaderConfiguration)) {
         ImGui::SeparatorText("Water Flow");
         ImGui::TextDisabled("Direction is in the mesh UV space: +X right, +Y up.");
         ImGui::DragFloat2(
             "Flow direction",
-            &node.waterShaderSettings.flowDirection.x,
+            &material.waterShaderSettings.flowDirection.x,
             0.01f,
             -1.0f,
             1.0f,
             "%.2f"
         );
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-            if (glm::length(node.waterShaderSettings.flowDirection) < 0.001f) {
-                node.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+            if (glm::length(material.waterShaderSettings.flowDirection) < 0.001f) {
+                material.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
             }
-            shouldSaveSettings = true;
+            markMaterialChanged();
         }
-        ImGui::SliderFloat("Flow speed", &node.waterShaderSettings.flowSpeed, 0.0f, 4.0f, "%.2f");
-        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SliderFloat("Flow strength", &node.waterShaderSettings.flowStrength, 0.0f, 4.0f, "%.2f");
-        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SliderFloat("Flow turbulence", &node.waterShaderSettings.flowTurbulence, 0.0f, 1.0f, "%.2f");
-        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SliderFloat("Wave scale", &node.waterShaderSettings.waveScale, 0.1f, 8.0f, "%.2f");
-        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
-        ImGui::SliderFloat("Wave height", &node.waterShaderSettings.waveHeight, 0.0f, 0.2f, "%.3f");
-        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SliderFloat("Flow speed", &material.waterShaderSettings.flowSpeed, 0.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) markMaterialChanged();
+        ImGui::SliderFloat("Flow strength", &material.waterShaderSettings.flowStrength, 0.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) markMaterialChanged();
+        ImGui::SliderFloat("Flow turbulence", &material.waterShaderSettings.flowTurbulence, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) markMaterialChanged();
+        ImGui::SliderFloat("Wave scale", &material.waterShaderSettings.waveScale, 0.1f, 8.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) markMaterialChanged();
+        ImGui::SliderFloat("Wave height", &material.waterShaderSettings.waveHeight, 0.0f, 0.2f, "%.3f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) markMaterialChanged();
         if (ImGui::Button("Reset water parameters")) {
-            node.waterShaderSettings = WaterShaderSettings{};
-            shouldSaveSettings = true;
+            material.waterShaderSettings = WaterShaderSettings{};
+            markMaterialChanged();
         }
     }
 
-    if (node.shaderConfiguration.hasComputeOverride()) {
-        if (computePipelineForNode(node) != VK_NULL_HANDLE) {
+    if (material.shaderConfiguration.hasComputeOverride()) {
+        if (computePipelineForMaterial(material) != VK_NULL_HANDLE) {
             ImGui::TextDisabled("Compute pipeline ready (not dispatched by the mesh pass).");
         } else {
             ImGui::TextColored(
@@ -459,9 +676,9 @@ void Renderer::drawNodeShaderControls(ModelNode& node, bool& shouldSaveSettings)
             );
         }
     }
-    if (ImGui::Button("Reset node shaders")) {
-        node.shaderConfiguration = NodeShaderConfiguration{};
-        shouldSaveSettings = true;
+    if (ImGui::Button("Reset material shaders")) {
+        material.shaderConfiguration = ShaderConfiguration{};
+        markMaterialChanged();
     }
 }
 
@@ -632,15 +849,25 @@ void Renderer::loadTransformSettings() {
     };
     struct PendingNodeShaders {
         std::uint32_t nodeId = 0;
-        NodeShaderConfiguration configuration;
+        ShaderConfiguration configuration;
     };
     struct PendingNodeWater {
         std::uint32_t nodeId = 0;
         WaterShaderSettings settings;
     };
+    struct PendingMaterial {
+        std::uint32_t materialIndex = 0;
+        MaterialData material;
+    };
+    struct PendingNodeMaterial {
+        std::uint32_t nodeId = 0;
+        std::int32_t materialIndex = -1;
+    };
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
     std::vector<PendingNodeShaders> pendingNodeShaders;
     std::vector<PendingNodeWater> pendingNodeWater;
+    std::vector<PendingMaterial> pendingMaterials;
+    std::vector<PendingNodeMaterial> pendingNodeMaterials;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -703,6 +930,74 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             pendingNodeWater.push_back(water);
+        } else if (key == "material") {
+            PendingMaterial pending;
+            int blendMode = 0;
+            int depthWrite = 1;
+            int doubleSided = 0;
+            std::string texturePath;
+            std::string materialLine;
+            std::getline(file, materialLine);
+            std::istringstream materialStream(materialLine);
+            if (!(materialStream >> pending.materialIndex >>
+                  std::quoted(pending.material.name) >>
+                  pending.material.baseColor.r >> pending.material.baseColor.g >>
+                  pending.material.baseColor.b >> pending.material.baseColor.a >>
+                  pending.material.metallic >> pending.material.roughness >>
+                  pending.material.opacity >> blendMode >> depthWrite >> doubleSided >>
+                  std::quoted(texturePath))) {
+                valid = false;
+                break;
+            }
+            if (blendMode < 0 || blendMode > 3 ||
+                (depthWrite != 0 && depthWrite != 1) ||
+                (doubleSided != 0 && doubleSided != 1)) {
+                valid = false;
+                break;
+            }
+            pending.material.blendMode = static_cast<MaterialData::BlendMode>(blendMode);
+            pending.material.depthWrite = depthWrite != 0;
+            pending.material.doubleSided = doubleSided != 0;
+            pending.material.texturePath = texturePath;
+            pending.material.userCreated = true;
+            // Material lines written by the first Material implementation did
+            // not contain shader/water fields. Keep those materials valid and
+            // use default shader/water settings when the optional suffix is
+            // absent.
+            std::string firstOptionalToken;
+            if (materialStream >> firstOptionalToken) {
+                pending.material.shaderConfiguration.shader(ShaderStage::Vertex) =
+                    shaderConfigToken(firstOptionalToken);
+                for (std::size_t stageIndex = 1; stageIndex < kShaderStageCount; ++stageIndex) {
+                    std::string token;
+                    if (!(materialStream >> token)) {
+                        valid = false;
+                        break;
+                    }
+                    pending.material.shaderConfiguration.shader(
+                        static_cast<ShaderStage>(stageIndex)
+                    ) = shaderConfigToken(token);
+                }
+                if (!valid || !(materialStream >> pending.material.waterShaderSettings.flowDirection.x >>
+                                pending.material.waterShaderSettings.flowDirection.y >>
+                                pending.material.waterShaderSettings.flowSpeed >>
+                                pending.material.waterShaderSettings.flowStrength >>
+                                pending.material.waterShaderSettings.flowTurbulence >>
+                                pending.material.waterShaderSettings.waveScale >>
+                                pending.material.waterShaderSettings.waveHeight)) {
+                    valid = false;
+                    break;
+                }
+            }
+            pendingMaterials.push_back(std::move(pending));
+        } else if (key == "node_material") {
+            PendingNodeMaterial material;
+            if (!(file >> material.nodeId >> material.materialIndex) ||
+                material.materialIndex < -1) {
+                valid = false;
+                break;
+            }
+            pendingNodeMaterials.push_back(material);
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -739,7 +1034,27 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(water.settings.waveHeight);
         }
     );
-    if (!valid || !finiteValues || !finiteNodeValues || !finiteWaterValues) {
+    const bool finiteMaterialValues = std::all_of(
+        pendingMaterials.begin(),
+        pendingMaterials.end(),
+        [](const PendingMaterial& pending) {
+            const glm::vec4& color = pending.material.baseColor;
+            return std::isfinite(color.r) && std::isfinite(color.g) &&
+                std::isfinite(color.b) && std::isfinite(color.a) &&
+                std::isfinite(pending.material.metallic) &&
+                std::isfinite(pending.material.roughness) &&
+                std::isfinite(pending.material.opacity) &&
+                std::isfinite(pending.material.waterShaderSettings.flowDirection.x) &&
+                std::isfinite(pending.material.waterShaderSettings.flowDirection.y) &&
+                std::isfinite(pending.material.waterShaderSettings.flowSpeed) &&
+                std::isfinite(pending.material.waterShaderSettings.flowStrength) &&
+                std::isfinite(pending.material.waterShaderSettings.flowTurbulence) &&
+                std::isfinite(pending.material.waterShaderSettings.waveScale) &&
+                std::isfinite(pending.material.waterShaderSettings.waveHeight);
+        }
+    );
+    if (!valid || !finiteValues || !finiteNodeValues || !finiteWaterValues ||
+        !finiteMaterialValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
         return;
@@ -752,6 +1067,34 @@ void Renderer::loadTransformSettings() {
         kMinimumModelScaleFactor,
         kMaximumModelScaleFactor
     );
+    for (PendingMaterial& pending : pendingMaterials) {
+        pending.material.baseColor = glm::clamp(
+            pending.material.baseColor,
+            glm::vec4(0.0f),
+            glm::vec4(1.0f)
+        );
+        pending.material.metallic = std::clamp(pending.material.metallic, 0.0f, 1.0f);
+        pending.material.roughness = std::clamp(pending.material.roughness, 0.04f, 1.0f);
+        pending.material.opacity = std::clamp(pending.material.opacity, 0.0f, 1.0f);
+        if (glm::length(pending.material.waterShaderSettings.flowDirection) < 0.001f) {
+            pending.material.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+        }
+        pending.material.waterShaderSettings.flowSpeed = std::clamp(
+            pending.material.waterShaderSettings.flowSpeed, 0.0f, 4.0f);
+        pending.material.waterShaderSettings.flowStrength = std::clamp(
+            pending.material.waterShaderSettings.flowStrength, 0.0f, 4.0f);
+        pending.material.waterShaderSettings.flowTurbulence = std::clamp(
+            pending.material.waterShaderSettings.flowTurbulence, 0.0f, 1.0f);
+        pending.material.waterShaderSettings.waveScale = std::clamp(
+            pending.material.waterShaderSettings.waveScale, 0.1f, 8.0f);
+        pending.material.waterShaderSettings.waveHeight = std::clamp(
+            pending.material.waterShaderSettings.waveHeight, 0.0f, 0.2f);
+        if (pending.materialIndex < meshData_.materials.size()) {
+            meshData_.materials[pending.materialIndex] = pending.material;
+        } else if (pending.materialIndex == meshData_.materials.size()) {
+            meshData_.materials.push_back(std::move(pending.material));
+        }
+    }
     for (const PendingNodeAnimation& animation : pendingNodeAnimations) {
         ModelNode* node = findModelNodeById(meshData_.hierarchy, animation.nodeId);
         if (node == nullptr) {
@@ -761,32 +1104,74 @@ void Renderer::loadTransformSettings() {
         node->rotationAnimationInitialDegrees = animation.initialDegrees;
         node->rotationAnimationSpeedDegrees = animation.speedDegrees;
     }
-    for (const PendingNodeShaders& shaders : pendingNodeShaders) {
-        ModelNode* node = findModelNodeById(meshData_.hierarchy, shaders.nodeId);
+    for (const PendingNodeMaterial& material : pendingNodeMaterials) {
+        ModelNode* node = findModelNodeById(meshData_.hierarchy, material.nodeId);
         if (node == nullptr) {
             continue;
         }
-        node->shaderConfiguration = shaders.configuration;
+        if (material.materialIndex >= 0 &&
+            static_cast<std::size_t>(material.materialIndex) >= meshData_.materials.size()) {
+            continue;
+        }
+        node->materialOverride = material.materialIndex;
+    }
+
+    // Migrate the previous node-owned shader/water settings into a material
+    // so existing projects keep their appearance after shader ownership moves
+    // from ModelNode to MaterialData.
+    std::unordered_set<std::uint32_t> legacyNodeIds;
+    for (const PendingNodeShaders& shaders : pendingNodeShaders) {
+        legacyNodeIds.insert(shaders.nodeId);
     }
     for (const PendingNodeWater& water : pendingNodeWater) {
-        ModelNode* node = findModelNodeById(meshData_.hierarchy, water.nodeId);
+        legacyNodeIds.insert(water.nodeId);
+    }
+    for (const std::uint32_t nodeId : legacyNodeIds) {
+        ModelNode* node = findModelNodeById(meshData_.hierarchy, nodeId);
         if (node == nullptr) {
             continue;
         }
-        node->waterShaderSettings = water.settings;
-        if (glm::length(node->waterShaderSettings.flowDirection) < 0.001f) {
-            node->waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+        const auto shaderIt = std::find_if(
+            pendingNodeShaders.begin(),
+            pendingNodeShaders.end(),
+            [nodeId](const PendingNodeShaders& shaders) {
+                return shaders.nodeId == nodeId;
+            }
+        );
+        const auto waterIt = std::find_if(
+            pendingNodeWater.begin(),
+            pendingNodeWater.end(),
+            [nodeId](const PendingNodeWater& water) {
+                return water.nodeId == nodeId;
+            }
+        );
+
+        std::int32_t materialIndex = node->materialOverride;
+        if (materialIndex < 0 ||
+            static_cast<std::size_t>(materialIndex) >= meshData_.materials.size()) {
+            const bool hasSourcePart = !node->meshPartIndices.empty() &&
+                node->meshPartIndices.front() < meshData_.parts.size();
+            const std::uint32_t sourceMaterialIndex = hasSourcePart
+                ? meshData_.parts[node->meshPartIndices.front()].materialIndex
+                : 0;
+            MaterialData migratedMaterial = sourceMaterialIndex < meshData_.materials.size()
+                ? meshData_.materials[sourceMaterialIndex]
+                : MaterialData{};
+            migratedMaterial.name = "MigratedMaterial_" + std::to_string(nodeId);
+            migratedMaterial.userCreated = true;
+            migratedMaterial.userModified = false;
+            meshData_.materials.push_back(std::move(migratedMaterial));
+            materialIndex = static_cast<std::int32_t>(meshData_.materials.size() - 1);
+            node->materialOverride = materialIndex;
         }
-        node->waterShaderSettings.flowSpeed = std::clamp(
-            node->waterShaderSettings.flowSpeed, 0.0f, 4.0f);
-        node->waterShaderSettings.flowStrength = std::clamp(
-            node->waterShaderSettings.flowStrength, 0.0f, 4.0f);
-        node->waterShaderSettings.flowTurbulence = std::clamp(
-            node->waterShaderSettings.flowTurbulence, 0.0f, 1.0f);
-        node->waterShaderSettings.waveScale = std::clamp(
-            node->waterShaderSettings.waveScale, 0.1f, 8.0f);
-        node->waterShaderSettings.waveHeight = std::clamp(
-            node->waterShaderSettings.waveHeight, 0.0f, 0.2f);
+
+        MaterialData& material = meshData_.materials[materialIndex];
+        if (shaderIt != pendingNodeShaders.end() && material.shaderConfiguration.empty()) {
+            material.shaderConfiguration = shaderIt->configuration;
+        }
+        if (waterIt != pendingNodeWater.end()) {
+            material.waterShaderSettings = waterIt->settings;
+        }
     }
 }
 
@@ -807,8 +1192,8 @@ void Renderer::saveTransformSettings() const {
          << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
          << "scale " << modelScaleFactor_ << "\n";
     saveNodeAnimationSettings(file, meshData_.hierarchy);
-    saveNodeShaderSettings(file, meshData_.hierarchy);
-    saveNodeWaterSettings(file, meshData_.hierarchy);
+    saveUserMaterials(file, meshData_.materials);
+    saveNodeMaterialSettings(file, meshData_.hierarchy);
 }
 
 void Renderer::buildImGuiFrame() {
@@ -908,7 +1293,7 @@ void Renderer::buildImGuiFrame() {
             selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
             shouldSaveTransformSettings = true;
         }
-        drawNodeShaderControls(*selectedModelNode_, shouldSaveTransformSettings);
+        drawNodeMaterialControls(*selectedModelNode_, shouldSaveTransformSettings);
     }
     if (shouldSaveTransformSettings) {
         saveTransformSettings();
@@ -1365,7 +1750,10 @@ VkShaderModule Renderer::shaderModule(const std::string& shaderName) {
     return module;
 }
 
-std::string Renderer::graphicsPipelineKey(const NodeShaderConfiguration& configuration) const {
+std::string Renderer::graphicsPipelineKey(
+    const ShaderConfiguration& configuration,
+    const MaterialData& material
+) const {
     std::string key;
     for (const ShaderStage stage : {
              ShaderStage::Vertex,
@@ -1377,10 +1765,16 @@ std::string Renderer::graphicsPipelineKey(const NodeShaderConfiguration& configu
         key += configuration.shader(stage);
         key += '\n';
     }
+    key += "blend=" + std::to_string(static_cast<int>(material.blendMode));
+    key += ";depthWrite=" + std::to_string(material.depthWrite ? 1 : 0);
+    key += ";doubleSided=" + std::to_string(material.doubleSided ? 1 : 0);
     return key;
 }
 
-VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& configuration) {
+VkPipeline Renderer::createMaterialGraphicsPipeline(
+    const ShaderConfiguration& configuration,
+    const MaterialData& material
+) {
     const bool hasTessellationControl =
         !configuration.shader(ShaderStage::TessellationControl).empty();
     const bool hasTessellationEvaluation =
@@ -1453,7 +1847,7 @@ VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& c
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.cullMode = material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -1465,7 +1859,9 @@ VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& c
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = isWaterShader ? VK_FALSE : VK_TRUE;
+    depthStencil.depthWriteEnable = isWaterShader
+        ? VK_FALSE
+        : (material.depthWrite ? VK_TRUE : VK_FALSE);
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -1476,9 +1872,16 @@ VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& c
         VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT |
         VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = isWaterShader ? VK_TRUE : VK_FALSE;
+    const bool enableBlend = isWaterShader || isTransparentMaterial(material);
+    colorBlendAttachment.blendEnable = enableBlend ? VK_TRUE : VK_FALSE;
     colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    if (material.blendMode == MaterialData::BlendMode::Additive) {
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else if (material.blendMode == MaterialData::BlendMode::Multiply) {
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    }
     colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
     colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -1535,12 +1938,16 @@ VkPipeline Renderer::createNodeGraphicsPipeline(const NodeShaderConfiguration& c
     return pipeline;
 }
 
-VkPipeline Renderer::graphicsPipelineForNode(const ModelNode& node) {
-    if (!node.shaderConfiguration.hasGraphicsOverride()) {
+VkPipeline Renderer::graphicsPipelineForMaterial(const MaterialData& material) {
+    const bool isDefaultMaterialState =
+        material.blendMode == MaterialData::BlendMode::Opaque &&
+        material.depthWrite &&
+        !material.doubleSided;
+    if (!material.shaderConfiguration.hasGraphicsOverride() && isDefaultMaterialState) {
         return graphicsPipeline_;
     }
 
-    const std::string key = graphicsPipelineKey(node.shaderConfiguration);
+    const std::string key = graphicsPipelineKey(material.shaderConfiguration, material);
     const auto existing = nodeGraphicsPipelines_.find(key);
     if (existing != nodeGraphicsPipelines_.end()) {
         return existing->second;
@@ -1550,19 +1957,32 @@ VkPipeline Renderer::graphicsPipelineForNode(const ModelNode& node) {
     }
 
     try {
-        const VkPipeline pipeline = createNodeGraphicsPipeline(node.shaderConfiguration);
+        const VkPipeline pipeline = createMaterialGraphicsPipeline(material.shaderConfiguration, material);
         nodeGraphicsPipelines_.emplace(key, pipeline);
         return pipeline;
     } catch (const std::exception& error) {
         failedNodeGraphicsPipelineKeys_.insert(key);
-        std::cerr << "warning: node " << node.nodeId
-                  << " shader pipeline failed, using default shaders: " << error.what() << '\n';
+        std::cerr << "warning: material '" << material.name
+                  << "' shader pipeline failed, using default shaders: " << error.what() << '\n';
         return graphicsPipeline_;
     }
 }
 
-VkPipeline Renderer::computePipelineForNode(const ModelNode& node) {
-    const std::string& computeShaderName = node.shaderConfiguration.shader(ShaderStage::Compute);
+std::uint32_t Renderer::materialIndexForPart(const MeshPart& part) const {
+    const std::int32_t overrideIndex = inheritedMaterialOverride(
+        meshData_.hierarchy,
+        part.nodeId,
+        -1
+    );
+    if (overrideIndex >= 0 &&
+        static_cast<std::size_t>(overrideIndex) < meshData_.materials.size()) {
+        return static_cast<std::uint32_t>(overrideIndex);
+    }
+    return part.materialIndex;
+}
+
+VkPipeline Renderer::computePipelineForMaterial(const MaterialData& material) {
+    const std::string& computeShaderName = material.shaderConfiguration.shader(ShaderStage::Compute);
     if (computeShaderName.empty()) {
         return VK_NULL_HANDLE;
     }
@@ -1606,8 +2026,8 @@ VkPipeline Renderer::computePipelineForNode(const ModelNode& node) {
         return pipeline;
     } catch (const std::exception& error) {
         failedNodeComputePipelineKeys_.insert(computeShaderName);
-        std::cerr << "warning: node " << node.nodeId
-                  << " compute shader pipeline failed: " << error.what() << '\n';
+        std::cerr << "warning: material '" << material.name
+                  << "' compute shader pipeline failed: " << error.what() << '\n';
         return VK_NULL_HANDLE;
     }
 }
@@ -1635,7 +2055,7 @@ void Renderer::createGraphicsPipeline() {
         throw std::runtime_error("failed to create pipeline layout!");
     }
 
-    graphicsPipeline_ = createNodeGraphicsPipeline(NodeShaderConfiguration{});
+    graphicsPipeline_ = createMaterialGraphicsPipeline(ShaderConfiguration{}, MaterialData{});
 }
 
 void Renderer::createBoundingBoxPipeline() {
@@ -1781,6 +2201,7 @@ void Renderer::createMeshData() {
         meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
         meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
         meshData_.materials.emplace_back();
+        meshData_.materials.back().name = "DefaultMaterial";
         meshData_.parts.push_back({0, static_cast<uint32_t>(meshData_.indices.size()), 0});
         meshData_.hierarchy.name = "Rectangle";
         meshData_.hierarchy.meshCount = 1;
@@ -1901,6 +2322,20 @@ void Renderer::createMaterialTextures() {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
         fallbackTexture_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1);
     }
+}
+
+void Renderer::rebuildMaterialResources() {
+    context_->waitIdle();
+    materialTextures_.clear();
+    fallbackTexture_.reset();
+    descriptorSets_.clear();
+    if (descriptorPool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
+        descriptorPool_ = VK_NULL_HANDLE;
+    }
+    createMaterialTextures();
+    createDescriptorPool();
+    createDescriptorSets();
 }
 
 void Renderer::createUniformBuffers() {
@@ -2166,14 +2601,17 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     };
 
-    const auto drawPart = [&](const MeshPart& part, const ModelNode* node) {
-        const VkPipeline nodePipeline = node != nullptr
-            ? graphicsPipelineForNode(*node)
-            : graphicsPipeline_;
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, nodePipeline);
+    const auto drawPart = [&](const MeshPart& part) {
+        const std::uint32_t materialIndex = materialIndexForPart(part);
+        if (materialIndex >= materialCount || materialIndex >= materialTextures_.size()) {
+            return;
+        }
+        const MaterialData& material = meshData_.materials[materialIndex];
+        const VkPipeline materialPipeline = graphicsPipelineForMaterial(material);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, materialPipeline);
 
         const std::size_t descriptorSetIndex =
-            static_cast<std::size_t>(currentFrame_) * materialCount + part.materialIndex;
+            static_cast<std::size_t>(currentFrame_) * materialCount + materialIndex;
         vkCmdBindDescriptorSets(
             commandBuffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2194,11 +2632,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             glm::mat4(1.0f),
             found
         );
-        materialPushConstants.baseColor = meshData_.materials[part.materialIndex].baseColor;
-        materialPushConstants.hasTexture = materialTextures_[part.materialIndex] != nullptr ? 1u : 0u;
-        const WaterShaderSettings waterSettings = node != nullptr
-            ? node->waterShaderSettings
-            : WaterShaderSettings{};
+        materialPushConstants.baseColor = material.baseColor;
+        materialPushConstants.hasTexture = materialTextures_[materialIndex] != nullptr ? 1u : 0u;
+        materialPushConstants.metallic = material.metallic;
+        materialPushConstants.roughness = material.roughness;
+        materialPushConstants.opacity = material.opacity;
+        const WaterShaderSettings& waterSettings = material.waterShaderSettings;
         materialPushConstants.waterFlow = glm::vec4(
             waterSettings.flowDirection,
             waterSettings.flowSpeed,
@@ -2242,14 +2681,16 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     // reflection and refraction source in the second pass.
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
     for (const MeshPart& part : meshData_.parts) {
-        if (part.materialIndex >= materialCount || part.indexCount == 0) {
+        const std::uint32_t materialIndex = materialIndexForPart(part);
+        if (materialIndex >= materialCount || part.indexCount == 0) {
             continue;
         }
+        const MaterialData& material = meshData_.materials[materialIndex];
         const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
         const bool isWater = node != nullptr &&
-            isWaterShaderConfiguration(node->shaderConfiguration);
-        if (!isWater) {
-            drawPart(part, node);
+            isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
+        if (!isWater && !isTransparentMaterial(material)) {
+            drawPart(part);
         }
     }
     vkCmdEndRenderPass(commandBuffer);
@@ -2441,12 +2882,16 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     // The opaque scene is already in the swap-chain color attachment. Only
     // water is rendered here so it can blend over and sample that scene.
     for (const MeshPart& part : meshData_.parts) {
-        if (part.materialIndex >= materialCount || part.indexCount == 0) {
+        const std::uint32_t materialIndex = materialIndexForPart(part);
+        if (materialIndex >= materialCount || part.indexCount == 0) {
             continue;
         }
+        const MaterialData& material = meshData_.materials[materialIndex];
         const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
-        if (node != nullptr && isWaterShaderConfiguration(node->shaderConfiguration)) {
-            drawPart(part, node);
+        const bool isWater = node != nullptr &&
+            isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
+        if (isWater || isTransparentMaterial(material)) {
+            drawPart(part);
         }
     }
 

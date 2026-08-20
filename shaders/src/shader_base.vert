@@ -17,6 +17,11 @@ layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
     uint hasTexture;
+    float metallic;
+    float roughness;
+    float opacity;
+    vec4 waterFlow;
+    vec4 waterSurface;
 } pushConstants;
 
 layout(location = 0) out vec2 fragTexCoord;
