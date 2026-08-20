@@ -50,12 +50,43 @@ private:
         VkFramebuffer framebuffer = VK_NULL_HANDLE;
     };
 
+    struct SceneModelResource {
+        std::uint32_t rootNodeId = 0;
+        std::filesystem::path path;
+        std::uint32_t materialStart = 0;
+        std::uint32_t materialCount = 0;
+    };
+
+    struct ModelResourceCacheEntry {
+        std::shared_ptr<MeshData> mesh;
+        std::vector<std::filesystem::path> texturePaths;
+        std::string error;
+    };
+
     void initializeImGui();
     void shutdownImGui();
     void buildImGuiFrame();
     void loadResourceSettings();
     void loadTransformSettings();
-    void saveTransformSettings() const;
+    bool saveTransformSettings() const;
+    void initializeEmptyScene();
+    void clearSceneData();
+    void recalculateSceneBounds();
+    void appendImportedModel(MeshData importedMesh, const std::filesystem::path& path);
+    void synchronizeModelResourceMaterial(
+        const std::filesystem::path& path,
+        std::size_t materialIndex,
+        const MaterialData& material
+    );
+    void refreshModelResourceCacheFromScene(const std::filesystem::path& path);
+    void discoverModelTextureResources(
+        const std::filesystem::path& modelPath,
+        ModelResourceCacheEntry& cache
+    );
+    void createNewEmptyScene();
+    void discoverSceneResources();
+    bool saveSceneResource(const std::filesystem::path& path);
+    bool loadSceneResource(const std::filesystem::path& path);
     void createBoundingBoxPipeline();
     void createParticlePipelines();
     void createPostProcessPipeline();
@@ -75,6 +106,7 @@ private:
         const glm::vec3& cameraUp
     );
     void createParticleSystemObject();
+    bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
@@ -88,7 +120,12 @@ private:
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
     void createMeshData();
-    void createSunMesh();
+    void createSunMesh(
+        const ModelNode* preservedNode = nullptr,
+        const MaterialData* preservedMaterial = nullptr
+    );
+    void removeSunMesh();
+    void rebuildSceneGeometryResources();
     void createVertexBuffer();
     void createIndexBuffer();
     void createMaterialTextures();
@@ -101,9 +138,17 @@ private:
     void createSyncObjects();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
+    void drawResourceModelHierarchy(const ModelNode& node);
     void drawResourceManager(bool& shouldSaveSettings);
-    void drawMaterialControls(std::int32_t materialIndex, bool& shouldSaveSettings);
+    void drawMaterialControls(
+        MaterialData& material,
+        std::int32_t materialKey,
+        bool& shouldSaveSettings,
+        const std::filesystem::path* modelResourcePath = nullptr
+    );
     bool importModelResource(const std::filesystem::path& path);
+    void discoverModelResources();
+    void selectModelResource(const std::filesystem::path& path);
     void discoverShaderBinaries();
     VkShaderModule shaderModule(const std::string& shaderName);
     VkPipeline createMaterialGraphicsPipeline(
@@ -154,6 +199,7 @@ private:
     MeshData meshData_;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
+    std::unordered_set<std::uint32_t> removedSceneNodeIds_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
@@ -200,6 +246,10 @@ private:
     bool postProcessSplitView_ = false;
     std::uint32_t sunNodeId_ = 0;
     std::uint32_t sunMaterialIndex_ = 0;
+    std::uint32_t sunPartIndex_ = 0;
+    std::uint32_t sunVertexStart_ = 0;
+    std::uint32_t sunIndexStart_ = 0;
+    bool sunPresent_ = false;
     ModelNode* selectedModelNode_ = nullptr;
     std::array<char, 128> materialNameBuffer_{};
     std::int32_t materialNameMaterialIndex_ = -1;
@@ -209,6 +259,7 @@ private:
     std::int32_t materialNormalTexturePathMaterialIndex_ = -1;
     std::array<char, 512> materialSpecularTexturePathBuffer_{};
     std::int32_t materialSpecularTexturePathMaterialIndex_ = -1;
+    std::string materialEditorContext_;
     enum class ResourceSelectionType : std::uint8_t {
         Model = 0,
         Material,
@@ -219,8 +270,21 @@ private:
         Normal,
         Specular,
     };
-    std::filesystem::path currentModelPath_{kModelPath};
     std::array<char, 1024> modelImportPathBuffer_{};
+    std::filesystem::path assetsDirectory_;
+    std::vector<std::filesystem::path> modelResourcePaths_;
+    std::vector<SceneModelResource> sceneModelResources_;
+    std::uint32_t nextSceneModelInstanceIndex_ = 0;
+    std::filesystem::path selectedModelResourcePath_;
+    std::shared_ptr<MeshData> selectedModelPreview_;
+    std::string selectedModelPreviewError_;
+    std::unordered_map<std::string, ModelResourceCacheEntry> modelResourceCache_;
+    std::filesystem::path scenesDirectory_;
+    std::vector<std::filesystem::path> sceneResourcePaths_;
+    std::filesystem::path currentScenePath_;
+    std::array<char, 512> scenePathBuffer_{};
+    std::string sceneStatus_;
+    bool sceneStatusFailed_ = false;
     ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;
     ResourceTextureSlot selectedResourceTextureSlot_ = ResourceTextureSlot::BaseColor;
     std::int32_t selectedResourceMaterialIndex_ = -1;

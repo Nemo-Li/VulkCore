@@ -35,7 +35,7 @@ src/                    C++ 实现
   Renderer/              Vulkan 渲染实现
   Utils/                 工具实现
 assets/textures/         可选外部纹理图片
-assets/models/            默认 FBX 模型
+assets/models/            模型资源
 docs/                     架构、图形管线、差距分析与演进设计
 third_party/stb/         stb_image.h 单头文件库
 shaders/src/             GLSL 源文件（支持 vert/tesc/tese/geom/frag/comp）
@@ -78,14 +78,8 @@ cmake --build build --parallel
 ./build/vulkcore
 ```
 
-默认会加载并显示 `assets/models/mill-scene.fbx`。如果要替换模型，在配置时传入新的路径：
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
-    -DVULKCORE_MODEL_PATH=/absolute/path/to/model.fbx
-cmake --build build --parallel
-./build/vulkcore
-```
+程序启动时默认显示空场景，不会自动导入 `assets/models` 中的模型。模型需要在运行时由
+Resource Manager 导入，或通过场景文件恢复。
 
 `loadModelMesh()` 会将 FBX 中的所有网格合并为一个 32 位索引网格，并应用节点变换、
 三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；同时保留 FBX 原始节点
@@ -144,11 +138,12 @@ AABB 立方体边框；节点本身显示其直接 Mesh 数量，但不会再额
 - `Render Enabled`：隐藏当前节点及其子节点的全部场景渲染
 - 节点旋转动画：设置初始角度和角速度
 
-`rootnode` 的变换作用于整个导入模型；例如选中生成的 Sun 时，变换只作用于 Sun，不会
-移动其他模型。`MeshPart` 仅是该 Mesh 的材质绘制分段，不保存独立 Transform。
+`rootnode` 的变换作用于整个导入模型；工具栏中的 `Add Sun` 会创建一个独立的 Sun 场景对象，
+其变换只作用于 Sun，不会移动其他模型。`MeshPart` 仅是该 Mesh 的材质绘制分段，不保存独立
+Transform。
 
-节点的变换参数、渲染开关和动画状态会自动保存到项目根目录的 `vulkcore.ini`，下次启动
-时自动恢复。已启用的节点动画会在切换选择后继续运行，嵌套节点按层级坐标系叠加。
+节点的变换参数、渲染开关和动画状态会保存到当前 `.scene` 文件。已启用的节点动画会在
+切换选择后继续运行，嵌套节点按层级坐标系叠加。
 
 #### Node Material 与 Resource Manager
 
@@ -165,9 +160,17 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 
 页面底部的 Resource Manager 是统一的资源导入与检查工作区：
 
-- 输入模型路径即可在运行时替换当前模型；成功导入后会重建网格、材质纹理和 Vulkan
-  descriptor 资源，并持久化当前模型路径。
-- 资源列表按 Model、Material、Texture 分类。
+- 输入模型路径即可在运行时向当前场景追加模型；成功导入后会重建网格、材质纹理和 Vulkan
+  descriptor 资源，已保存的当前场景会同步记录全部模型路径。
+- 资源列表会递归扫描 `assets` 下的模型文件，并按 Model、Material、Texture 分类。
+- 选中任意 Model 资源后，路径会自动填入上方 Import Model 输入框，右侧 Inspector 和中间
+  层级面板会展开显示该模型的导入信息；模型解析结果会缓存，重复切换时直接显示缓存信息；
+  点击 `Import Model` 可将其追加到当前场景。
+- 选中 Model 后，Materials 和 Textures 会切换到该模型自己的资源；材质支持编辑 Base Color、
+  Normal、Specular 三个纹理槽。模型同级 `tex` 文件夹中的图片会递归出现在候选列表，也可以
+  手动输入图片路径；修改后的材质配置会随当前场景保存，并同步到该模型的所有场景实例。
+- 场景文件默认保存在项目根目录的 `scenes/*.scene`；可在 Resource Manager 中保存当前
+  场景；`New Empty Scene` 会自动命名并保存空场景，或从 Scenes 列表加载已有场景。
 - 选择 Model 后可沿原始层级检查节点的导入材质与实际生效材质。
 - 选择 Material 或 Texture 后可查看三类纹理槽的加载/回退状态并重新指定资源。
 - `Apply engine-safe defaults` 可恢复当前引擎默认 Shader ABI、Opaque 混合和深度写入要求。
