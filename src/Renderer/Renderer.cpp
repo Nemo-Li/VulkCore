@@ -40,7 +40,7 @@ namespace {
 struct MaterialPushConstants {
     glm::mat4 nodeTransform{1.0f};
     glm::vec4 baseColor;
-    std::uint32_t hasTexture = 0;
+    std::uint32_t textureFlags = 0;
     float metallic = 0.0f;
     float roughness = 0.5f;
     float opacity = 1.0f;
@@ -179,16 +179,6 @@ bool findInheritedMaterialOverride(
     return false;
 }
 
-std::int32_t inheritedMaterialOverride(
-    const ModelNode& node,
-    std::uint32_t targetNodeId,
-    std::int32_t inherited
-) {
-    std::int32_t result = inherited;
-    findInheritedMaterialOverride(node, targetNodeId, inherited, result);
-    return result;
-}
-
 ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
     if (node.nodeId == nodeId) {
         return &node;
@@ -199,6 +189,26 @@ ModelNode* findModelNodeById(ModelNode& node, std::uint32_t nodeId) {
         }
     }
     return nullptr;
+}
+
+ModelNode* findSceneNodeById(MeshData& meshData, std::uint32_t nodeId) {
+    if (ModelNode* result = findModelNodeById(meshData.hierarchy, nodeId); result != nullptr) {
+        return result;
+    }
+    for (ModelNode& node : meshData.additionalNodes) {
+        if (ModelNode* result = findModelNodeById(node, nodeId); result != nullptr) {
+            return result;
+        }
+    }
+    return nullptr;
+}
+
+std::uint32_t maximumModelNodeId(const ModelNode& node) {
+    std::uint32_t maximum = node.nodeId;
+    for (const ModelNode& child : node.children) {
+        maximum = std::max(maximum, maximumModelNodeId(child));
+    }
+    return maximum;
 }
 
 bool hasNodeAnimationSettings(const ModelNode& node) {
@@ -256,7 +266,13 @@ void saveUserMaterials(std::ostream& file, const std::vector<MaterialData>& mate
         file << ' ' << water.flowDirection.x << ' ' << water.flowDirection.y
              << ' ' << water.flowSpeed << ' ' << water.flowStrength
              << ' ' << water.flowTurbulence << ' ' << water.waveScale
-             << ' ' << water.waveHeight << "\n";
+             << ' ' << water.waveHeight
+             << ' ' << material.emissionColor.r << ' '
+             << material.emissionColor.g << ' ' << material.emissionColor.b << ' '
+             << material.emissionStrength << "\n";
+        file << "material_textures " << materialIndex << ' '
+             << std::quoted(material.normalTexturePath.string()) << ' '
+             << std::quoted(material.specularTexturePath.string()) << "\n";
     }
 }
 
@@ -326,6 +342,37 @@ glm::mat4 Renderer::animationTransformForNode(
     return glm::mat4(1.0f);
 }
 
+glm::mat4 Renderer::animationTransformForSceneNode(
+    std::uint32_t targetNodeId,
+    float elapsedSeconds,
+    bool& found
+) const {
+    found = false;
+    glm::mat4 result = animationTransformForNode(
+        meshData_.hierarchy,
+        targetNodeId,
+        elapsedSeconds,
+        glm::mat4(1.0f),
+        found
+    );
+    if (found) {
+        return result;
+    }
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        result = animationTransformForNode(
+            node,
+            targetNodeId,
+            elapsedSeconds,
+            glm::mat4(1.0f),
+            found
+        );
+        if (found) {
+            return result;
+        }
+    }
+    return glm::mat4(1.0f);
+}
+
 void Renderer::updateBoundingBoxVertices() {
     boundingBoxVertices_.fill(Vertex{});
     if (selectedModelNode_ == nullptr || !selectedModelNode_->hasBounds) {
@@ -335,11 +382,9 @@ void Renderer::updateBoundingBoxVertices() {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
     bool found = false;
-    const glm::mat4 nodeTransform = animationTransformForNode(
-        meshData_.hierarchy,
+    const glm::mat4 nodeTransform = animationTransformForSceneNode(
         selectedModelNode_->nodeId,
         elapsedSeconds,
-        glm::mat4(1.0f),
         found
     );
 
@@ -361,6 +406,19 @@ void Renderer::updateBoundingBoxVertices() {
             nodeTransform * glm::vec4(corners[kBoundingBoxEdges[vertexIndex]], 1.0f)
         );
     }
+}
+
+std::int32_t Renderer::inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const {
+    std::int32_t result = -1;
+    if (findInheritedMaterialOverride(meshData_.hierarchy, nodeId, -1, result)) {
+        return result;
+    }
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        if (findInheritedMaterialOverride(node, nodeId, -1, result)) {
+            return result;
+        }
+    }
+    return -1;
 }
 
 void Renderer::drawModelHierarchy(ModelNode& node) {
@@ -411,11 +469,7 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
     ImGui::SeparatorText("Node Material");
     ImGui::TextDisabled("A material override applies to this node and its children.");
 
-    const std::int32_t inheritedOverride = inheritedMaterialOverride(
-        meshData_.hierarchy,
-        node.nodeId,
-        -1
-    );
+    const std::int32_t inheritedOverride = inheritedMaterialOverrideForSceneNode(node.nodeId);
     const std::int32_t localOverride = node.materialOverride;
     const std::int32_t effectiveOverride = localOverride >= 0
         ? localOverride
@@ -510,6 +564,15 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         markMaterialChanged();
     }
+    ImGui::SeparatorText("Emission");
+    ImGui::ColorEdit3("Emission color", &material.emissionColor.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
+    ImGui::SliderFloat("Emission strength", &material.emissionStrength, 0.0f, 20.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        markMaterialChanged();
+    }
 
     const std::array<MaterialData::BlendMode, 4> blendModes = {
         MaterialData::BlendMode::Opaque,
@@ -564,6 +627,74 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
         material.texturePath.clear();
         material.embeddedTexture = EmbeddedTextureData{};
         materialTexturePathBuffer_.fill('\0');
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+
+    const auto syncTexturePathBuffer = [](
+        std::array<char, 512>& buffer,
+        std::int32_t& bufferMaterialIndex,
+        std::int32_t materialIndex,
+        const std::filesystem::path& path
+    ) {
+        if (bufferMaterialIndex == materialIndex) {
+            return;
+        }
+        bufferMaterialIndex = materialIndex;
+        buffer.fill('\0');
+        const std::string pathString = path.string();
+        const std::size_t copyCount = std::min(pathString.size(), buffer.size() - 1);
+        std::copy_n(pathString.data(), copyCount, buffer.data());
+    };
+
+    syncTexturePathBuffer(
+        materialNormalTexturePathBuffer_,
+        materialNormalTexturePathMaterialIndex_,
+        effectiveOverride,
+        material.normalTexturePath
+    );
+    ImGui::InputText(
+        "Normal texture",
+        materialNormalTexturePathBuffer_.data(),
+        materialNormalTexturePathBuffer_.size()
+    );
+    if (ImGui::Button("Load normal texture")) {
+        material.normalTexturePath = materialNormalTexturePathBuffer_.data();
+        material.embeddedNormalTexture = EmbeddedTextureData{};
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear normal")) {
+        material.normalTexturePath.clear();
+        material.embeddedNormalTexture = EmbeddedTextureData{};
+        materialNormalTexturePathBuffer_.fill('\0');
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+
+    syncTexturePathBuffer(
+        materialSpecularTexturePathBuffer_,
+        materialSpecularTexturePathMaterialIndex_,
+        effectiveOverride,
+        material.specularTexturePath
+    );
+    ImGui::InputText(
+        "Specular texture",
+        materialSpecularTexturePathBuffer_.data(),
+        materialSpecularTexturePathBuffer_.size()
+    );
+    if (ImGui::Button("Load specular texture")) {
+        material.specularTexturePath = materialSpecularTexturePathBuffer_.data();
+        material.embeddedSpecularTexture = EmbeddedTextureData{};
+        rebuildMaterialResources();
+        markMaterialChanged();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear specular")) {
+        material.specularTexturePath.clear();
+        material.embeddedSpecularTexture = EmbeddedTextureData{};
+        materialSpecularTexturePathBuffer_.fill('\0');
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -702,6 +833,8 @@ Renderer::Renderer(GLFWwindow* window)
     swapChain_->createFramebuffers(renderPass_);
     createMeshData();
     loadTransformSettings();
+    createSunMesh();
+    loadSunNodeSettings();
     createVertexBuffer();
     createIndexBuffer();
     createBoundingBoxBuffers();
@@ -726,7 +859,10 @@ Renderer::~Renderer() {
     destroySceneRenderResources();
     uniformBuffers_.clear();
     materialTextures_.clear();
+    normalTextures_.clear();
+    specularTextures_.clear();
     fallbackTexture_.reset();
+    fallbackNormalTexture_.reset();
     indexBuffer_.reset();
     vertexBuffer_.reset();
     boundingBoxVertexBuffers_.clear();
@@ -841,6 +977,11 @@ void Renderer::loadTransformSettings() {
     glm::vec3 translation = modelTranslation_;
     glm::vec3 rotationDegrees = modelRotationDegrees_;
     float scaleFactor = modelScaleFactor_;
+    glm::vec3 ambientLightColor = ambientLightColor_;
+    float ambientLightIntensity = ambientLightIntensity_;
+    glm::vec3 sunLightDirection = sunLightDirection_;
+    glm::vec3 sunLightColor = sunLightColor_;
+    float sunLightIntensity = sunLightIntensity_;
     struct PendingNodeAnimation {
         std::uint32_t nodeId = 0;
         bool enabled = false;
@@ -859,6 +1000,11 @@ void Renderer::loadTransformSettings() {
         std::uint32_t materialIndex = 0;
         MaterialData material;
     };
+    struct PendingMaterialTextures {
+        std::uint32_t materialIndex = 0;
+        std::filesystem::path normalTexturePath;
+        std::filesystem::path specularTexturePath;
+    };
     struct PendingNodeMaterial {
         std::uint32_t nodeId = 0;
         std::int32_t materialIndex = -1;
@@ -867,6 +1013,7 @@ void Renderer::loadTransformSettings() {
     std::vector<PendingNodeShaders> pendingNodeShaders;
     std::vector<PendingNodeWater> pendingNodeWater;
     std::vector<PendingMaterial> pendingMaterials;
+    std::vector<PendingMaterialTextures> pendingMaterialTextures;
     std::vector<PendingNodeMaterial> pendingNodeMaterials;
     bool valid = true;
     std::string key;
@@ -988,8 +1135,31 @@ void Renderer::loadTransformSettings() {
                     valid = false;
                     break;
                 }
+                // Emission was added after the original material settings.
+                // Keep older config files valid when this optional suffix is
+                // absent.
+                if (materialStream >> pending.material.emissionColor.r) {
+                    if (!(materialStream >> pending.material.emissionColor.g >>
+                          pending.material.emissionColor.b >>
+                          pending.material.emissionStrength)) {
+                        valid = false;
+                        break;
+                    }
+                }
             }
             pendingMaterials.push_back(std::move(pending));
+        } else if (key == "material_textures") {
+            PendingMaterialTextures pending;
+            std::string normalTexturePath;
+            std::string specularTexturePath;
+            if (!(file >> pending.materialIndex >> std::quoted(normalTexturePath) >>
+                  std::quoted(specularTexturePath))) {
+                valid = false;
+                break;
+            }
+            pending.normalTexturePath = std::move(normalTexturePath);
+            pending.specularTexturePath = std::move(specularTexturePath);
+            pendingMaterialTextures.push_back(std::move(pending));
         } else if (key == "node_material") {
             PendingNodeMaterial material;
             if (!(file >> material.nodeId >> material.materialIndex) ||
@@ -998,6 +1168,31 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             pendingNodeMaterials.push_back(material);
+        } else if (key == "ambient_color") {
+            if (!(file >> ambientLightColor.r >> ambientLightColor.g >> ambientLightColor.b)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "ambient_intensity") {
+            if (!(file >> ambientLightIntensity)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "sun_light_direction") {
+            if (!(file >> sunLightDirection.x >> sunLightDirection.y >> sunLightDirection.z)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "sun_light_color") {
+            if (!(file >> sunLightColor.r >> sunLightColor.g >> sunLightColor.b)) {
+                valid = false;
+                break;
+            }
+        } else if (key == "sun_light_intensity") {
+            if (!(file >> sunLightIntensity)) {
+                valid = false;
+                break;
+            }
         } else {
             std::string ignoredLine;
             std::getline(file, ignoredLine);
@@ -1009,6 +1204,13 @@ void Renderer::loadTransformSettings() {
         std::isfinite(translation.z) && std::isfinite(rotationDegrees.x) &&
         std::isfinite(rotationDegrees.y) && std::isfinite(rotationDegrees.z) &&
         std::isfinite(scaleFactor);
+    const bool finiteLightingValues =
+        std::isfinite(ambientLightColor.r) && std::isfinite(ambientLightColor.g) &&
+        std::isfinite(ambientLightColor.b) && std::isfinite(ambientLightIntensity) &&
+        std::isfinite(sunLightDirection.x) && std::isfinite(sunLightDirection.y) &&
+        std::isfinite(sunLightDirection.z) && std::isfinite(sunLightColor.r) &&
+        std::isfinite(sunLightColor.g) && std::isfinite(sunLightColor.b) &&
+        std::isfinite(sunLightIntensity);
     const bool finiteNodeValues = std::all_of(
         pendingNodeAnimations.begin(),
         pendingNodeAnimations.end(),
@@ -1044,6 +1246,10 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(pending.material.metallic) &&
                 std::isfinite(pending.material.roughness) &&
                 std::isfinite(pending.material.opacity) &&
+                std::isfinite(pending.material.emissionColor.r) &&
+                std::isfinite(pending.material.emissionColor.g) &&
+                std::isfinite(pending.material.emissionColor.b) &&
+                std::isfinite(pending.material.emissionStrength) &&
                 std::isfinite(pending.material.waterShaderSettings.flowDirection.x) &&
                 std::isfinite(pending.material.waterShaderSettings.flowDirection.y) &&
                 std::isfinite(pending.material.waterShaderSettings.flowSpeed) &&
@@ -1053,7 +1259,7 @@ void Renderer::loadTransformSettings() {
                 std::isfinite(pending.material.waterShaderSettings.waveHeight);
         }
     );
-    if (!valid || !finiteValues || !finiteNodeValues || !finiteWaterValues ||
+    if (!valid || !finiteValues || !finiteLightingValues || !finiteNodeValues || !finiteWaterValues ||
         !finiteMaterialValues) {
         std::cerr << "warning: ignoring invalid VulkCore transform settings in '"
                   << configPath.string() << "'\n";
@@ -1067,6 +1273,16 @@ void Renderer::loadTransformSettings() {
         kMinimumModelScaleFactor,
         kMaximumModelScaleFactor
     );
+    ambientLightColor_ = glm::clamp(ambientLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
+    ambientLightIntensity_ = std::clamp(ambientLightIntensity, 0.0f, 4.0f);
+    sunLightDirection_ = sunLightDirection;
+    if (glm::length(sunLightDirection_) < 0.001f) {
+        sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
+    } else {
+        sunLightDirection_ = glm::normalize(sunLightDirection_);
+    }
+    sunLightColor_ = glm::clamp(sunLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
+    sunLightIntensity_ = std::clamp(sunLightIntensity, 0.0f, 4.0f);
     for (PendingMaterial& pending : pendingMaterials) {
         pending.material.baseColor = glm::clamp(
             pending.material.baseColor,
@@ -1076,6 +1292,16 @@ void Renderer::loadTransformSettings() {
         pending.material.metallic = std::clamp(pending.material.metallic, 0.0f, 1.0f);
         pending.material.roughness = std::clamp(pending.material.roughness, 0.04f, 1.0f);
         pending.material.opacity = std::clamp(pending.material.opacity, 0.0f, 1.0f);
+        pending.material.emissionColor = glm::clamp(
+            pending.material.emissionColor,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        );
+        pending.material.emissionStrength = std::clamp(
+            pending.material.emissionStrength,
+            0.0f,
+            20.0f
+        );
         if (glm::length(pending.material.waterShaderSettings.flowDirection) < 0.001f) {
             pending.material.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
         }
@@ -1090,10 +1316,34 @@ void Renderer::loadTransformSettings() {
         pending.material.waterShaderSettings.waveHeight = std::clamp(
             pending.material.waterShaderSettings.waveHeight, 0.0f, 0.2f);
         if (pending.materialIndex < meshData_.materials.size()) {
+            // Older material records predate the normal/specular texture
+            // fields. Preserve the imported defaults unless a separate
+            // material_textures record explicitly overrides them.
+            const MaterialData& importedMaterial = meshData_.materials[pending.materialIndex];
+            if (pending.material.normalTexturePath.empty() &&
+                pending.material.embeddedNormalTexture.empty()) {
+                pending.material.normalTexturePath = importedMaterial.normalTexturePath;
+                pending.material.embeddedNormalTexture = importedMaterial.embeddedNormalTexture;
+            }
+            if (pending.material.specularTexturePath.empty() &&
+                pending.material.embeddedSpecularTexture.empty()) {
+                pending.material.specularTexturePath = importedMaterial.specularTexturePath;
+                pending.material.embeddedSpecularTexture = importedMaterial.embeddedSpecularTexture;
+            }
             meshData_.materials[pending.materialIndex] = pending.material;
         } else if (pending.materialIndex == meshData_.materials.size()) {
             meshData_.materials.push_back(std::move(pending.material));
         }
+    }
+    for (const PendingMaterialTextures& pending : pendingMaterialTextures) {
+        if (pending.materialIndex >= meshData_.materials.size()) {
+            continue;
+        }
+        MaterialData& material = meshData_.materials[pending.materialIndex];
+        material.normalTexturePath = pending.normalTexturePath;
+        material.specularTexturePath = pending.specularTexturePath;
+        material.embeddedNormalTexture = EmbeddedTextureData{};
+        material.embeddedSpecularTexture = EmbeddedTextureData{};
     }
     for (const PendingNodeAnimation& animation : pendingNodeAnimations) {
         ModelNode* node = findModelNodeById(meshData_.hierarchy, animation.nodeId);
@@ -1175,6 +1425,65 @@ void Renderer::loadTransformSettings() {
     }
 }
 
+void Renderer::loadSunNodeSettings() {
+    if (sunNodeId_ == 0 || meshData_.additionalNodes.empty()) {
+        return;
+    }
+
+    ModelNode* sunNode = nullptr;
+    for (ModelNode& node : meshData_.additionalNodes) {
+        sunNode = findModelNodeById(node, sunNodeId_);
+        if (sunNode != nullptr) {
+            break;
+        }
+    }
+    if (sunNode == nullptr) {
+        return;
+    }
+
+    const std::filesystem::path configPath(kConfigPath);
+    std::ifstream file(configPath);
+    if (!file.is_open()) {
+        return;
+    }
+
+    std::string key;
+    while (file >> key) {
+        if (key == "node_animation") {
+            std::uint32_t nodeId = 0;
+            int enabled = 0;
+            glm::vec3 initialDegrees(0.0f);
+            glm::vec3 speedDegrees(0.0f);
+            if (!(file >> nodeId >> enabled >> initialDegrees.x >> initialDegrees.y >>
+                  initialDegrees.z >> speedDegrees.x >> speedDegrees.y >> speedDegrees.z)) {
+                return;
+            }
+            if (nodeId == sunNodeId_ && enabled >= 0 && enabled <= 1 &&
+                std::isfinite(initialDegrees.x) && std::isfinite(initialDegrees.y) &&
+                std::isfinite(initialDegrees.z) && std::isfinite(speedDegrees.x) &&
+                std::isfinite(speedDegrees.y) && std::isfinite(speedDegrees.z)) {
+                sunNode->rotationAnimationEnabled = enabled != 0;
+                sunNode->rotationAnimationInitialDegrees = initialDegrees;
+                sunNode->rotationAnimationSpeedDegrees = speedDegrees;
+            }
+        } else if (key == "node_material") {
+            std::uint32_t nodeId = 0;
+            std::int32_t materialIndex = -1;
+            if (!(file >> nodeId >> materialIndex)) {
+                return;
+            }
+            if (nodeId == sunNodeId_ && materialIndex >= -1 &&
+                (materialIndex == -1 ||
+                 static_cast<std::size_t>(materialIndex) < meshData_.materials.size())) {
+                sunNode->materialOverride = materialIndex;
+            }
+        } else {
+            std::string ignoredLine;
+            std::getline(file, ignoredLine);
+        }
+    }
+}
+
 void Renderer::saveTransformSettings() const {
     const std::filesystem::path configPath(kConfigPath);
     std::ofstream file(configPath, std::ios::trunc);
@@ -1190,10 +1499,24 @@ void Renderer::saveTransformSettings() const {
          << modelTranslation_.y << ' ' << modelTranslation_.z << "\n"
          << "rotation_degrees " << modelRotationDegrees_.x << ' '
          << modelRotationDegrees_.y << ' ' << modelRotationDegrees_.z << "\n"
-         << "scale " << modelScaleFactor_ << "\n";
+         << "scale " << modelScaleFactor_ << "\n"
+         << "ambient_color " << ambientLightColor_.r << ' '
+         << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
+         << "ambient_intensity " << ambientLightIntensity_ << "\n"
+         << "sun_light_direction " << sunLightDirection_.x << ' '
+         << sunLightDirection_.y << ' ' << sunLightDirection_.z << "\n"
+         << "sun_light_color " << sunLightColor_.r << ' '
+         << sunLightColor_.g << ' ' << sunLightColor_.b << "\n"
+         << "sun_light_intensity " << sunLightIntensity_ << "\n";
     saveNodeAnimationSettings(file, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        saveNodeAnimationSettings(file, node);
+    }
     saveUserMaterials(file, meshData_.materials);
     saveNodeMaterialSettings(file, meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        saveNodeMaterialSettings(file, node);
+    }
 }
 
 void Renderer::buildImGuiFrame() {
@@ -1225,8 +1548,57 @@ void Renderer::buildImGuiFrame() {
     ImGui::Separator();
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
-    ImGui::SeparatorText("Transform Debug");
     bool shouldSaveTransformSettings = false;
+    ImGui::SeparatorText("Environment Light");
+    ImGui::ColorEdit3("Ambient color", &ambientLightColor_.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        ambientLightColor_ = glm::clamp(
+            ambientLightColor_,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        );
+        shouldSaveTransformSettings = true;
+    }
+    ImGui::SliderFloat(
+        "Ambient intensity",
+        &ambientLightIntensity_,
+        0.0f,
+        4.0f,
+        "%.2f"
+    );
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::ColorEdit3("Sun light color", &sunLightColor_.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        sunLightColor_ = glm::clamp(sunLightColor_, glm::vec3(0.0f), glm::vec3(1.0f));
+        shouldSaveTransformSettings = true;
+    }
+    ImGui::SliderFloat("Sun light intensity", &sunLightIntensity_, 0.0f, 4.0f, "%.2f");
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat3(
+        "Sun light direction",
+        &sunLightDirection_.x,
+        0.01f,
+        -1.0f,
+        1.0f,
+        "%.2f"
+    );
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (glm::length(sunLightDirection_) < 0.001f) {
+            sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
+        } else {
+            sunLightDirection_ = glm::normalize(sunLightDirection_);
+        }
+        shouldSaveTransformSettings = true;
+    }
+    if (ImGui::Button("Reset environment light")) {
+        ambientLightColor_ = glm::vec3(0.18f, 0.21f, 0.24f);
+        ambientLightIntensity_ = 1.0f;
+        sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
+        sunLightColor_ = glm::vec3(0.82f, 0.86f, 0.9f);
+        sunLightIntensity_ = 1.0f;
+        shouldSaveTransformSettings = true;
+    }
+    ImGui::SeparatorText("Transform Debug");
     ImGui::DragFloat3(
         "Position (X/Y/Z)",
         &modelTranslation_.x,
@@ -1262,6 +1634,9 @@ void Renderer::buildImGuiFrame() {
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
         ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
+        if (selectedModelNode_->nodeId == sunNodeId_) {
+            ImGui::TextDisabled("Generated spherical sun mesh");
+        }
         ImGui::TextDisabled("Rotation uses the node's local model axes.");
 
         ImGui::Checkbox(
@@ -1311,13 +1686,17 @@ void Renderer::buildImGuiFrame() {
         kPanelMargin
     ));
     ImGui::BeginChild("ModelHierarchy", ImVec2(kRightPanelWidth, 0.0f), true);
-    ImGui::TextUnformatted("Model Hierarchy");
-    ImGui::TextDisabled("FBX internal node tree");
+    ImGui::TextUnformatted("Scene Objects");
+    ImGui::TextDisabled("Imported model and generated meshes");
     ImGui::Separator();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!meshData_.hierarchy.name.empty()) {
         drawModelHierarchy(meshData_.hierarchy);
-    } else {
+    }
+    for (ModelNode& node : meshData_.additionalNodes) {
+        drawModelHierarchy(node);
+    }
+    if (meshData_.hierarchy.name.empty() && meshData_.additionalNodes.empty()) {
         ImGui::TextDisabled("No model hierarchy available");
     }
     const bool rightPanelHovered = ImGui::IsWindowHovered();
@@ -1341,7 +1720,7 @@ void Renderer::buildImGuiFrame() {
 }
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -1368,6 +1747,16 @@ void Renderer::createDescriptorSetLayout() {
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1969,11 +2358,7 @@ VkPipeline Renderer::graphicsPipelineForMaterial(const MaterialData& material) {
 }
 
 std::uint32_t Renderer::materialIndexForPart(const MeshPart& part) const {
-    const std::int32_t overrideIndex = inheritedMaterialOverride(
-        meshData_.hierarchy,
-        part.nodeId,
-        -1
-    );
+    const std::int32_t overrideIndex = inheritedMaterialOverrideForSceneNode(part.nodeId);
     if (overrideIndex >= 0 &&
         static_cast<std::size_t>(overrideIndex) < meshData_.materials.size()) {
         return static_cast<std::uint32_t>(overrideIndex);
@@ -2233,6 +2618,109 @@ void Renderer::createMeshData() {
     modelScale_ = 1.8f / largestExtent;
 }
 
+void Renderer::createSunMesh() {
+    constexpr std::uint32_t kLatitudeSegments = 24;
+    constexpr std::uint32_t kLongitudeSegments = 36;
+    constexpr float kSunRadiusInViewport = 0.15f;
+    const glm::vec3 sunPositionInViewport(0.82f, 0.78f, 1.08f);
+    const float safeModelScale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
+    const glm::vec3 center = modelCenter_ + sunPositionInViewport / safeModelScale;
+    const float radius = kSunRadiusInViewport / safeModelScale;
+
+    const auto sunMaterial = std::find_if(
+        meshData_.materials.begin(),
+        meshData_.materials.end(),
+        [](const MaterialData& material) {
+            return material.name == "Sun";
+        }
+    );
+    if (sunMaterial == meshData_.materials.end()) {
+        MaterialData material;
+        material.name = "Sun";
+        material.baseColor = glm::vec4(1.0f, 0.55f, 0.06f, 1.0f);
+        material.roughness = 0.24f;
+        material.doubleSided = true;
+        material.userCreated = true;
+        material.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_sun.frag";
+        material.emissionColor = glm::vec3(1.0f, 0.22f, 0.015f);
+        material.emissionStrength = 3.5f;
+        meshData_.materials.push_back(std::move(material));
+        sunMaterialIndex_ = static_cast<std::uint32_t>(meshData_.materials.size() - 1);
+    } else {
+        sunMaterialIndex_ = static_cast<std::uint32_t>(
+            std::distance(meshData_.materials.begin(), sunMaterial)
+        );
+        if (sunMaterial->shaderConfiguration.shader(ShaderStage::Fragment).empty()) {
+            sunMaterial->shaderConfiguration.shader(ShaderStage::Fragment) = "shader_sun.frag";
+        }
+    }
+
+    const std::uint32_t sunNodeId = maximumModelNodeId(meshData_.hierarchy) + 1;
+    const std::uint32_t firstIndex = static_cast<std::uint32_t>(meshData_.indices.size());
+    const std::uint32_t vertexStart = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const float pi = std::acos(-1.0f);
+
+    meshData_.vertices.reserve(
+        meshData_.vertices.size() +
+        static_cast<std::size_t>(kLatitudeSegments + 1) * (kLongitudeSegments + 1)
+    );
+    for (std::uint32_t latitude = 0; latitude <= kLatitudeSegments; ++latitude) {
+        const float phi = pi * static_cast<float>(latitude) /
+            static_cast<float>(kLatitudeSegments);
+        const float sinPhi = std::sin(phi);
+        const float cosPhi = std::cos(phi);
+        for (std::uint32_t longitude = 0; longitude <= kLongitudeSegments; ++longitude) {
+            const float theta = 2.0f * pi * static_cast<float>(longitude) /
+                static_cast<float>(kLongitudeSegments);
+            const glm::vec3 normal(
+                sinPhi * std::cos(theta),
+                sinPhi * std::sin(theta),
+                cosPhi
+            );
+            meshData_.vertices.push_back({
+                center + normal * radius,
+                normal,
+                glm::vec2(
+                    static_cast<float>(longitude) / static_cast<float>(kLongitudeSegments),
+                    static_cast<float>(latitude) / static_cast<float>(kLatitudeSegments)
+                ),
+                glm::vec4(1.0f)
+            });
+        }
+    }
+
+    const std::uint32_t rowSize = kLongitudeSegments + 1;
+    for (std::uint32_t latitude = 0; latitude < kLatitudeSegments; ++latitude) {
+        for (std::uint32_t longitude = 0; longitude < kLongitudeSegments; ++longitude) {
+            const std::uint32_t first = vertexStart + latitude * rowSize + longitude;
+            const std::uint32_t second = first + rowSize;
+            meshData_.indices.insert(
+                meshData_.indices.end(),
+                {first, second, first + 1, second, second + 1, first + 1}
+            );
+        }
+    }
+
+    const std::uint32_t indexCount = static_cast<std::uint32_t>(
+        meshData_.indices.size() - firstIndex
+    );
+    const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
+    meshData_.parts.push_back({firstIndex, indexCount, sunMaterialIndex_, sunNodeId});
+
+    ModelNode sunNode;
+    sunNode.name = "Sun";
+    sunNode.nodeId = sunNodeId;
+    sunNode.meshCount = 1;
+    sunNode.globalTransform = glm::translate(glm::mat4(1.0f), center);
+    sunNode.meshPartIndices.push_back(partIndex);
+    sunNode.hasBounds = true;
+    sunNode.boundsMinimum = center - glm::vec3(radius);
+    sunNode.boundsMaximum = center + glm::vec3(radius);
+    sunNode.materialOverride = static_cast<std::int32_t>(sunMaterialIndex_);
+    meshData_.additionalNodes.push_back(std::move(sunNode));
+    sunNodeId_ = sunNodeId;
+}
+
 void Renderer::createVertexBuffer() {
     if (meshData_.vertices.empty()) {
         throw std::runtime_error("mesh has no vertices");
@@ -2282,52 +2770,90 @@ void Renderer::createIndexBuffer() {
 
 void Renderer::createMaterialTextures() {
     materialTextures_.resize(meshData_.materials.size());
-    bool needsFallbackTexture = false;
+    normalTextures_.resize(meshData_.materials.size());
+    specularTextures_.resize(meshData_.materials.size());
+    bool needsWhiteFallbackTexture = false;
+    bool needsNormalFallbackTexture = false;
+
+    const auto loadTexture = [this](
+        const EmbeddedTextureData& embeddedTexture,
+        const std::filesystem::path& texturePath,
+        const char* textureLabel,
+        std::size_t materialIndex
+    ) -> std::unique_ptr<Texture> {
+        try {
+            if (!embeddedTexture.empty()) {
+                if (embeddedTexture.compressed) {
+                    return std::make_unique<Texture>(*context_, embeddedTexture.data);
+                }
+                return std::make_unique<Texture>(
+                    *context_,
+                    embeddedTexture.data,
+                    embeddedTexture.width,
+                    embeddedTexture.height
+                );
+            }
+            if (!texturePath.empty()) {
+                return std::make_unique<Texture>(*context_, texturePath);
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "warning: failed to load " << textureLabel
+                      << " texture for material " << materialIndex << ": "
+                      << error.what() << '\n';
+        }
+        return nullptr;
+    };
 
     for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
         const MaterialData& material = meshData_.materials[materialIndex];
-        try {
-            if (!material.embeddedTexture.empty()) {
-                if (material.embeddedTexture.compressed) {
-                    materialTextures_[materialIndex] = std::make_unique<Texture>(
-                        *context_,
-                        material.embeddedTexture.data
-                    );
-                } else {
-                    materialTextures_[materialIndex] = std::make_unique<Texture>(
-                        *context_,
-                        material.embeddedTexture.data,
-                        material.embeddedTexture.width,
-                        material.embeddedTexture.height
-                    );
-                }
-            } else if (!material.texturePath.empty()) {
-                materialTextures_[materialIndex] = std::make_unique<Texture>(
-                    *context_,
-                    material.texturePath
-                );
-            }
-        } catch (const std::exception& error) {
-            std::cerr << "warning: failed to load FBX material texture for material "
-                      << materialIndex << ": " << error.what() << '\n';
-            materialTextures_[materialIndex].reset();
-        }
+        materialTextures_[materialIndex] = loadTexture(
+            material.embeddedTexture,
+            material.texturePath,
+            "base color",
+            materialIndex
+        );
+        normalTextures_[materialIndex] = loadTexture(
+            material.embeddedNormalTexture,
+            material.normalTexturePath,
+            "normal",
+            materialIndex
+        );
+        specularTextures_[materialIndex] = loadTexture(
+            material.embeddedSpecularTexture,
+            material.specularTexturePath,
+            "specular",
+            materialIndex
+        );
 
-        if (!materialTextures_[materialIndex]) {
-            needsFallbackTexture = true;
-        }
+        needsWhiteFallbackTexture = needsWhiteFallbackTexture ||
+            materialTextures_[materialIndex] == nullptr ||
+            specularTextures_[materialIndex] == nullptr;
+        needsNormalFallbackTexture = needsNormalFallbackTexture ||
+            normalTextures_[materialIndex] == nullptr;
     }
 
-    if (needsFallbackTexture || materialTextures_.empty()) {
+    if (needsWhiteFallbackTexture || materialTextures_.empty()) {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
         fallbackTexture_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1);
+    }
+    if (needsNormalFallbackTexture || normalTextures_.empty()) {
+        const std::vector<std::uint8_t> flatNormalPixel = {128, 128, 255, 255};
+        fallbackNormalTexture_ = std::make_unique<Texture>(
+            *context_,
+            flatNormalPixel,
+            1,
+            1
+        );
     }
 }
 
 void Renderer::rebuildMaterialResources() {
     context_->waitIdle();
     materialTextures_.clear();
+    normalTextures_.clear();
+    specularTextures_.clear();
     fallbackTexture_.reset();
+    fallbackNormalTexture_.reset();
     descriptorSets_.clear();
     if (descriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
@@ -2359,7 +2885,7 @@ void Renderer::createDescriptorPool() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = descriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = descriptorCount * 2;
+    poolSizes[1].descriptorCount = descriptorCount * 4;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2396,8 +2922,16 @@ void Renderer::createDescriptorSets() {
             if (texture == nullptr) {
                 texture = fallbackTexture_.get();
             }
-            if (texture == nullptr) {
-                throw std::runtime_error("FBX material has no usable texture or fallback texture");
+            const Texture* normalTexture = normalTextures_[materialIndex].get();
+            if (normalTexture == nullptr) {
+                normalTexture = fallbackNormalTexture_.get();
+            }
+            const Texture* specularTexture = specularTextures_[materialIndex].get();
+            if (specularTexture == nullptr) {
+                specularTexture = fallbackTexture_.get();
+            }
+            if (texture == nullptr || normalTexture == nullptr || specularTexture == nullptr) {
+                throw std::runtime_error("material has no usable texture fallback");
             }
 
             VkDescriptorBufferInfo bufferInfo{};
@@ -2405,12 +2939,18 @@ void Renderer::createDescriptorSets() {
             bufferInfo.offset = 0;
             bufferInfo.range = sizeof(UniformBufferObject);
 
-            VkDescriptorImageInfo imageInfo{};
-            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = texture->imageView();
-            imageInfo.sampler = texture->sampler();
+            VkDescriptorImageInfo imageInfos[3]{};
+            for (VkDescriptorImageInfo& imageInfo : imageInfos) {
+                imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            imageInfos[0].imageView = texture->imageView();
+            imageInfos[0].sampler = texture->sampler();
+            imageInfos[1].imageView = normalTexture->imageView();
+            imageInfos[1].sampler = normalTexture->sampler();
+            imageInfos[2].imageView = specularTexture->imageView();
+            imageInfos[2].sampler = specularTexture->sampler();
 
-            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+            std::array<VkWriteDescriptorSet, 4> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
@@ -2425,7 +2965,23 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[1].dstArrayElement = 0;
             descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorWrites[1].descriptorCount = 1;
-            descriptorWrites[1].pImageInfo = &imageInfo;
+            descriptorWrites[1].pImageInfo = &imageInfos[0];
+
+            descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[2].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[2].dstBinding = 3;
+            descriptorWrites[2].dstArrayElement = 0;
+            descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[2].descriptorCount = 1;
+            descriptorWrites[2].pImageInfo = &imageInfos[1];
+
+            descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[3].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[3].dstBinding = 4;
+            descriptorWrites[3].dstArrayElement = 0;
+            descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[3].descriptorCount = 1;
+            descriptorWrites[3].pImageInfo = &imageInfos[2];
 
             vkUpdateDescriptorSets(
                 context_->device(),
@@ -2520,6 +3076,22 @@ void Renderer::updateUniformBuffer() {
     );
     // GLM follows OpenGL's Y direction; Vulkan's viewport uses the opposite one.
     ubo.projection[1][1] *= -1.0f;
+
+    const glm::vec3 normalizedSunDirection = glm::length(sunLightDirection_) < 0.001f
+        ? glm::vec3(0.45f, 0.55f, 0.75f)
+        : glm::normalize(sunLightDirection_);
+    ubo.ambientLight = glm::vec4(
+        glm::clamp(ambientLightColor_, glm::vec3(0.0f), glm::vec3(1.0f)),
+        std::clamp(ambientLightIntensity_, 0.0f, 4.0f)
+    );
+    ubo.sunLightDirection = glm::vec4(
+        normalizedSunDirection,
+        std::clamp(sunLightIntensity_, 0.0f, 4.0f)
+    );
+    ubo.sunLightColor = glm::vec4(
+        glm::clamp(sunLightColor_, glm::vec3(0.0f), glm::vec3(1.0f)),
+        1.0f
+    );
 
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
 }
@@ -2625,15 +3197,16 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
         MaterialPushConstants materialPushConstants{};
         bool found = false;
-        materialPushConstants.nodeTransform = animationTransformForNode(
-            meshData_.hierarchy,
+        materialPushConstants.nodeTransform = animationTransformForSceneNode(
             part.nodeId,
             elapsedSeconds,
-            glm::mat4(1.0f),
             found
         );
         materialPushConstants.baseColor = material.baseColor;
-        materialPushConstants.hasTexture = materialTextures_[materialIndex] != nullptr ? 1u : 0u;
+        materialPushConstants.textureFlags =
+            (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
+            (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
+            (specularTextures_[materialIndex] != nullptr ? 4u : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.opacity;
@@ -2649,6 +3222,15 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             waterSettings.waveHeight,
             0.0f
         );
+        if (!isWaterShaderConfiguration(material.shaderConfiguration)) {
+            // The default shader uses this slot for emission. Water shaders
+            // keep the same 128-byte push-constant layout for compatibility
+            // with Vulkan devices that only expose the guaranteed minimum.
+            materialPushConstants.waterSurface = glm::vec4(
+                material.emissionColor,
+                material.emissionStrength
+            );
+        }
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
@@ -2686,7 +3268,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             continue;
         }
         const MaterialData& material = meshData_.materials[materialIndex];
-        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+        const ModelNode* node = findSceneNodeById(meshData_, part.nodeId);
         const bool isWater = node != nullptr &&
             isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
         if (!isWater && !isTransparentMaterial(material)) {
@@ -2887,7 +3469,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             continue;
         }
         const MaterialData& material = meshData_.materials[materialIndex];
-        const ModelNode* node = findModelNodeById(meshData_.hierarchy, part.nodeId);
+        const ModelNode* node = findSceneNodeById(meshData_, part.nodeId);
         const bool isWater = node != nullptr &&
             isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
         if (isWater || isTransparentMaterial(material)) {

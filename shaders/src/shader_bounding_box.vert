@@ -6,6 +6,11 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 projection;
+    vec4 time;
+    vec4 viewport;
+    vec4 ambientLight;
+    vec4 sunLightDirection;
+    vec4 sunLightColor;
 } ubo;
 
 void main() {

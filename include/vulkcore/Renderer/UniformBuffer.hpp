@@ -12,6 +12,9 @@ struct UniformBufferObject {
     // value 16-byte aligned for GLSL std140 uniform-buffer layout.
     glm::vec4 time{0.0f};
     glm::vec4 viewport{0.0f}; // width, height, 1/width, 1/height
+    glm::vec4 ambientLight{0.18f, 0.21f, 0.24f, 1.0f}; // rgb color, intensity
+    glm::vec4 sunLightDirection{0.45f, 0.55f, 0.75f, 1.0f}; // xyz direction, intensity
+    glm::vec4 sunLightColor{0.82f, 0.86f, 0.9f, 1.0f}; // rgb color, reserved alpha
 };
 
 } // namespace VulkCore

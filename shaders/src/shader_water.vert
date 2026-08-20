@@ -11,12 +11,15 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 projection;
     vec4 time;
     vec4 viewport;
+    vec4 ambientLight;
+    vec4 sunLightDirection;
+    vec4 sunLightColor;
 } ubo;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
-    uint hasTexture;
+    uint textureFlags;
     float metallic;
     float roughness;
     float opacity;
@@ -27,6 +30,7 @@ layout(push_constant) uniform MaterialPushConstants {
 layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec4 fragVertexColor;
+layout(location = 3) out vec3 fragWorldPosition;
 
 void main() {
     // Two slightly different waves avoid a uniform sine-wave look while
@@ -57,9 +61,11 @@ void main() {
     vec3 displacedPosition = inPosition + normalize(inNormal) * displacement;
     mat4 model = ubo.model * pushConstants.nodeTransform;
     mat3 normalMatrix = transpose(inverse(mat3(model)));
+    vec3 worldPosition = (model * vec4(displacedPosition, 1.0)).xyz;
 
-    gl_Position = ubo.projection * ubo.view * model * vec4(displacedPosition, 1.0);
+    gl_Position = ubo.projection * ubo.view * vec4(worldPosition, 1.0);
     fragTexCoord = inTexCoord;
     fragNormal = normalize(normalMatrix * inNormal);
     fragVertexColor = inColor;
+    fragWorldPosition = worldPosition;
 }
