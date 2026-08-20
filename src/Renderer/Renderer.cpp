@@ -52,6 +52,64 @@ constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
 constexpr char kDefaultVertexShader[] = "shader_base.vert";
 constexpr char kDefaultFragmentShader[] = "shader_base.frag";
+
+struct PostProcessDemo {
+    const char* name;
+    const char* description;
+    float defaultStrength;
+    float defaultParameter;
+};
+
+// These modes mirror the screen-space chapters in 3D Game Shaders For
+// Beginners. They intentionally share one full-screen pipeline so switching
+// demos is immediate and does not rebuild Vulkan objects at run time.
+constexpr std::array<PostProcessDemo, 22> kPostProcessDemos = {{
+    {"Render to Texture (original)", "Displays the off-screen color target without modification.", 1.0f, 0.5f},
+    {"Fog", "Reconstructs view depth and blends distant pixels into atmospheric color.", 0.75f, 0.45f},
+    {"Box Blur", "A square neighborhood blur with an adjustable sampling radius.", 1.0f, 0.35f},
+    {"Median Filter", "Rejects isolated color noise using a compact median-like filter.", 1.0f, 0.45f},
+    {"Kuwahara Painterly", "Chooses the lowest-variance quadrant to preserve painted edges.", 1.0f, 0.55f},
+    {"Bloom", "Extracts bright pixels and adds a soft glow around them.", 0.9f, 0.55f},
+    {"SSAO", "Estimates ambient occlusion from neighboring depth samples.", 0.8f, 0.55f},
+    {"Motion Blur", "Accumulates samples along an animated screen-space velocity.", 0.75f, 0.45f},
+    {"Chromatic Aberration", "Offsets red and blue channels radially from the image center.", 0.8f, 0.45f},
+    {"Screen-space Reflection", "Reflects nearby screen color using a depth-aware vertical trace.", 0.75f, 0.5f},
+    {"Screen-space Refraction", "Distorts the scene with an animated refractive field.", 0.65f, 0.45f},
+    {"Outlining", "Detects color and depth discontinuities to draw contours.", 0.9f, 0.45f},
+    {"Depth of Field", "Blurs pixels away from the selected focus depth.", 0.9f, 0.5f},
+    {"Posterization", "Quantizes the color range into a small number of graphic bands.", 1.0f, 0.45f},
+    {"Pixelization", "Samples the scene on an adjustable coarse pixel grid.", 1.0f, 0.45f},
+    {"Sharpen", "Boosts local contrast with a five-tap sharpening kernel.", 0.85f, 0.45f},
+    {"Dilation", "Expands the brightest neighboring colors over a configurable radius.", 1.0f, 0.45f},
+    {"Film Grain", "Adds animated luminance and color grain.", 0.65f, 0.5f},
+    {"Lookup Table (LUT)", "Demonstrates a warm/cool cinematic color grade without external assets.", 0.85f, 0.5f},
+    {"Gamma Correction", "Applies an adjustable display gamma transfer function.", 1.0f, 0.45f},
+    {"Deferred Depth Buffer", "Visualizes the sampled depth attachment used by later passes.", 1.0f, 0.5f},
+    {"Deferred Edge Buffer", "Visualizes depth-derived geometry edges as a G-buffer diagnostic.", 1.0f, 0.5f},
+}};
+
+struct SurfaceShaderDemo {
+    const char* name;
+    const char* vertexShader;
+    const char* fragmentShader;
+    const char* description;
+};
+
+constexpr std::array<SurfaceShaderDemo, 13> kSurfaceShaderDemos = {{
+    {"Texturing + Blinn-Phong", "", "", "Default textured lighting with normal and specular maps."},
+    {"Unlit Texturing", "", "shader_unlit.frag", "Shows base-color texture sampling without scene lighting."},
+    {"Diffuse Lighting", "", "shader_diffuse.frag", "Lambert diffuse lighting plus ambient light."},
+    {"Fresnel Factor", "", "shader_fresnel.frag", "Highlights grazing angles using a Fresnel approximation."},
+    {"Rim Lighting", "", "shader_rim.frag", "Adds a controllable silhouette-facing rim light."},
+    {"Cel Shading", "", "shader_cel.frag", "Quantizes diffuse and specular lighting into discrete bands."},
+    {"Normal Mapping", "", "shader_base.frag", "Uses tangent-space normal maps with Blinn-Phong lighting."},
+    {"Normal Buffer", "", "shader_normal_debug.frag", "Visualizes the final geometric or mapped world normal."},
+    {"Position Buffer", "", "shader_position_debug.frag", "Visualizes world position as a deferred-rendering buffer."},
+    {"Specular Only", "", "shader_specular_debug.frag", "Displays only the Blinn-Phong specular response."},
+    {"Water Reflection / Refraction", "shader_water.vert", "shader_water.frag", "Animated waves with Fresnel reflection and refraction."},
+    {"Water Flow Mapping", "shader_water.vert", "shader_water_flow.frag", "Moves UVs through a procedural flow field with seamless phase blending."},
+    {"Water Foam", "shader_water.vert", "shader_water_foam.frag", "Flow-mapped water with depth-aware shoreline foam."},
+}};
 constexpr std::array<std::uint32_t, 24> kBoundingBoxEdges = {
     0, 1, 1, 2, 2, 3, 3, 0,
     4, 5, 5, 6, 6, 7, 7, 4,
@@ -137,7 +195,8 @@ const char* defaultShaderForStage(ShaderStage stage) {
 bool isWaterShaderConfiguration(const ShaderConfiguration& configuration) {
     const std::string& fragmentShader = configuration.shader(ShaderStage::Fragment);
     return fragmentShader == "shader_water.frag" ||
-        fragmentShader == "shader_water_flow.frag";
+        fragmentShader == "shader_water_flow.frag" ||
+        fragmentShader == "shader_water_foam.frag";
 }
 
 bool isTransparentMaterial(const MaterialData& material) {
@@ -336,10 +395,28 @@ std::string shaderConfigToken(const std::string& token) {
     return token == "-" ? std::string{} : token;
 }
 
+std::size_t countModelNodes(const ModelNode& node) {
+    std::size_t count = 1;
+    for (const ModelNode& child : node.children) {
+        count += countModelNodes(child);
+    }
+    return count;
+}
+
+std::size_t countMeshNodes(const ModelNode& node) {
+    std::size_t count = node.meshCount > 0 ? 1 : 0;
+    for (const ModelNode& child : node.children) {
+        count += countMeshNodes(child);
+    }
+    return count;
+}
+
 } // namespace
 
 void Renderer::selectModelNode(ModelNode& node) {
     selectedModelNode_ = &node;
+    selectedResourceType_ = ResourceSelectionType::Model;
+    selectedResourceMaterialIndex_ = -1;
     updateBoundingBoxVertices();
 }
 
@@ -558,14 +635,28 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
 
     const std::int32_t inheritedOverride = inheritedMaterialOverrideForSceneNode(node.nodeId);
     const std::int32_t localOverride = node.materialOverride;
+    std::int32_t importedMaterial = -1;
+    if (!node.meshPartIndices.empty()) {
+        const std::uint32_t partIndex = node.meshPartIndices.front();
+        if (partIndex < meshData_.parts.size() &&
+            meshData_.parts[partIndex].materialIndex < meshData_.materials.size()) {
+            importedMaterial = static_cast<std::int32_t>(
+                meshData_.parts[partIndex].materialIndex
+            );
+        }
+    }
     const std::int32_t effectiveOverride = localOverride >= 0
         ? localOverride
-        : inheritedOverride;
+        : (inheritedOverride >= 0 ? inheritedOverride : importedMaterial);
     const bool hasEffectiveMaterial = effectiveOverride >= 0 &&
         static_cast<std::size_t>(effectiveOverride) < meshData_.materials.size();
     const char* preview = localOverride >= 0
         ? (hasEffectiveMaterial ? meshData_.materials[effectiveOverride].name.c_str() : "<Invalid material>")
-        : (inheritedOverride >= 0 ? "<Inherited material>" : "<Use mesh material>");
+        : (inheritedOverride >= 0
+            ? "<Inherited material>"
+            : (importedMaterial >= 0
+                ? meshData_.materials[importedMaterial].name.c_str()
+                : "<Use mesh material>"));
 
     if (ImGui::BeginCombo("Material", preview)) {
         const bool useMeshMaterial = node.materialOverride < 0;
@@ -616,14 +707,33 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
         return;
     }
 
-    MaterialData& material = meshData_.materials[effectiveOverride];
+    if (localOverride < 0 && inheritedOverride < 0 && node.meshPartIndices.size() > 1) {
+        ImGui::TextDisabled(
+            "This node has multiple imported material bindings; editing the first one."
+        );
+    }
+
+    drawMaterialControls(effectiveOverride, shouldSaveSettings);
+}
+
+void Renderer::drawMaterialControls(
+    std::int32_t materialIndex,
+    bool& shouldSaveSettings
+) {
+    if (materialIndex < 0 ||
+        static_cast<std::size_t>(materialIndex) >= meshData_.materials.size()) {
+        ImGui::TextDisabled("The selected material is no longer available.");
+        return;
+    }
+
+    MaterialData& material = meshData_.materials[materialIndex];
     const auto markMaterialChanged = [&]() {
         material.userModified = true;
         shouldSaveSettings = true;
     };
     ImGui::Text("Editing: %s", material.name.c_str());
-    if (materialNameMaterialIndex_ != effectiveOverride) {
-        materialNameMaterialIndex_ = effectiveOverride;
+    if (materialNameMaterialIndex_ != materialIndex) {
+        materialNameMaterialIndex_ = materialIndex;
         materialNameBuffer_.fill('\0');
         const std::size_t copyCount = std::min(
             material.name.size(),
@@ -688,8 +798,8 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
         markMaterialChanged();
     }
 
-    if (materialTexturePathMaterialIndex_ != effectiveOverride) {
-        materialTexturePathMaterialIndex_ = effectiveOverride;
+    if (materialTexturePathMaterialIndex_ != materialIndex) {
+        materialTexturePathMaterialIndex_ = materialIndex;
         materialTexturePathBuffer_.fill('\0');
         const std::string path = material.texturePath.string();
         const std::size_t copyCount = std::min(
@@ -737,7 +847,7 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
     syncTexturePathBuffer(
         materialNormalTexturePathBuffer_,
         materialNormalTexturePathMaterialIndex_,
-        effectiveOverride,
+        materialIndex,
         material.normalTexturePath
     );
     ImGui::InputText(
@@ -763,7 +873,7 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
     syncTexturePathBuffer(
         materialSpecularTexturePathBuffer_,
         materialSpecularTexturePathMaterialIndex_,
-        effectiveOverride,
+        materialIndex,
         material.specularTexturePath
     );
     ImGui::InputText(
@@ -783,6 +893,21 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
         material.embeddedSpecularTexture = EmbeddedTextureData{};
         materialSpecularTexturePathBuffer_.fill('\0');
         rebuildMaterialResources();
+        markMaterialChanged();
+    }
+
+    ImGui::SeparatorText("Engine Compatibility");
+    ImGui::TextDisabled(
+        "VulkCore slots: Base Color / Normal / Specular; default shaders use the engine ABI."
+    );
+    if (ImGui::Button("Apply engine-safe defaults")) {
+        material.metallic = std::clamp(material.metallic, 0.0f, 1.0f);
+        material.roughness = std::clamp(material.roughness, 0.04f, 1.0f);
+        material.opacity = std::clamp(material.opacity, 0.0f, 1.0f);
+        material.blendMode = MaterialData::BlendMode::Opaque;
+        material.depthWrite = true;
+        material.doubleSided = false;
+        material.shaderConfiguration = ShaderConfiguration{};
         markMaterialChanged();
     }
 
@@ -916,9 +1041,11 @@ Renderer::Renderer(GLFWwindow* window)
     createSceneRenderResources();
     createDescriptorSetLayout();
     createGraphicsPipeline();
+    createPostProcessPipeline();
     createBoundingBoxPipeline();
     createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
+    loadResourceSettings();
     createMeshData();
     createSunMesh();
     loadTransformSettings();
@@ -987,6 +1114,9 @@ Renderer::~Renderer() {
     }
     if (particleAdditivePipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), particleAdditivePipeline_, nullptr);
+    }
+    if (postProcessPipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(context_->device(), postProcessPipeline_, nullptr);
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
@@ -1064,6 +1194,131 @@ void Renderer::shutdownImGui() {
     imguiInitialized_ = false;
 }
 
+void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
+    ImGui::SeparatorText("Shader Demo Lab");
+    ImGui::TextDisabled(
+        "Reference-aligned material and screen-space techniques; all demos use the shared renderer ABI."
+    );
+
+    const char* postPreview = postProcessEffect_ < kPostProcessDemos.size()
+        ? kPostProcessDemos[postProcessEffect_].name
+        : kPostProcessDemos[0].name;
+    if (ImGui::BeginCombo("Screen-space demo", postPreview)) {
+        for (std::size_t index = 0; index < kPostProcessDemos.size(); ++index) {
+            const bool selected = postProcessEffect_ == index;
+            if (ImGui::Selectable(kPostProcessDemos[index].name, selected)) {
+                postProcessEffect_ = static_cast<std::uint32_t>(index);
+                postProcessStrength_ = kPostProcessDemos[index].defaultStrength;
+                postProcessParameter_ = kPostProcessDemos[index].defaultParameter;
+                shouldSaveSettings = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextWrapped("%s", kPostProcessDemos[postProcessEffect_].description);
+    ImGui::SliderFloat("Demo strength", &postProcessStrength_, 0.0f, 2.0f, "%.2f");
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SliderFloat("Demo parameter", &postProcessParameter_, 0.0f, 1.0f, "%.2f");
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::Checkbox("Split view (original / effect)", &postProcessSplitView_);
+    shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    if (postProcessSplitView_) {
+        ImGui::SliderFloat("Split position", &postProcessSplitPosition_, 0.1f, 0.9f, "%.2f");
+        shouldSaveSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+    if (ImGui::Button("Reset screen demo")) {
+        postProcessEffect_ = 0;
+        postProcessStrength_ = kPostProcessDemos[0].defaultStrength;
+        postProcessParameter_ = kPostProcessDemos[0].defaultParameter;
+        postProcessSplitView_ = false;
+        postProcessSplitPosition_ = 0.5f;
+        shouldSaveSettings = true;
+    }
+
+    ImGui::SeparatorText("Surface shader preset");
+    if (selectedModelNode_ == nullptr ||
+        selectedModelNode_->objectType != SceneObjectType::ImportedMesh) {
+        ImGui::TextDisabled("Select an imported mesh node to apply a material shader preset.");
+        return;
+    }
+    const ModelNode& node = *selectedModelNode_;
+    std::int32_t materialIndex = node.materialOverride;
+    if (materialIndex < 0) {
+        materialIndex = inheritedMaterialOverrideForSceneNode(node.nodeId);
+    }
+    if (materialIndex < 0 && !node.meshPartIndices.empty() &&
+        node.meshPartIndices.front() < meshData_.parts.size()) {
+        materialIndex = static_cast<std::int32_t>(
+            meshData_.parts[node.meshPartIndices.front()].materialIndex
+        );
+    }
+    if (materialIndex < 0 || static_cast<std::size_t>(materialIndex) >= meshData_.materials.size()) {
+        ImGui::TextDisabled("The selected node has no material binding.");
+        return;
+    }
+    MaterialData& material = meshData_.materials[materialIndex];
+    std::size_t currentPreset = 0;
+    for (std::size_t index = 0; index < kSurfaceShaderDemos.size(); ++index) {
+        if (material.shaderConfiguration.shader(ShaderStage::Vertex) == kSurfaceShaderDemos[index].vertexShader &&
+            material.shaderConfiguration.shader(ShaderStage::Fragment) == kSurfaceShaderDemos[index].fragmentShader) {
+            currentPreset = index;
+            break;
+        }
+    }
+    if (ImGui::BeginCombo("Material technique", kSurfaceShaderDemos[currentPreset].name)) {
+        for (std::size_t index = 0; index < kSurfaceShaderDemos.size(); ++index) {
+            const bool selected = currentPreset == index;
+            if (ImGui::Selectable(kSurfaceShaderDemos[index].name, selected)) {
+                material.shaderConfiguration = ShaderConfiguration{};
+                material.shaderConfiguration.shader(ShaderStage::Vertex) =
+                    kSurfaceShaderDemos[index].vertexShader;
+                material.shaderConfiguration.shader(ShaderStage::Fragment) =
+                    kSurfaceShaderDemos[index].fragmentShader;
+                material.userModified = true;
+                shouldSaveSettings = true;
+                currentPreset = index;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextWrapped("%s", kSurfaceShaderDemos[currentPreset].description);
+    if (currentPreset >= 10) {
+        ImGui::TextDisabled("Water presets render after the opaque pass and sample scene color/depth.");
+    }
+}
+
+void Renderer::loadResourceSettings() {
+    currentModelPath_ = std::filesystem::path(kModelPath);
+
+    const std::filesystem::path configPath(kConfigPath);
+    std::ifstream file(configPath);
+    std::string key;
+    while (file >> key) {
+        if (key == "model_resource_path") {
+            std::string configuredPath;
+            if (file >> std::quoted(configuredPath) && !configuredPath.empty()) {
+                std::error_code error;
+                const std::filesystem::path candidate(configuredPath);
+                if (std::filesystem::is_regular_file(candidate, error)) {
+                    currentModelPath_ = candidate;
+                }
+            }
+        }
+        std::string ignoredLine;
+        std::getline(file, ignoredLine);
+    }
+
+    modelImportPathBuffer_.fill('\0');
+    const std::string pathString = currentModelPath_.string();
+    const std::size_t copyCount = std::min(
+        pathString.size(),
+        modelImportPathBuffer_.size() - 1
+    );
+    std::copy_n(pathString.data(), copyCount, modelImportPathBuffer_.data());
+}
+
 void Renderer::loadTransformSettings() {
     const std::filesystem::path configPath(kConfigPath);
     std::ifstream file(configPath);
@@ -1080,6 +1335,11 @@ void Renderer::loadTransformSettings() {
     glm::vec3 sunLightDirection = sunLightDirection_;
     glm::vec3 sunLightColor = sunLightColor_;
     float sunLightIntensity = sunLightIntensity_;
+    std::uint32_t postProcessEffect = postProcessEffect_;
+    float postProcessStrength = postProcessStrength_;
+    float postProcessParameter = postProcessParameter_;
+    float postProcessSplitPosition = postProcessSplitPosition_;
+    int postProcessSplitView = postProcessSplitView_ ? 1 : 0;
     struct PendingNodeAnimation {
         std::uint32_t nodeId = 0;
         bool enabled = false;
@@ -1318,6 +1578,13 @@ void Renderer::loadTransformSettings() {
                 valid = false;
                 break;
             }
+        } else if (key == "shader_demo") {
+            if (!(file >> postProcessEffect >> postProcessStrength >> postProcessParameter >>
+                  postProcessSplitPosition >> postProcessSplitView) ||
+                (postProcessSplitView != 0 && postProcessSplitView != 1)) {
+                valid = false;
+                break;
+            }
         } else if (key == "particle_system_object") {
             int enabled = 0;
             int playOnAwake = 0;
@@ -1376,7 +1643,8 @@ void Renderer::loadTransformSettings() {
         std::isfinite(sunLightDirection.x) && std::isfinite(sunLightDirection.y) &&
         std::isfinite(sunLightDirection.z) && std::isfinite(sunLightColor.r) &&
         std::isfinite(sunLightColor.g) && std::isfinite(sunLightColor.b) &&
-        std::isfinite(sunLightIntensity);
+        std::isfinite(sunLightIntensity) && std::isfinite(postProcessStrength) &&
+        std::isfinite(postProcessParameter) && std::isfinite(postProcessSplitPosition);
     const bool finiteNodeValues = std::all_of(
         pendingNodeAnimations.begin(),
         pendingNodeAnimations.end(),
@@ -1486,6 +1754,13 @@ void Renderer::loadTransformSettings() {
     }
     sunLightColor_ = glm::clamp(sunLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
     sunLightIntensity_ = std::clamp(sunLightIntensity, 0.0f, 4.0f);
+    postProcessEffect_ = std::min<std::uint32_t>(
+        postProcessEffect_, static_cast<std::uint32_t>(kPostProcessDemos.size() - 1)
+    );
+    postProcessStrength_ = std::clamp(postProcessStrength, 0.0f, 2.0f);
+    postProcessParameter_ = std::clamp(postProcessParameter, 0.0f, 1.0f);
+    postProcessSplitPosition_ = std::clamp(postProcessSplitPosition, 0.1f, 0.9f);
+    postProcessSplitView_ = postProcessSplitView != 0;
     for (PendingParticleSystem& pending : pendingParticleSystems) {
         ModelNode* node = findSceneNodeById(meshData_, pending.nodeId);
         if (node == nullptr) {
@@ -1698,6 +1973,7 @@ void Renderer::saveTransformSettings() const {
 
     file << "# VulkCore transform settings\n"
          << std::setprecision(9)
+         << "model_resource_path " << std::quoted(currentModelPath_.string()) << "\n"
          << "ambient_color " << ambientLightColor_.r << ' '
          << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
          << "ambient_intensity " << ambientLightIntensity_ << "\n"
@@ -1705,7 +1981,10 @@ void Renderer::saveTransformSettings() const {
          << sunLightDirection_.y << ' ' << sunLightDirection_.z << "\n"
          << "sun_light_color " << sunLightColor_.r << ' '
          << sunLightColor_.g << ' ' << sunLightColor_.b << "\n"
-         << "sun_light_intensity " << sunLightIntensity_ << "\n";
+         << "sun_light_intensity " << sunLightIntensity_ << "\n"
+         << "shader_demo " << postProcessEffect_ << ' '
+         << postProcessStrength_ << ' ' << postProcessParameter_ << ' '
+         << postProcessSplitPosition_ << ' ' << (postProcessSplitView_ ? 1 : 0) << "\n";
     for (const ModelNode& node : meshData_.additionalNodes) {
         if (node.objectType != SceneObjectType::ParticleSystem) {
             continue;
@@ -1945,6 +2224,352 @@ void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSetti
     }
 }
 
+void Renderer::drawResourceManager(bool& shouldSaveSettings) {
+    ImGui::TextUnformatted("Resource Manager");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Import, inspect, and remap render resources");
+
+    constexpr float kImportButtonWidth = 108.0f;
+    const float importPathWidth = std::max(
+        220.0f,
+        ImGui::GetContentRegionAvail().x - kImportButtonWidth -
+            ImGui::GetStyle().ItemSpacing.x
+    );
+    ImGui::SetNextItemWidth(importPathWidth);
+    ImGui::InputTextWithHint(
+        "##ModelImportPath",
+        "Absolute or workspace-relative model path",
+        modelImportPathBuffer_.data(),
+        modelImportPathBuffer_.size()
+    );
+    ImGui::SameLine();
+    if (ImGui::Button("Import Model", ImVec2(kImportButtonWidth, 0.0f))) {
+        importModelResource(std::filesystem::path(modelImportPathBuffer_.data()));
+    }
+    if (!resourceImportStatus_.empty()) {
+        const ImVec4 color = resourceImportFailed_
+            ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f)
+            : ImVec4(0.42f, 0.88f, 0.56f, 1.0f);
+        ImGui::TextColored(color, "%s", resourceImportStatus_.c_str());
+    }
+
+    ImGui::Separator();
+    constexpr ImGuiTableFlags kWorkspaceFlags =
+        ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_BordersInnerV |
+        ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("ResourceWorkspace", 3, kWorkspaceFlags)) {
+        return;
+    }
+    ImGui::TableSetupColumn("Assets", ImGuiTableColumnFlags_WidthStretch, 0.85f);
+    ImGui::TableSetupColumn("Model Hierarchy", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableSetupColumn("Inspector", ImGuiTableColumnFlags_WidthStretch, 1.45f);
+    ImGui::TableNextRow();
+
+    const std::array<const char*, 3> textureSlotLabels = {
+        "Base Color",
+        "Normal",
+        "Specular",
+    };
+    const auto texturePath = [](const MaterialData& material, ResourceTextureSlot slot)
+        -> const std::filesystem::path& {
+        switch (slot) {
+        case ResourceTextureSlot::BaseColor:
+            return material.texturePath;
+        case ResourceTextureSlot::Normal:
+            return material.normalTexturePath;
+        case ResourceTextureSlot::Specular:
+            return material.specularTexturePath;
+        }
+        return material.texturePath;
+    };
+    const auto embeddedTexture = [](const MaterialData& material, ResourceTextureSlot slot)
+        -> const EmbeddedTextureData& {
+        switch (slot) {
+        case ResourceTextureSlot::BaseColor:
+            return material.embeddedTexture;
+        case ResourceTextureSlot::Normal:
+            return material.embeddedNormalTexture;
+        case ResourceTextureSlot::Specular:
+            return material.embeddedSpecularTexture;
+        }
+        return material.embeddedTexture;
+    };
+    const auto textureIsLoaded = [this](std::size_t materialIndex, ResourceTextureSlot slot) {
+        switch (slot) {
+        case ResourceTextureSlot::BaseColor:
+            return materialIndex < materialTextures_.size() &&
+                materialTextures_[materialIndex] != nullptr;
+        case ResourceTextureSlot::Normal:
+            return materialIndex < normalTextures_.size() &&
+                normalTextures_[materialIndex] != nullptr;
+        case ResourceTextureSlot::Specular:
+            return materialIndex < specularTextures_.size() &&
+                specularTextures_[materialIndex] != nullptr;
+        }
+        return false;
+    };
+
+    ImGui::TableSetColumnIndex(0);
+    ImGui::BeginChild("ResourceLibrary", ImVec2(0.0f, 0.0f), false);
+    ImGui::TextUnformatted("Assets");
+    ImGui::TextDisabled("Current runtime resource set");
+    ImGui::Separator();
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        std::string modelLabel = currentModelPath_.filename().string();
+        if (modelLabel.empty()) {
+            modelLabel = "Generated Rectangle";
+        }
+        const bool selected = selectedResourceType_ == ResourceSelectionType::Model &&
+            selectedResourceMaterialIndex_ < 0;
+        if (ImGui::Selectable(modelLabel.c_str(), selected)) {
+            selectedResourceType_ = ResourceSelectionType::Model;
+            selectedResourceMaterialIndex_ = -1;
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    const std::string materialsLabel = "Materials (" +
+        std::to_string(meshData_.materials.size()) + ")";
+    if (ImGui::TreeNodeEx(materialsLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        for (std::size_t materialIndex = 0;
+             materialIndex < meshData_.materials.size();
+             ++materialIndex) {
+            const MaterialData& material = meshData_.materials[materialIndex];
+            const std::string label = material.name.empty()
+                ? "Material " + std::to_string(materialIndex)
+                : material.name;
+            ImGui::PushID(static_cast<int>(materialIndex));
+            const bool selected = selectedResourceType_ == ResourceSelectionType::Material &&
+                selectedResourceMaterialIndex_ == static_cast<std::int32_t>(materialIndex);
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                selectedResourceType_ = ResourceSelectionType::Material;
+                selectedResourceMaterialIndex_ = static_cast<std::int32_t>(materialIndex);
+                selectedModelNode_ = nullptr;
+                updateBoundingBoxVertices();
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::SetNextItemOpen(false, ImGuiCond_Once);
+    if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        bool hasTextureResource = false;
+        for (std::size_t materialIndex = 0;
+             materialIndex < meshData_.materials.size();
+             ++materialIndex) {
+            const MaterialData& material = meshData_.materials[materialIndex];
+            for (std::size_t slotIndex = 0; slotIndex < textureSlotLabels.size(); ++slotIndex) {
+                const auto slot = static_cast<ResourceTextureSlot>(slotIndex);
+                const std::filesystem::path& path = texturePath(material, slot);
+                const EmbeddedTextureData& embedded = embeddedTexture(material, slot);
+                if (path.empty() && embedded.empty()) {
+                    continue;
+                }
+                hasTextureResource = true;
+                std::string sourceName = !path.empty()
+                    ? path.filename().string()
+                    : "<embedded>";
+                if (sourceName.empty()) {
+                    sourceName = path.string();
+                }
+                const std::string label = std::string(textureSlotLabels[slotIndex]) +
+                    ": " + sourceName;
+                ImGui::PushID(static_cast<int>(materialIndex));
+                ImGui::PushID(static_cast<int>(slotIndex));
+                const bool selected = selectedResourceType_ == ResourceSelectionType::Texture &&
+                    selectedResourceMaterialIndex_ == static_cast<std::int32_t>(materialIndex) &&
+                    selectedResourceTextureSlot_ == slot;
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    selectedResourceType_ = ResourceSelectionType::Texture;
+                    selectedResourceMaterialIndex_ = static_cast<std::int32_t>(materialIndex);
+                    selectedResourceTextureSlot_ = slot;
+                    selectedModelNode_ = nullptr;
+                    updateBoundingBoxVertices();
+                }
+                ImGui::PopID();
+                ImGui::PopID();
+            }
+        }
+        if (!hasTextureResource) {
+            ImGui::TextDisabled("No referenced textures");
+        }
+        ImGui::TreePop();
+    }
+    ImGui::EndChild();
+
+    ImGui::TableSetColumnIndex(1);
+    ImGui::BeginChild("ResourceModelHierarchy", ImVec2(0.0f, 0.0f), false);
+    ImGui::TextUnformatted("Model Hierarchy");
+    ImGui::TextDisabled(
+        "%zu nodes / %zu mesh nodes",
+        countModelNodes(meshData_.hierarchy),
+        countMeshNodes(meshData_.hierarchy)
+    );
+    ImGui::Separator();
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!meshData_.hierarchy.name.empty()) {
+        drawModelHierarchy(meshData_.hierarchy);
+    } else {
+        ImGui::TextDisabled("No imported model hierarchy available.");
+    }
+    ImGui::EndChild();
+
+    ImGui::TableSetColumnIndex(2);
+    ImGui::BeginChild("ResourceInspector", ImVec2(0.0f, 0.0f), false);
+    ImGui::TextUnformatted("Inspector");
+    ImGui::Separator();
+
+    if (selectedResourceType_ == ResourceSelectionType::Model) {
+        ImGui::Text("Model: %s", currentModelPath_.filename().string().c_str());
+        ImGui::TextWrapped("Source: %s", currentModelPath_.string().c_str());
+        ImGui::Text(
+            "%zu vertices / %zu triangles / %zu materials",
+            meshData_.vertices.size(),
+            meshData_.indices.size() / 3,
+            meshData_.materials.size()
+        );
+        ImGui::SeparatorText("Engine-ready import");
+        ImGui::BulletText("Triangulated mesh with 32-bit indices");
+        ImGui::BulletText("Position, generated/preserved normals, UV0, vertex color");
+        ImGui::BulletText("Base Color, Normal, and Specular texture slots");
+
+        if (selectedModelNode_ == nullptr) {
+            ImGui::TextDisabled("Select a hierarchy node to inspect its material bindings.");
+        } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
+            ImGui::TextDisabled("The selected object is a Particle System, not a model node.");
+        } else {
+            ImGui::SeparatorText("Selected Model Node");
+            ImGui::Text("%s  (ID %u)",
+                selectedModelNode_->name.c_str(),
+                selectedModelNode_->nodeId
+            );
+            ImGui::Text(
+                "%u direct meshes / %zu material parts",
+                selectedModelNode_->meshCount,
+                selectedModelNode_->meshPartIndices.size()
+            );
+
+            if (!selectedModelNode_->meshPartIndices.empty() &&
+                ImGui::BeginTable(
+                    "NodeMaterialBindings",
+                    3,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp
+                )) {
+                ImGui::TableSetupColumn("Part");
+                ImGui::TableSetupColumn("Imported material");
+                ImGui::TableSetupColumn("Effective material");
+                ImGui::TableHeadersRow();
+                for (std::size_t bindingIndex = 0;
+                     bindingIndex < selectedModelNode_->meshPartIndices.size();
+                     ++bindingIndex) {
+                    const std::uint32_t partIndex =
+                        selectedModelNode_->meshPartIndices[bindingIndex];
+                    if (partIndex >= meshData_.parts.size()) {
+                        continue;
+                    }
+                    const MeshPart& part = meshData_.parts[partIndex];
+                    const std::uint32_t effectiveMaterialIndex = materialIndexForPart(part);
+                    const char* importedName = part.materialIndex < meshData_.materials.size()
+                        ? meshData_.materials[part.materialIndex].name.c_str()
+                        : "<invalid>";
+                    const char* effectiveName = effectiveMaterialIndex < meshData_.materials.size()
+                        ? meshData_.materials[effectiveMaterialIndex].name.c_str()
+                        : "<invalid>";
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%zu", bindingIndex);
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(importedName);
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted(effectiveName);
+                }
+                ImGui::EndTable();
+            } else if (selectedModelNode_->meshPartIndices.empty()) {
+                ImGui::TextDisabled(
+                    "This grouping node has no direct mesh; select a mesh-bearing child."
+                );
+            }
+            drawNodeMaterialControls(*selectedModelNode_, shouldSaveSettings);
+        }
+    } else if (selectedResourceMaterialIndex_ < 0 ||
+               static_cast<std::size_t>(selectedResourceMaterialIndex_) >=
+                   meshData_.materials.size()) {
+        ImGui::TextDisabled("The selected resource is no longer available.");
+    } else {
+        const std::size_t materialIndex = static_cast<std::size_t>(
+            selectedResourceMaterialIndex_
+        );
+        MaterialData& material = meshData_.materials[materialIndex];
+        if (selectedResourceType_ == ResourceSelectionType::Material) {
+            ImGui::Text("Material #%zu", materialIndex);
+            ImGui::Text("Name: %s", material.name.c_str());
+            ImGui::SeparatorText("Referenced textures");
+            for (std::size_t slotIndex = 0; slotIndex < textureSlotLabels.size(); ++slotIndex) {
+                const auto slot = static_cast<ResourceTextureSlot>(slotIndex);
+                const std::filesystem::path& path = texturePath(material, slot);
+                const EmbeddedTextureData& embedded = embeddedTexture(material, slot);
+                const char* state = textureIsLoaded(materialIndex, slot)
+                    ? "loaded"
+                    : "fallback";
+                if (!path.empty()) {
+                    ImGui::TextWrapped(
+                        "%s [%s]: %s",
+                        textureSlotLabels[slotIndex],
+                        state,
+                        path.string().c_str()
+                    );
+                } else if (!embedded.empty()) {
+                    ImGui::Text(
+                        "%s [loaded]: embedded %ux%u",
+                        textureSlotLabels[slotIndex],
+                        embedded.width,
+                        embedded.height
+                    );
+                } else {
+                    ImGui::TextDisabled("%s: engine fallback", textureSlotLabels[slotIndex]);
+                }
+            }
+        } else {
+            const std::size_t slotIndex = static_cast<std::size_t>(
+                selectedResourceTextureSlot_
+            );
+            const std::filesystem::path& path = texturePath(
+                material,
+                selectedResourceTextureSlot_
+            );
+            const EmbeddedTextureData& embedded = embeddedTexture(
+                material,
+                selectedResourceTextureSlot_
+            );
+            ImGui::Text("Texture: %s", textureSlotLabels[slotIndex]);
+            ImGui::Text("Material: %s", material.name.c_str());
+            if (!path.empty()) {
+                ImGui::TextWrapped("Source: %s", path.string().c_str());
+            } else if (!embedded.empty()) {
+                ImGui::Text("Source: embedded (%ux%u)", embedded.width, embedded.height);
+            } else {
+                ImGui::TextDisabled("Source: engine fallback texture");
+            }
+            const bool loaded = textureIsLoaded(materialIndex, selectedResourceTextureSlot_);
+            ImGui::TextColored(
+                loaded ? ImVec4(0.42f, 0.88f, 0.56f, 1.0f)
+                       : ImVec4(1.0f, 0.72f, 0.28f, 1.0f),
+                loaded ? "GPU resource loaded" : "Using engine fallback"
+            );
+        }
+        ImGui::SeparatorText("Material Mapping");
+        drawMaterialControls(selectedResourceMaterialIndex_, shouldSaveSettings);
+    }
+
+    ImGui::EndChild();
+    ImGui::EndTable();
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -1966,9 +2591,24 @@ void Renderer::buildImGuiFrame() {
     constexpr float kPanelMargin = 16.0f;
     constexpr float kLeftPanelWidth = 300.0f;
     constexpr float kRightPanelWidth = 360.0f;
+    const float mainWindowWidth = ImGui::GetWindowWidth();
+    const float mainWindowHeight = ImGui::GetWindowHeight();
+    const float bottomPanelHeight = std::clamp(
+        mainWindowHeight * 0.36f,
+        260.0f,
+        390.0f
+    );
+    const float topPanelHeight = std::max(
+        180.0f,
+        mainWindowHeight - bottomPanelHeight - kPanelMargin * 3.0f
+    );
 
     ImGui::SetCursorPos(ImVec2(kPanelMargin, kPanelMargin));
-    ImGui::BeginChild("SceneControls", ImVec2(kLeftPanelWidth, 0.0f), true);
+    ImGui::BeginChild(
+        "SceneControls",
+        ImVec2(kLeftPanelWidth, topPanelHeight),
+        true
+    );
     ImGui::TextUnformatted("VulkCore");
     ImGui::TextDisabled("Vulkan scene rendered with Dear ImGui UI");
     ImGui::Separator();
@@ -2024,6 +2664,7 @@ void Renderer::buildImGuiFrame() {
         sunLightIntensity_ = 1.0f;
         shouldSaveTransformSettings = true;
     }
+    drawShaderDemoControls(shouldSaveTransformSettings);
     ImGui::SeparatorText("Transform");
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
@@ -2110,19 +2751,20 @@ void Renderer::buildImGuiFrame() {
     } else {
         ImGui::TextDisabled("Select a scene object to edit its transform.");
     }
-    if (shouldSaveTransformSettings) {
-        saveTransformSettings();
-    }
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
     const bool leftPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
 
     ImGui::SetCursorPos(ImVec2(
-        std::max(kPanelMargin, ImGui::GetWindowWidth() - kRightPanelWidth - kPanelMargin),
+        std::max(kPanelMargin, mainWindowWidth - kRightPanelWidth - kPanelMargin),
         kPanelMargin
     ));
-    ImGui::BeginChild("ModelHierarchy", ImVec2(kRightPanelWidth, 0.0f), true);
+    ImGui::BeginChild(
+        "ModelHierarchy",
+        ImVec2(kRightPanelWidth, topPanelHeight),
+        true
+    );
     ImGui::TextUnformatted("Scene Objects");
     ImGui::TextDisabled("Imported model and generated GameObjects");
     const bool canCreateParticleSystem = particleSystems_.size() < kMaximumParticleSystems;
@@ -2148,10 +2790,29 @@ void Renderer::buildImGuiFrame() {
     const bool rightPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
 
+    const float resourcePanelY = kPanelMargin * 2.0f + topPanelHeight;
+    ImGui::SetCursorPos(ImVec2(kPanelMargin, resourcePanelY));
+    ImGui::BeginChild(
+        "ResourceManagerPanel",
+        ImVec2(
+            std::max(320.0f, mainWindowWidth - kPanelMargin * 2.0f),
+            std::max(160.0f, mainWindowHeight - resourcePanelY - kPanelMargin)
+        ),
+        true
+    );
+    drawResourceManager(shouldSaveTransformSettings);
+    const bool resourcePanelHovered = ImGui::IsWindowHovered();
+    ImGui::EndChild();
+
+    if (shouldSaveTransformSettings) {
+        saveTransformSettings();
+    }
+
     if (selectedModelNode_ != nullptr &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !leftPanelHovered &&
         !rightPanelHovered &&
+        !resourcePanelHovered &&
         ImGui::IsWindowHovered()) {
         selectedModelNode_ = nullptr;
         updateBoundingBoxVertices();
@@ -2162,7 +2823,7 @@ void Renderer::buildImGuiFrame() {
 }
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -2199,6 +2860,11 @@ void Renderer::createDescriptorSetLayout() {
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2459,7 +3125,8 @@ void Renderer::createSceneRenderResources() {
             createImage(
                 swapChain_->depthFormat(),
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT,
                 target.depthImage,
                 target.depthMemory
             );
@@ -2468,6 +3135,25 @@ void Renderer::createSceneRenderResources() {
                 swapChain_->depthFormat(),
                 VK_IMAGE_ASPECT_DEPTH_BIT
             );
+
+            VkSamplerCreateInfo depthSamplerInfo{};
+            depthSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            depthSamplerInfo.magFilter = VK_FILTER_NEAREST;
+            depthSamplerInfo.minFilter = VK_FILTER_NEAREST;
+            depthSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+            depthSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            depthSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            depthSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            depthSamplerInfo.maxAnisotropy = 1.0f;
+            depthSamplerInfo.maxLod = 0.0f;
+            if (vkCreateSampler(
+                    context_->device(),
+                    &depthSamplerInfo,
+                    nullptr,
+                    &target.depthSampler
+                ) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create scene depth sampler!");
+            }
 
             const std::array<VkImageView, 2> framebufferAttachments = {
                 target.colorImageView,
@@ -2506,6 +3192,9 @@ void Renderer::destroySceneRenderResources() {
         }
         if (target.colorSampler != VK_NULL_HANDLE) {
             vkDestroySampler(context_->device(), target.colorSampler, nullptr);
+        }
+        if (target.depthSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(context_->device(), target.depthSampler, nullptr);
         }
         if (target.colorImageView != VK_NULL_HANDLE) {
             vkDestroyImageView(context_->device(), target.colorImageView, nullptr);
@@ -2558,6 +3247,12 @@ void Renderer::discoverShaderBinaries() {
 
         ShaderStage stage = ShaderStage::Vertex;
         if (!shaderStageForExtension(std::filesystem::path(shaderName).extension().string(), stage)) {
+            continue;
+        }
+        // Full-screen demo shaders use a different vertex interface and are
+        // owned by the post-process pipeline, not by mesh materials.
+        if (shaderName == "shader_fullscreen.vert" ||
+            shaderName == "shader_postprocess.frag") {
             continue;
         }
         availableShaders_[static_cast<std::size_t>(stage)].push_back(std::move(shaderName));
@@ -2890,6 +3585,97 @@ void Renderer::createParticlePipelines() {
     particleAdditivePipeline_ = createParticlePipeline(true);
 }
 
+void Renderer::createPostProcessPipeline() {
+    VkPipelineShaderStageCreateInfo vertexStage{};
+    vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertexStage.module = shaderModule("shader_fullscreen.vert");
+    vertexStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragmentStage{};
+    fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragmentStage.module = shaderModule("shader_postprocess.frag");
+    fragmentStage.pName = "main";
+    const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+        vertexStage,
+        fragmentStage
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::array<VkDynamicState, 2> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+    pipelineInfo.pStages = stages.data();
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout_;
+    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(
+            context_->device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+            &postProcessPipeline_
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create post-process graphics pipeline");
+    }
+}
+
 VkPipeline Renderer::createParticlePipeline(bool additiveBlending) {
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -3151,7 +3937,7 @@ void Renderer::createBoundingBoxBuffers() {
 }
 
 void Renderer::createMeshData() {
-    if (std::string_view(kModelPath).empty()) {
+    if (currentModelPath_.empty()) {
         meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
         meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
         meshData_.materials.emplace_back();
@@ -3168,7 +3954,30 @@ void Renderer::createMeshData() {
         return;
     }
 
-    meshData_ = loadModelMesh(std::filesystem::path(kModelPath));
+    try {
+        meshData_ = loadModelMesh(currentModelPath_);
+    } catch (const std::exception& error) {
+        const std::filesystem::path defaultModelPath(kModelPath);
+        if (currentModelPath_ == defaultModelPath || defaultModelPath.empty()) {
+            throw;
+        }
+        resourceImportFailed_ = true;
+        resourceImportStatus_ = "Saved model could not be restored; using the default: " +
+            std::string(error.what());
+        currentModelPath_ = defaultModelPath;
+        modelImportPathBuffer_.fill('\0');
+        const std::string defaultPathString = currentModelPath_.string();
+        const std::size_t copyCount = std::min(
+            defaultPathString.size(),
+            modelImportPathBuffer_.size() - 1
+        );
+        std::copy_n(
+            defaultPathString.data(),
+            copyCount,
+            modelImportPathBuffer_.data()
+        );
+        meshData_ = loadModelMesh(currentModelPath_);
+    }
 
     glm::vec3 minimum(std::numeric_limits<float>::max());
     glm::vec3 maximum(std::numeric_limits<float>::lowest());
@@ -3185,6 +3994,159 @@ void Renderer::createMeshData() {
 
     modelCenter_ = (minimum + maximum) * 0.5f;
     modelScale_ = 1.8f / largestExtent;
+}
+
+bool Renderer::importModelResource(const std::filesystem::path& path) {
+    resourceImportFailed_ = false;
+    resourceImportStatus_.clear();
+
+    if (path.empty()) {
+        resourceImportFailed_ = true;
+        resourceImportStatus_ = "Enter a model file path before importing.";
+        return false;
+    }
+
+    std::error_code error;
+    std::filesystem::path resolvedPath = path;
+    if (resolvedPath.is_relative()) {
+        const std::filesystem::path absolutePath = std::filesystem::absolute(
+            resolvedPath,
+            error
+        );
+        if (!error) {
+            resolvedPath = absolutePath;
+        }
+        error.clear();
+    }
+    if (!std::filesystem::is_regular_file(resolvedPath, error)) {
+        resourceImportFailed_ = true;
+        resourceImportStatus_ = "Model file was not found: " + resolvedPath.string();
+        return false;
+    }
+
+    MeshData importedMesh;
+    glm::vec3 importedCenter(0.0f);
+    float importedScale = 1.0f;
+    try {
+        importedMesh = loadModelMesh(resolvedPath);
+        if (importedMesh.vertices.empty() || importedMesh.indices.empty()) {
+            throw std::runtime_error("the imported model contains no renderable triangles");
+        }
+
+        glm::vec3 minimum(std::numeric_limits<float>::max());
+        glm::vec3 maximum(std::numeric_limits<float>::lowest());
+        for (const Vertex& vertex : importedMesh.vertices) {
+            minimum = glm::min(minimum, vertex.position);
+            maximum = glm::max(maximum, vertex.position);
+        }
+        const glm::vec3 extent = maximum - minimum;
+        const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
+        if (largestExtent <= std::numeric_limits<float>::epsilon()) {
+            throw std::runtime_error("the imported model has no measurable bounds");
+        }
+        importedCenter = (minimum + maximum) * 0.5f;
+        importedScale = 1.8f / largestExtent;
+    } catch (const std::exception& importError) {
+        resourceImportFailed_ = true;
+        resourceImportStatus_ = "Import failed: " + std::string(importError.what());
+        return false;
+    }
+
+    struct PreservedParticleResource {
+        std::string name;
+        glm::vec3 translation{0.0f};
+        glm::vec3 rotationDegrees{0.0f};
+        float scaleFactor = 1.0f;
+        ParticleSystemSettings settings;
+        bool playing = false;
+    };
+    std::vector<PreservedParticleResource> preservedParticles;
+    preservedParticles.reserve(particleSystems_.size());
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        if (node.objectType != SceneObjectType::ParticleSystem) {
+            continue;
+        }
+        const auto systemIt = particleSystems_.find(node.nodeId);
+        if (systemIt == particleSystems_.end()) {
+            continue;
+        }
+        preservedParticles.push_back({
+            node.name,
+            node.transformTranslation,
+            node.transformRotationDegrees,
+            node.transformScaleFactor,
+            systemIt->second.settings(),
+            systemIt->second.playing(),
+        });
+    }
+
+    // GPU resources are replaced only after the complete CPU-side import has
+    // succeeded, so a malformed model leaves the current scene untouched.
+    context_->waitIdle();
+    selectedModelNode_ = nullptr;
+    sceneNodeTransforms_.clear();
+    particleSystems_.clear();
+    particleDrawRanges_.clear();
+    particleVertices_.clear();
+    particleTextures_.clear();
+    meshData_ = std::move(importedMesh);
+    modelCenter_ = importedCenter;
+    modelScale_ = importedScale;
+    currentModelPath_ = resolvedPath;
+    createSunMesh();
+
+    std::uint32_t maximumNodeId = maximumModelNodeId(meshData_.hierarchy);
+    for (const ModelNode& node : meshData_.additionalNodes) {
+        maximumNodeId = std::max(maximumNodeId, maximumModelNodeId(node));
+    }
+    for (const PreservedParticleResource& preserved : preservedParticles) {
+        ModelNode particleNode;
+        particleNode.name = preserved.name;
+        particleNode.nodeId = ++maximumNodeId;
+        particleNode.objectType = SceneObjectType::ParticleSystem;
+        particleNode.transformTranslation = preserved.translation;
+        particleNode.transformRotationDegrees = preserved.rotationDegrees;
+        particleNode.transformScaleFactor = preserved.scaleFactor;
+        meshData_.additionalNodes.push_back(std::move(particleNode));
+
+        ParticleSystem particleSystem;
+        particleSystem.setSettings(preserved.settings);
+        if (preserved.playing) {
+            particleSystem.restart();
+        } else {
+            particleSystem.stop();
+        }
+        particleSystems_.emplace(maximumNodeId, std::move(particleSystem));
+    }
+
+    vertexBuffer_.reset();
+    indexBuffer_.reset();
+    createVertexBuffer();
+    createIndexBuffer();
+    createParticleTextures();
+    rebuildMaterialResources();
+
+    boundingBoxVertices_.fill(Vertex{});
+    materialNameMaterialIndex_ = -1;
+    materialTexturePathMaterialIndex_ = -1;
+    materialNormalTexturePathMaterialIndex_ = -1;
+    materialSpecularTexturePathMaterialIndex_ = -1;
+    selectedResourceType_ = ResourceSelectionType::Model;
+    selectedResourceMaterialIndex_ = -1;
+
+    modelImportPathBuffer_.fill('\0');
+    const std::string pathString = currentModelPath_.string();
+    const std::size_t copyCount = std::min(
+        pathString.size(),
+        modelImportPathBuffer_.size() - 1
+    );
+    std::copy_n(pathString.data(), copyCount, modelImportPathBuffer_.data());
+
+    resourceImportStatus_ = "Imported " + currentModelPath_.filename().string() +
+        " (" + std::to_string(meshData_.vertices.size()) + " vertices, " +
+        std::to_string(meshData_.indices.size() / 3) + " triangles).";
+    saveTransformSettings();
+    return true;
 }
 
 void Renderer::createSunMesh() {
@@ -3586,7 +4548,7 @@ void Renderer::createDescriptorPool() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = materialDescriptorCount + particleDescriptorCapacity;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = materialDescriptorCount * 4 + particleDescriptorCapacity;
+    poolSizes[1].descriptorCount = materialDescriptorCount * 5 + particleDescriptorCapacity;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -3651,7 +4613,12 @@ void Renderer::createDescriptorSets() {
             imageInfos[2].imageView = specularTexture->imageView();
             imageInfos[2].sampler = specularTexture->sampler();
 
-            std::array<VkWriteDescriptorSet, 4> descriptorWrites{};
+            VkDescriptorImageInfo depthImageInfo{};
+            depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
+            depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
+
+            std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
@@ -3683,6 +4650,14 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorWrites[3].descriptorCount = 1;
             descriptorWrites[3].pImageInfo = &imageInfos[2];
+
+            descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[4].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[4].dstBinding = 5;
+            descriptorWrites[4].dstArrayElement = 0;
+            descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[4].descriptorCount = 1;
+            descriptorWrites[4].pImageInfo = &depthImageInfo;
 
             vkUpdateDescriptorSets(
                 context_->device(),
@@ -3806,6 +4781,19 @@ void Renderer::updateSceneTextureDescriptors() {
             sceneWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             sceneWrite.pImageInfo = &sceneImageInfo;
             vkUpdateDescriptorSets(context_->device(), 1, &sceneWrite, 0, nullptr);
+
+            VkDescriptorImageInfo depthImageInfo{};
+            depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depthImageInfo.imageView = target.depthImageView;
+            depthImageInfo.sampler = target.depthSampler;
+            VkWriteDescriptorSet depthWrite{};
+            depthWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            depthWrite.dstSet = descriptorSets_[descriptorSetIndex];
+            depthWrite.dstBinding = 5;
+            depthWrite.descriptorCount = 1;
+            depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            depthWrite.pImageInfo = &depthImageInfo;
+            vkUpdateDescriptorSets(context_->device(), 1, &depthWrite, 0, nullptr);
         }
     }
 }
@@ -4167,6 +5155,19 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     sceneColorToShader.subresourceRange.levelCount = 1;
     sceneColorToShader.subresourceRange.layerCount = 1;
 
+    VkImageMemoryBarrier sceneDepthToShader{};
+    sceneDepthToShader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneDepthToShader.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    sceneDepthToShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sceneDepthToShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    sceneDepthToShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneDepthToShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneDepthToShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneDepthToShader.image = sceneTarget.depthImage;
+    sceneDepthToShader.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    sceneDepthToShader.subresourceRange.levelCount = 1;
+    sceneDepthToShader.subresourceRange.layerCount = 1;
+
     VkImageMemoryBarrier swapColorToAttachment{};
     swapColorToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     swapColorToAttachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -4206,9 +5207,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         nullptr,
         0,
         nullptr,
-        3,
-        std::array<VkImageMemoryBarrier, 3>{
+        4,
+        std::array<VkImageMemoryBarrier, 4>{
             sceneColorToShader,
+            sceneDepthToShader,
             swapColorToAttachment,
             swapDepthToAttachment
         }.data()
@@ -4228,6 +5230,38 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     renderPassInfo.pClearValues = clearValues.data();
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     bindViewport();
+
+    // The demo is a regular full-screen pass over the off-screen scene. It
+    // uses the same descriptor set and push-constant ABI as material shaders,
+    // so no special render target or model-dependent path is introduced.
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipeline_);
+    const VkDescriptorSet& postProcessDescriptorSet =
+        descriptorSets_[static_cast<std::size_t>(currentFrame_) * materialCount];
+    vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipelineLayout_,
+        0,
+        1,
+        &postProcessDescriptorSet,
+        0,
+        nullptr
+    );
+    MaterialPushConstants postProcessConstants{};
+    postProcessConstants.textureFlags = postProcessEffect_;
+    postProcessConstants.metallic = postProcessStrength_;
+    postProcessConstants.roughness = postProcessParameter_;
+    postProcessConstants.opacity = postProcessSplitView_ ? 1.0f : 0.0f;
+    postProcessConstants.waterFlow = glm::vec4(postProcessSplitPosition_, 0.0f, 0.0f, 0.0f);
+    vkCmdPushConstants(
+        commandBuffer,
+        pipelineLayout_,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        0,
+        sizeof(MaterialPushConstants),
+        &postProcessConstants
+    );
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
     // The opaque scene is already in the swap-chain color attachment. Only
     // water is rendered here so it can blend over and sample that scene.

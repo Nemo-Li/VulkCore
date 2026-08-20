@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iosfwd>
 #include <limits>
 #include <memory>
@@ -45,16 +46,19 @@ private:
         VkImage depthImage = VK_NULL_HANDLE;
         VkDeviceMemory depthMemory = VK_NULL_HANDLE;
         VkImageView depthImageView = VK_NULL_HANDLE;
+        VkSampler depthSampler = VK_NULL_HANDLE;
         VkFramebuffer framebuffer = VK_NULL_HANDLE;
     };
 
     void initializeImGui();
     void shutdownImGui();
     void buildImGuiFrame();
+    void loadResourceSettings();
     void loadTransformSettings();
     void saveTransformSettings() const;
     void createBoundingBoxPipeline();
     void createParticlePipelines();
+    void createPostProcessPipeline();
     VkPipeline createParticlePipeline(bool additiveBlending);
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
@@ -96,6 +100,9 @@ private:
     void createSyncObjects();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
+    void drawResourceManager(bool& shouldSaveSettings);
+    void drawMaterialControls(std::int32_t materialIndex, bool& shouldSaveSettings);
+    bool importModelResource(const std::filesystem::path& path);
     void discoverShaderBinaries();
     VkShaderModule shaderModule(const std::string& shaderName);
     VkPipeline createMaterialGraphicsPipeline(
@@ -114,6 +121,7 @@ private:
     std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
     void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
+    void drawShaderDemoControls(bool& shouldSaveSettings);
     void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recreateSwapChain();
@@ -134,6 +142,7 @@ private:
     VkPipeline boundingBoxPipeline_ = VK_NULL_HANDLE;
     VkPipeline particleAlphaPipeline_ = VK_NULL_HANDLE;
     VkPipeline particleAdditivePipeline_ = VK_NULL_HANDLE;
+    VkPipeline postProcessPipeline_ = VK_NULL_HANDLE;
     std::array<std::vector<std::string>, kShaderStageCount> availableShaders_;
     std::unordered_map<std::string, VkShaderModule> shaderModules_;
     std::unordered_map<std::string, VkPipeline> nodeGraphicsPipelines_;
@@ -182,6 +191,11 @@ private:
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};
     glm::vec3 sunLightColor_{0.82f, 0.86f, 0.9f};
     float sunLightIntensity_ = 1.0f;
+    std::uint32_t postProcessEffect_ = 0;
+    float postProcessStrength_ = 1.0f;
+    float postProcessParameter_ = 0.5f;
+    float postProcessSplitPosition_ = 0.5f;
+    bool postProcessSplitView_ = false;
     std::uint32_t sunNodeId_ = 0;
     std::uint32_t sunMaterialIndex_ = 0;
     ModelNode* selectedModelNode_ = nullptr;
@@ -193,6 +207,23 @@ private:
     std::int32_t materialNormalTexturePathMaterialIndex_ = -1;
     std::array<char, 512> materialSpecularTexturePathBuffer_{};
     std::int32_t materialSpecularTexturePathMaterialIndex_ = -1;
+    enum class ResourceSelectionType : std::uint8_t {
+        Model = 0,
+        Material,
+        Texture,
+    };
+    enum class ResourceTextureSlot : std::uint8_t {
+        BaseColor = 0,
+        Normal,
+        Specular,
+    };
+    std::filesystem::path currentModelPath_{kModelPath};
+    std::array<char, 1024> modelImportPathBuffer_{};
+    ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;
+    ResourceTextureSlot selectedResourceTextureSlot_ = ResourceTextureSlot::BaseColor;
+    std::int32_t selectedResourceMaterialIndex_ = -1;
+    std::string resourceImportStatus_;
+    bool resourceImportFailed_ = false;
     std::array<Vertex, 24> boundingBoxVertices_{};
     std::unordered_map<std::uint32_t, ParticleSystem> particleSystems_;
     std::array<char, 512> particleTexturePathBuffer_{};
