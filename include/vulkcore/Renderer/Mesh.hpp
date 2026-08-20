@@ -79,6 +79,15 @@ struct NodeShaderConfiguration {
     }
 };
 
+struct WaterShaderSettings {
+    glm::vec2 flowDirection{0.0f, 1.0f};
+    float flowSpeed = 0.12f;
+    float flowStrength = 1.0f;
+    float flowTurbulence = 0.35f;
+    float waveScale = 1.0f;
+    float waveHeight = 0.025f;
+};
+
 // The node hierarchy is kept separately from the flattened render mesh. This
 // lets the renderer draw the pre-transformed mesh while the UI still exposes
 // the original model structure.
@@ -97,6 +106,7 @@ struct ModelNode {
     glm::vec3 rotationAnimationInitialDegrees{0.0f};
     glm::vec3 rotationAnimationSpeedDegrees{0.0f};
     NodeShaderConfiguration shaderConfiguration;
+    WaterShaderSettings waterShaderSettings;
 };
 
 struct MeshData {

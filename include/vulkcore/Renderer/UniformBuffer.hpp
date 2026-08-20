@@ -11,6 +11,7 @@ struct UniformBufferObject {
     // x is elapsed time in seconds. The remaining components keep the
     // value 16-byte aligned for GLSL std140 uniform-buffer layout.
     glm::vec4 time{0.0f};
+    glm::vec4 viewport{0.0f}; // width, height, 1/width, 1/height
 };
 
 } // namespace VulkCore

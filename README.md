@@ -89,8 +89,8 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 渲染管线以及 vertex/index buffer。模型材质优先使用 FBX 中的 Base Color/Diffuse
 纹理；没有嵌入纹理时，按材质名从 `assets/models/tex/<material>-diffuse.png` 加载。
 默认图片不存在或无法加载时使用 FBX 中的材质颜色和顶点颜色，不再绑定固定的示例纹理。
-现有 3D 场景会先绘制，随后在同一个 Vulkan
-render pass 中绘制 Dear ImGui 主界面；左侧控制面板可以调整模型旋转速度并打开
+现有 3D 场景会先绘制到离屏颜色/深度目标，再复制到交换链；水面在第二阶段采样离屏场景颜色和深度完成反射、折射与透明混合，随后在同一个 Vulkan
+render pass 中绘制水面和 Dear ImGui 主界面；左侧控制面板可以调整模型旋转速度并打开
 ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区域支持拖动修改模型
 的 X/Y/Z 位置和绕 X/Y/Z 轴的旋转角度，也可以关闭 Z 轴自动旋转或恢复默认变换。
 位置、旋转和缩放参数会自动保存到项目根目录的 `vulkcore.ini`，下次启动时自动恢复。
@@ -100,6 +100,7 @@ ImGui demo 窗口，右侧面板显示 FBX 内部节点树。Transform Debug 区
 同一区域的 Node Shaders 可以为当前节点分别选择 Vertex、Tessellation Control、Tessellation Evaluation、Geometry、Fragment 和 Compute Shader。未选择的 graphics stage 自动回退到默认 Shader，因此只改一个节点不会影响其它节点；相同的 Shader 组合会共享 Vulkan graphics pipeline。Compute Shader 会为该节点创建并校验独立的 compute pipeline，但当前模型 render pass 不会自动 dispatch 它，因为 compute 阶段需要额外的 storage buffer/image 资源绑定。
 Shader 选择来自 `build/shaders` 中的 SPIR-V 文件；新增 GLSL 文件后重新构建即可出现在对应下拉框中。自定义 graphics Shader 需要遵守当前顶点输入、descriptor set `0` 的 UBO/纹理绑定以及 `MaterialPushConstants` 接口。
 Node Shaders 还提供 `Apply water shader` 和 `Apply flowing water` 两个预设：前者使用波浪位移、法线扰动和 Fresnel 高光，后者额外按照参考工程的 flow-map 思路移动 UV，并使用程序化 flow field 作为当前单纹理布局下的 fallback。
+选中水面节点后会显示 Water Flow 配置，可调整 UV 流向（+X/+Y）、流速、流动强度、扰动、波浪尺度和波高；这些参数按节点保存为 `node_water`，不会影响其它节点。
 
 如果启动时提示 `Vulkan is not supported` 或 `No Vulkan-capable physical device`，
 说明编译依赖已找到，但当前系统没有可用的 Vulkan 驱动或 MoltenVK/Metal 运行环境。
