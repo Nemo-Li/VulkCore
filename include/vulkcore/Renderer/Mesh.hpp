@@ -110,12 +110,18 @@ struct MeshPart {
     std::uint32_t nodeId = 0;
 };
 
+enum class SceneObjectType : std::uint8_t {
+    ImportedMesh = 0,
+    ParticleSystem,
+};
+
 // The node hierarchy is kept separately from the flattened render mesh. This
 // lets the renderer draw the pre-transformed mesh while the UI still exposes
 // the original model structure.
 struct ModelNode {
     std::string name;
     std::uint32_t nodeId = 0;
+    SceneObjectType objectType = SceneObjectType::ImportedMesh;
     std::uint32_t meshCount = 0;
     glm::mat4 globalTransform{1.0f};
     // Indices into MeshData::parts for this node's directly attached meshes.

@@ -176,6 +176,7 @@ add_executable(VulkCore
     src/main.cpp
     src/Application.cpp
     src/Renderer/Buffer.cpp
+    src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
     src/Renderer/SwapChain.cpp
     src/Renderer/Texture.cpp
