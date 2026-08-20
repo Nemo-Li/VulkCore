@@ -5,6 +5,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -48,8 +49,25 @@ struct MaterialPushConstants {
     glm::vec4 waterSurface{};
 };
 
+// The material pipeline layout is shared by graphics, particle, post-process,
+// and optional compute pipelines. Vulkan requires vkCmdPushConstants' stage
+// mask to include every stage in the overlapping pipeline-layout range.
+constexpr VkShaderStageFlags kMaterialPushConstantStageFlags =
+    VK_SHADER_STAGE_VERTEX_BIT |
+    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+    VK_SHADER_STAGE_GEOMETRY_BIT |
+    VK_SHADER_STAGE_FRAGMENT_BIT |
+    VK_SHADER_STAGE_COMPUTE_BIT;
+
 constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
+// Reserve a stable scene-object ID for the optional procedural Sun. Keeping
+// it independent from imported and particle node allocation makes scene
+// files portable across model switches.
+constexpr std::uint32_t kSunSceneNodeId = 0xF0000000u;
+constexpr std::uint32_t kParticleSceneNodeBase = 0xD0000000u;
+constexpr std::uint32_t kSceneModelNodeStride = 1'000'000u;
 constexpr char kDefaultVertexShader[] = "shader_base.vert";
 constexpr char kDefaultFragmentShader[] = "shader_base.frag";
 
@@ -192,6 +210,87 @@ const char* defaultShaderForStage(ShaderStage stage) {
     }
 }
 
+bool isModelAssetPath(const std::filesystem::path& path) {
+    static constexpr std::array<std::string_view, 17> kModelExtensions = {
+        ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl",
+        ".blend", ".x", ".md5mesh", ".ase", ".lwo", ".lws", ".off", ".x3d",
+        ".abc",
+    };
+    std::string extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        }
+    );
+    return std::find(kModelExtensions.begin(), kModelExtensions.end(), extension) !=
+        kModelExtensions.end();
+}
+
+bool isSceneResourcePath(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        }
+    );
+    return extension == ".scene";
+}
+
+bool isTextureAssetPath(const std::filesystem::path& path) {
+    static constexpr std::array<std::string_view, 10> kTextureExtensions = {
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga",
+        ".gif", ".hdr", ".exr", ".ktx", ".dds",
+    };
+    std::string extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        }
+    );
+    return std::find(kTextureExtensions.begin(), kTextureExtensions.end(), extension) !=
+        kTextureExtensions.end();
+}
+
+std::filesystem::path normalizedPath(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return {};
+    }
+    std::error_code error;
+    const std::filesystem::path absolutePath = path.is_absolute()
+        ? path
+        : std::filesystem::absolute(path, error);
+    return (error ? path : absolutePath).lexically_normal();
+}
+
+bool pathsEqual(const std::filesystem::path& left, const std::filesystem::path& right) {
+    return normalizedPath(left) == normalizedPath(right);
+}
+
+std::filesystem::path locateAssetsDirectory() {
+    const std::filesystem::path compiledModelPath(kModelPath);
+    const std::filesystem::path candidates[] = {
+        std::filesystem::current_path() / "assets",
+        std::filesystem::current_path().parent_path() / "assets",
+        compiledModelPath.parent_path().parent_path(),
+    };
+    for (const std::filesystem::path& candidate : candidates) {
+        std::error_code error;
+        if (std::filesystem::is_directory(candidate, error)) {
+            return candidate;
+        }
+    }
+    return std::filesystem::current_path() / "assets";
+}
+
 bool isWaterShaderConfiguration(const ShaderConfiguration& configuration) {
     const std::string& fragmentShader = configuration.shader(ShaderStage::Fragment);
     return fragmentShader == "shader_water.frag" ||
@@ -281,12 +380,37 @@ ModelNode* findSceneNodeById(MeshData& meshData, std::uint32_t nodeId) {
     return nullptr;
 }
 
-std::uint32_t maximumModelNodeId(const ModelNode& node) {
-    std::uint32_t maximum = node.nodeId;
+void collectModelNodeIds(const ModelNode& node, std::vector<std::uint32_t>& nodeIds) {
+    nodeIds.push_back(node.nodeId);
     for (const ModelNode& child : node.children) {
-        maximum = std::max(maximum, maximumModelNodeId(child));
+        collectModelNodeIds(child, nodeIds);
     }
-    return maximum;
+}
+
+bool removeModelNodeFromChildren(
+    ModelNode& parent,
+    std::uint32_t nodeId,
+    std::vector<std::uint32_t>& removedNodeIds
+) {
+    const auto childIt = std::find_if(
+        parent.children.begin(),
+        parent.children.end(),
+        [nodeId](const ModelNode& child) {
+            return child.nodeId == nodeId;
+        }
+    );
+    if (childIt != parent.children.end()) {
+        collectModelNodeIds(*childIt, removedNodeIds);
+        parent.children.erase(childIt);
+        return true;
+    }
+
+    for (ModelNode& child : parent.children) {
+        if (removeModelNodeFromChildren(child, nodeId, removedNodeIds)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool hasNodeAnimationSettings(const ModelNode& node) {
@@ -553,7 +677,8 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds) {
             // transforms are accumulated in hierarchy order from root to leaf.
             transform *= nodeAnimationTransform(node, elapsedSeconds);
         }
-        const bool renderEnabled = parentRenderEnabled && node.renderEnabled;
+        const bool renderEnabled = parentRenderEnabled && node.renderEnabled &&
+            !removedSceneNodeIds_.contains(node.nodeId);
         sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
         sceneNodeRenderEnabled_.insert_or_assign(node.nodeId, renderEnabled);
         for (const ModelNode& child : node.children) {
@@ -575,6 +700,9 @@ glm::mat4 Renderer::transformForSceneNode(std::uint32_t nodeId) const {
 }
 
 bool Renderer::isSceneNodeRenderEnabled(std::uint32_t nodeId) const {
+    if (removedSceneNodeIds_.contains(nodeId)) {
+        return false;
+    }
     const auto renderStateIt = sceneNodeRenderEnabled_.find(nodeId);
     if (renderStateIt != sceneNodeRenderEnabled_.end()) {
         return renderStateIt->second;
@@ -679,6 +807,37 @@ void Renderer::drawModelHierarchy(ModelNode& node) {
     ImGui::PopID();
 }
 
+void Renderer::drawResourceModelHierarchy(const ModelNode& node) {
+    const bool hasChildren = !node.children.empty();
+    std::string label = node.name.empty() ? "<unnamed>" : node.name;
+    if (node.meshCount > 0) {
+        label += "  [" + std::to_string(node.meshCount) +
+            (node.meshCount == 1 ? " mesh]" : " meshes]");
+    }
+
+    ImGui::PushID(&node);
+    if (!hasChildren) {
+        ImGui::TreeNodeEx(
+            label.c_str(),
+            ImGuiTreeNodeFlags_Leaf |
+                ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                ImGuiTreeNodeFlags_SpanAvailWidth
+        );
+    } else {
+        const bool isOpen = ImGui::TreeNodeEx(
+            label.c_str(),
+            ImGuiTreeNodeFlags_SpanAvailWidth
+        );
+        if (isOpen) {
+            for (const ModelNode& child : node.children) {
+                drawResourceModelHierarchy(child);
+            }
+            ImGui::TreePop();
+        }
+    }
+    ImGui::PopID();
+}
+
 void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings) {
     ImGui::SeparatorText("Node Material");
     ImGui::TextDisabled("A material override applies to this node and its children.");
@@ -763,27 +922,39 @@ void Renderer::drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSetting
         );
     }
 
-    drawMaterialControls(effectiveOverride, shouldSaveSettings);
+    drawMaterialControls(
+        meshData_.materials[effectiveOverride],
+        effectiveOverride,
+        shouldSaveSettings
+    );
 }
 
 void Renderer::drawMaterialControls(
-    std::int32_t materialIndex,
-    bool& shouldSaveSettings
+    MaterialData& material,
+    std::int32_t materialKey,
+    bool& shouldSaveSettings,
+    const std::filesystem::path* modelResourcePath
 ) {
-    if (materialIndex < 0 ||
-        static_cast<std::size_t>(materialIndex) >= meshData_.materials.size()) {
-        ImGui::TextDisabled("The selected material is no longer available.");
-        return;
+    const std::string editorContext = modelResourcePath == nullptr
+        ? "<scene>"
+        : normalizedPath(*modelResourcePath).string();
+    if (materialEditorContext_ != editorContext) {
+        materialEditorContext_ = editorContext;
+        materialNameMaterialIndex_ = -1;
+        materialTexturePathMaterialIndex_ = -1;
+        materialNormalTexturePathMaterialIndex_ = -1;
+        materialSpecularTexturePathMaterialIndex_ = -1;
     }
-
-    MaterialData& material = meshData_.materials[materialIndex];
     const auto markMaterialChanged = [&]() {
         material.userModified = true;
         shouldSaveSettings = true;
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
     };
     ImGui::Text("Editing: %s", material.name.c_str());
-    if (materialNameMaterialIndex_ != materialIndex) {
-        materialNameMaterialIndex_ = materialIndex;
+    if (materialNameMaterialIndex_ != materialKey) {
+        materialNameMaterialIndex_ = materialKey;
         materialNameBuffer_.fill('\0');
         const std::size_t copyCount = std::min(
             material.name.size(),
@@ -848,8 +1019,86 @@ void Renderer::drawMaterialControls(
         markMaterialChanged();
     }
 
-    if (materialTexturePathMaterialIndex_ != materialIndex) {
-        materialTexturePathMaterialIndex_ = materialIndex;
+    const auto drawTextureCandidates = [&, modelResourcePath](
+        const char* label,
+        ResourceTextureSlot slot,
+        std::array<char, 512>& buffer
+    ) {
+        if (modelResourcePath == nullptr) {
+            return;
+        }
+        const auto cacheIt = modelResourceCache_.find(
+            normalizedPath(*modelResourcePath).string()
+        );
+        if (cacheIt == modelResourceCache_.end() || cacheIt->second.texturePaths.empty()) {
+            return;
+        }
+
+        std::filesystem::path currentPath;
+        switch (slot) {
+        case ResourceTextureSlot::BaseColor:
+            currentPath = material.texturePath;
+            break;
+        case ResourceTextureSlot::Normal:
+            currentPath = material.normalTexturePath;
+            break;
+        case ResourceTextureSlot::Specular:
+            currentPath = material.specularTexturePath;
+            break;
+        }
+        const std::string preview = currentPath.empty()
+            ? "<Choose a texture>"
+            : currentPath.filename().string();
+        ImGui::PushID(label);
+        if (ImGui::BeginCombo("Texture candidates", preview.c_str())) {
+            for (const std::filesystem::path& candidate : cacheIt->second.texturePaths) {
+                std::error_code relativeError;
+                const std::filesystem::path relativePath = std::filesystem::relative(
+                    candidate,
+                    modelResourcePath->parent_path() / "tex",
+                    relativeError
+                );
+                const std::string candidateLabel = (!relativeError && !relativePath.empty())
+                    ? relativePath.generic_string()
+                    : candidate.filename().string();
+                const bool selected = pathsEqual(candidate, currentPath);
+                if (ImGui::Selectable(candidateLabel.c_str(), selected)) {
+                    buffer.fill('\0');
+                    const std::string candidateString = candidate.string();
+                    const std::size_t copyCount = std::min(
+                        candidateString.size(),
+                        buffer.size() - 1
+                    );
+                    std::copy_n(candidateString.data(), copyCount, buffer.data());
+                    switch (slot) {
+                    case ResourceTextureSlot::BaseColor:
+                        material.texturePath = candidate;
+                        material.embeddedTexture = EmbeddedTextureData{};
+                        break;
+                    case ResourceTextureSlot::Normal:
+                        material.normalTexturePath = candidate;
+                        material.embeddedNormalTexture = EmbeddedTextureData{};
+                        break;
+                    case ResourceTextureSlot::Specular:
+                        material.specularTexturePath = candidate;
+                        material.embeddedSpecularTexture = EmbeddedTextureData{};
+                        break;
+                    }
+                    synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+                    rebuildMaterialResources();
+                    markMaterialChanged();
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopID();
+    };
+
+    if (materialTexturePathMaterialIndex_ != materialKey) {
+        materialTexturePathMaterialIndex_ = materialKey;
         materialTexturePathBuffer_.fill('\0');
         const std::string path = material.texturePath.string();
         const std::size_t copyCount = std::min(
@@ -863,9 +1112,17 @@ void Renderer::drawMaterialControls(
         materialTexturePathBuffer_.data(),
         materialTexturePathBuffer_.size()
     );
+    drawTextureCandidates(
+        "BaseColorCandidates",
+        ResourceTextureSlot::BaseColor,
+        materialTexturePathBuffer_
+    );
     if (ImGui::Button("Load material texture")) {
         material.texturePath = materialTexturePathBuffer_.data();
         material.embeddedTexture = EmbeddedTextureData{};
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -874,6 +1131,9 @@ void Renderer::drawMaterialControls(
         material.texturePath.clear();
         material.embeddedTexture = EmbeddedTextureData{};
         materialTexturePathBuffer_.fill('\0');
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -897,7 +1157,7 @@ void Renderer::drawMaterialControls(
     syncTexturePathBuffer(
         materialNormalTexturePathBuffer_,
         materialNormalTexturePathMaterialIndex_,
-        materialIndex,
+        materialKey,
         material.normalTexturePath
     );
     ImGui::InputText(
@@ -905,9 +1165,17 @@ void Renderer::drawMaterialControls(
         materialNormalTexturePathBuffer_.data(),
         materialNormalTexturePathBuffer_.size()
     );
+    drawTextureCandidates(
+        "NormalCandidates",
+        ResourceTextureSlot::Normal,
+        materialNormalTexturePathBuffer_
+    );
     if (ImGui::Button("Load normal texture")) {
         material.normalTexturePath = materialNormalTexturePathBuffer_.data();
         material.embeddedNormalTexture = EmbeddedTextureData{};
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -916,6 +1184,9 @@ void Renderer::drawMaterialControls(
         material.normalTexturePath.clear();
         material.embeddedNormalTexture = EmbeddedTextureData{};
         materialNormalTexturePathBuffer_.fill('\0');
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -923,7 +1194,7 @@ void Renderer::drawMaterialControls(
     syncTexturePathBuffer(
         materialSpecularTexturePathBuffer_,
         materialSpecularTexturePathMaterialIndex_,
-        materialIndex,
+        materialKey,
         material.specularTexturePath
     );
     ImGui::InputText(
@@ -931,9 +1202,17 @@ void Renderer::drawMaterialControls(
         materialSpecularTexturePathBuffer_.data(),
         materialSpecularTexturePathBuffer_.size()
     );
+    drawTextureCandidates(
+        "SpecularCandidates",
+        ResourceTextureSlot::Specular,
+        materialSpecularTexturePathBuffer_
+    );
     if (ImGui::Button("Load specular texture")) {
         material.specularTexturePath = materialSpecularTexturePathBuffer_.data();
         material.embeddedSpecularTexture = EmbeddedTextureData{};
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -942,6 +1221,9 @@ void Renderer::drawMaterialControls(
         material.specularTexturePath.clear();
         material.embeddedSpecularTexture = EmbeddedTextureData{};
         materialSpecularTexturePathBuffer_.fill('\0');
+        if (modelResourcePath != nullptr) {
+            synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+        }
         rebuildMaterialResources();
         markMaterialChanged();
     }
@@ -962,6 +1244,9 @@ void Renderer::drawMaterialControls(
     }
 
     drawMaterialShaderControls(material, shouldSaveSettings);
+    if (modelResourcePath != nullptr) {
+        synchronizeModelResourceMaterial(*modelResourcePath, materialKey, material);
+    }
 }
 
 void Renderer::drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings) {
@@ -1097,7 +1382,8 @@ Renderer::Renderer(GLFWwindow* window)
     swapChain_->createFramebuffers(renderPass_);
     loadResourceSettings();
     createMeshData();
-    createSunMesh();
+    discoverModelResources();
+    discoverSceneResources();
     loadTransformSettings();
     createVertexBuffer();
     createIndexBuffer();
@@ -1339,42 +1625,611 @@ void Renderer::drawShaderDemoControls(bool& shouldSaveSettings) {
     }
 }
 
-void Renderer::loadResourceSettings() {
-    currentModelPath_ = std::filesystem::path(kModelPath);
+void Renderer::discoverModelResources() {
+    assetsDirectory_ = locateAssetsDirectory();
+    modelResourcePaths_.clear();
 
-    const std::filesystem::path configPath(kConfigPath);
-    std::ifstream file(configPath);
-    std::string key;
-    while (file >> key) {
-        if (key == "model_resource_path") {
-            std::string configuredPath;
-            if (file >> std::quoted(configuredPath) && !configuredPath.empty()) {
-                std::error_code error;
-                const std::filesystem::path candidate(configuredPath);
-                if (std::filesystem::is_regular_file(candidate, error)) {
-                    currentModelPath_ = candidate;
-                }
-            }
+    const auto addModelPath = [this](const std::filesystem::path& path) {
+        if (path.empty()) {
+            return;
         }
-        std::string ignoredLine;
-        std::getline(file, ignoredLine);
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) {
+            return;
+        }
+        const auto existing = std::find_if(
+            modelResourcePaths_.begin(),
+            modelResourcePaths_.end(),
+            [&path](const std::filesystem::path& candidate) {
+                return pathsEqual(candidate, path);
+            }
+        );
+        if (existing == modelResourcePaths_.end()) {
+            modelResourcePaths_.push_back(path);
+        }
+    };
+
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(
+        assetsDirectory_,
+        std::filesystem::directory_options::skip_permission_denied,
+        error
+    );
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end && !error; iterator.increment(error)) {
+        const std::filesystem::path path = iterator->path();
+        if (iterator->is_regular_file(error) && isModelAssetPath(path)) {
+            addModelPath(path);
+        }
+        error.clear();
     }
 
+    // Keep imported models visible even when they live outside the project's
+    // assets directory. Multiple instances can be present in one scene.
+    for (const SceneModelResource& model : sceneModelResources_) {
+        addModelPath(model.path);
+    }
+
+    std::sort(
+        modelResourcePaths_.begin(),
+        modelResourcePaths_.end(),
+        [](const std::filesystem::path& left, const std::filesystem::path& right) {
+            return normalizedPath(left).string() < normalizedPath(right).string();
+        }
+    );
+    selectedModelPreview_.reset();
+    selectedModelPreviewError_.clear();
+}
+
+void Renderer::discoverModelTextureResources(
+    const std::filesystem::path& modelPath,
+    ModelResourceCacheEntry& cache
+) {
+    cache.texturePaths.clear();
+    const std::filesystem::path textureDirectory = modelPath.parent_path() / "tex";
+    std::error_code error;
+    if (!std::filesystem::is_directory(textureDirectory, error)) {
+        return;
+    }
+
+    std::filesystem::recursive_directory_iterator iterator(
+        textureDirectory,
+        std::filesystem::directory_options::skip_permission_denied,
+        error
+    );
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end && !error; iterator.increment(error)) {
+        if (!iterator->is_regular_file(error) || !isTextureAssetPath(iterator->path())) {
+            error.clear();
+            continue;
+        }
+        const std::filesystem::path candidate = normalizedPath(iterator->path());
+        const auto existing = std::find_if(
+            cache.texturePaths.begin(),
+            cache.texturePaths.end(),
+            [&candidate](const std::filesystem::path& current) {
+                return pathsEqual(current, candidate);
+            }
+        );
+        if (existing == cache.texturePaths.end()) {
+            cache.texturePaths.push_back(candidate);
+        }
+        error.clear();
+    }
+    std::sort(
+        cache.texturePaths.begin(),
+        cache.texturePaths.end(),
+        [](const std::filesystem::path& left, const std::filesystem::path& right) {
+            return left.string() < right.string();
+        }
+    );
+}
+
+void Renderer::synchronizeModelResourceMaterial(
+    const std::filesystem::path& path,
+    std::size_t materialIndex,
+    const MaterialData& material
+) {
+    const std::filesystem::path normalizedModelPath = normalizedPath(path);
+    auto cacheIt = modelResourceCache_.find(normalizedModelPath.string());
+    if (cacheIt != modelResourceCache_.end() && cacheIt->second.mesh != nullptr &&
+        materialIndex < cacheIt->second.mesh->materials.size() &&
+        &cacheIt->second.mesh->materials[materialIndex] != &material) {
+        cacheIt->second.mesh->materials[materialIndex] = material;
+    }
+
+    for (const SceneModelResource& model : sceneModelResources_) {
+        if (!pathsEqual(model.path, normalizedModelPath) ||
+            materialIndex >= model.materialCount) {
+            continue;
+        }
+        const std::size_t sceneMaterialIndex =
+            static_cast<std::size_t>(model.materialStart) + materialIndex;
+        if (sceneMaterialIndex >= meshData_.materials.size()) {
+            continue;
+        }
+        if (&meshData_.materials[sceneMaterialIndex] != &material) {
+            meshData_.materials[sceneMaterialIndex] = material;
+        }
+        meshData_.materials[sceneMaterialIndex].userModified = true;
+    }
+}
+
+void Renderer::refreshModelResourceCacheFromScene(const std::filesystem::path& path) {
+    const std::filesystem::path normalizedModelPath = normalizedPath(path);
+    auto cacheIt = modelResourceCache_.find(normalizedModelPath.string());
+    if (cacheIt == modelResourceCache_.end() || cacheIt->second.mesh == nullptr) {
+        return;
+    }
+    const auto sceneModelIt = std::find_if(
+        sceneModelResources_.begin(),
+        sceneModelResources_.end(),
+        [&normalizedModelPath](const SceneModelResource& model) {
+            return pathsEqual(model.path, normalizedModelPath);
+        }
+    );
+    if (sceneModelIt == sceneModelResources_.end()) {
+        return;
+    }
+    for (std::size_t materialIndex = 0;
+         materialIndex < sceneModelIt->materialCount;
+         ++materialIndex) {
+        const std::size_t sceneMaterialIndex =
+            static_cast<std::size_t>(sceneModelIt->materialStart) + materialIndex;
+        if (sceneMaterialIndex >= meshData_.materials.size() ||
+            materialIndex >= cacheIt->second.mesh->materials.size()) {
+            break;
+        }
+        cacheIt->second.mesh->materials[materialIndex] =
+            meshData_.materials[sceneMaterialIndex];
+    }
+}
+
+void Renderer::selectModelResource(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    const std::filesystem::path normalizedModelPath = normalizedPath(path);
+    selectedResourceType_ = ResourceSelectionType::Model;
+    selectedResourceMaterialIndex_ = -1;
+    selectedModelNode_ = nullptr;
+    selectedModelResourcePath_ = normalizedModelPath;
+
     modelImportPathBuffer_.fill('\0');
-    const std::string pathString = currentModelPath_.string();
-    const std::size_t copyCount = std::min(
-        pathString.size(),
+    const std::string selectedPathString = normalizedModelPath.string();
+    const std::size_t selectedPathCopyCount = std::min(
+        selectedPathString.size(),
         modelImportPathBuffer_.size() - 1
     );
-    std::copy_n(pathString.data(), copyCount, modelImportPathBuffer_.data());
+    std::copy_n(
+        selectedPathString.data(),
+        selectedPathCopyCount,
+        modelImportPathBuffer_.data()
+    );
+
+    selectedModelPreview_.reset();
+    selectedModelPreviewError_.clear();
+
+    ModelResourceCacheEntry& cache = modelResourceCache_[normalizedModelPath.string()];
+    if (cache.mesh == nullptr && cache.error.empty()) {
+        try {
+            auto preview = std::make_shared<MeshData>(loadModelMesh(normalizedModelPath));
+            if (preview->vertices.empty() || preview->indices.empty()) {
+                throw std::runtime_error("the model contains no renderable triangles");
+            }
+            cache.mesh = std::move(preview);
+            discoverModelTextureResources(normalizedModelPath, cache);
+        } catch (const std::exception& error) {
+            cache.error = error.what();
+        }
+    }
+
+    refreshModelResourceCacheFromScene(normalizedModelPath);
+    selectedModelPreview_ = cache.mesh;
+    selectedModelPreviewError_ = cache.error;
+    updateBoundingBoxVertices();
+}
+
+void Renderer::initializeEmptyScene() {
+    meshData_ = MeshData{};
+    MaterialData defaultMaterial;
+    defaultMaterial.name = "DefaultMaterial";
+    meshData_.materials.push_back(std::move(defaultMaterial));
+    modelCenter_ = glm::vec3(0.0f);
+    modelScale_ = 1.0f;
+    sunNodeId_ = 0;
+    sunMaterialIndex_ = 0;
+    sunPartIndex_ = 0;
+    sunVertexStart_ = 0;
+    sunIndexStart_ = 0;
+    sunPresent_ = false;
+}
+
+void Renderer::clearSceneData() {
+    context_->waitIdle();
+    selectedModelNode_ = nullptr;
+    removedSceneNodeIds_.clear();
+    sceneNodeTransforms_.clear();
+    sceneNodeRenderEnabled_.clear();
+    particleSystems_.clear();
+    particleDrawRanges_.clear();
+    particleVertices_.clear();
+    particleTextures_.clear();
+    sceneModelResources_.clear();
+    nextSceneModelInstanceIndex_ = 0;
+    initializeEmptyScene();
+    selectedModelResourcePath_.clear();
+    selectedModelPreview_.reset();
+    selectedModelPreviewError_.clear();
+    selectedResourceType_ = ResourceSelectionType::Model;
+    selectedResourceMaterialIndex_ = -1;
+    modelImportPathBuffer_.fill('\0');
+    boundingBoxVertices_.fill(Vertex{});
+
+    vertexBuffer_.reset();
+    indexBuffer_.reset();
+    createVertexBuffer();
+    createIndexBuffer();
+    createParticleTextures();
+    rebuildMaterialResources();
+}
+
+void Renderer::recalculateSceneBounds() {
+    if (meshData_.vertices.empty() || meshData_.parts.empty()) {
+        modelCenter_ = glm::vec3(0.0f);
+        modelScale_ = 1.0f;
+        return;
+    }
+
+    glm::vec3 minimum(std::numeric_limits<float>::max());
+    glm::vec3 maximum(std::numeric_limits<float>::lowest());
+    bool hasVisibleVertex = false;
+    for (const MeshPart& part : meshData_.parts) {
+        if (removedSceneNodeIds_.contains(part.nodeId)) {
+            continue;
+        }
+        const std::size_t firstIndex = part.firstIndex;
+        const std::size_t endIndex = std::min<std::size_t>(
+            meshData_.indices.size(),
+            firstIndex + part.indexCount
+        );
+        for (std::size_t index = firstIndex; index < endIndex; ++index) {
+            const std::uint32_t vertexIndex = meshData_.indices[index];
+            if (vertexIndex >= meshData_.vertices.size()) {
+                continue;
+            }
+            minimum = glm::min(minimum, meshData_.vertices[vertexIndex].position);
+            maximum = glm::max(maximum, meshData_.vertices[vertexIndex].position);
+            hasVisibleVertex = true;
+        }
+    }
+    if (!hasVisibleVertex) {
+        modelCenter_ = glm::vec3(0.0f);
+        modelScale_ = 1.0f;
+        return;
+    }
+    const glm::vec3 extent = maximum - minimum;
+    const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
+    if (largestExtent <= std::numeric_limits<float>::epsilon()) {
+        throw std::runtime_error("scene has no measurable bounds");
+    }
+    modelCenter_ = (minimum + maximum) * 0.5f;
+    modelScale_ = 1.8f / largestExtent;
+}
+
+void Renderer::appendImportedModel(
+    MeshData importedMesh,
+    const std::filesystem::path& path
+) {
+    const std::uint32_t modelIndex = nextSceneModelInstanceIndex_++;
+    if (modelIndex >= (std::numeric_limits<std::uint32_t>::max() - 1u) /
+            kSceneModelNodeStride) {
+        throw std::runtime_error("scene contains too many model instances");
+    }
+
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    const std::uint32_t materialOffset = static_cast<std::uint32_t>(meshData_.materials.size());
+    const std::uint32_t importedMaterialCount =
+        static_cast<std::uint32_t>(importedMesh.materials.size());
+    const std::uint32_t partOffset = static_cast<std::uint32_t>(meshData_.parts.size());
+    const std::uint32_t nodeOffset = 1u + modelIndex *
+        kSceneModelNodeStride;
+
+    for (const Vertex& vertex : importedMesh.vertices) {
+        meshData_.vertices.push_back(vertex);
+    }
+    for (const std::uint32_t index : importedMesh.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+    for (MaterialData& material : importedMesh.materials) {
+        meshData_.materials.push_back(std::move(material));
+    }
+    for (MeshPart part : importedMesh.parts) {
+        part.firstIndex += indexOffset;
+        part.materialIndex += materialOffset;
+        part.nodeId += nodeOffset;
+        meshData_.parts.push_back(part);
+    }
+
+    const auto remapNode = [nodeOffset, partOffset, materialOffset](
+                               const auto& self,
+                               ModelNode& node
+                           ) -> void {
+        node.nodeId += nodeOffset;
+        for (std::uint32_t& partIndex : node.meshPartIndices) {
+            partIndex += partOffset;
+        }
+        if (node.materialOverride >= 0) {
+            node.materialOverride += static_cast<std::int32_t>(materialOffset);
+        }
+        for (ModelNode& child : node.children) {
+            self(self, child);
+        }
+    };
+    remapNode(remapNode, importedMesh.hierarchy);
+
+    if (meshData_.hierarchy.name.empty()) {
+        meshData_.hierarchy.name = "Scene";
+    }
+    const std::uint32_t rootNodeId = importedMesh.hierarchy.nodeId;
+    meshData_.hierarchy.children.push_back(std::move(importedMesh.hierarchy));
+    sceneModelResources_.push_back({
+        rootNodeId,
+        normalizedPath(path),
+        materialOffset,
+        importedMaterialCount,
+    });
+    recalculateSceneBounds();
+}
+
+void Renderer::createNewEmptyScene() {
+    clearSceneData();
+    sceneStatusFailed_ = false;
+
+    if (scenesDirectory_.empty()) {
+        scenesDirectory_ = std::filesystem::current_path() / "scenes";
+    }
+    std::filesystem::path newScenePath;
+    std::error_code error;
+    for (std::size_t suffix = 0; ; ++suffix) {
+        const std::string fileName = suffix == 0
+            ? "Scene.scene"
+            : "Scene_" + std::to_string(suffix) + ".scene";
+        const std::filesystem::path candidate = scenesDirectory_ / fileName;
+        error.clear();
+        if (!std::filesystem::exists(candidate, error)) {
+            if (error) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Failed to choose a scene filename: " + error.message();
+                return;
+            }
+            newScenePath = candidate;
+            break;
+        }
+    }
+
+    if (saveSceneResource(newScenePath)) {
+        sceneStatus_ = "Created and saved empty scene " +
+            currentScenePath_.filename().string() + ".";
+    }
+}
+
+void Renderer::discoverSceneResources() {
+    scenesDirectory_ = assetsDirectory_.empty()
+        ? std::filesystem::current_path() / "scenes"
+        : assetsDirectory_.parent_path() / "scenes";
+    sceneResourcePaths_.clear();
+
+    const auto addScenePath = [this](const std::filesystem::path& path) {
+        if (path.empty()) {
+            return;
+        }
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || !isSceneResourcePath(path)) {
+            return;
+        }
+        const auto existing = std::find_if(
+            sceneResourcePaths_.begin(),
+            sceneResourcePaths_.end(),
+            [&path](const std::filesystem::path& candidate) {
+                return pathsEqual(candidate, path);
+            }
+        );
+        if (existing == sceneResourcePaths_.end()) {
+            sceneResourcePaths_.push_back(path);
+        }
+    };
+
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(
+        scenesDirectory_,
+        std::filesystem::directory_options::skip_permission_denied,
+        error
+    );
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end && !error; iterator.increment(error)) {
+        addScenePath(iterator->path());
+        error.clear();
+    }
+    addScenePath(currentScenePath_);
+    std::sort(
+        sceneResourcePaths_.begin(),
+        sceneResourcePaths_.end(),
+        [](const std::filesystem::path& left, const std::filesystem::path& right) {
+            return normalizedPath(left).string() < normalizedPath(right).string();
+        }
+    );
+}
+
+bool Renderer::saveSceneResource(const std::filesystem::path& path) {
+    sceneStatusFailed_ = false;
+    sceneStatus_.clear();
+    if (path.empty()) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Enter a scene file path before saving.";
+        return false;
+    }
+
+    std::filesystem::path resolvedPath = path;
+    if (resolvedPath.is_relative()) {
+        resolvedPath = resolvedPath.parent_path().empty()
+            ? scenesDirectory_ / resolvedPath
+            : std::filesystem::current_path() / resolvedPath;
+    }
+    if (resolvedPath.extension().empty()) {
+        resolvedPath += ".scene";
+    }
+    resolvedPath = normalizedPath(resolvedPath);
+
+    std::error_code error;
+    if (!resolvedPath.parent_path().empty()) {
+        std::filesystem::create_directories(resolvedPath.parent_path(), error);
+    }
+    if (error) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Failed to create scene directory: " + error.message();
+        return false;
+    }
+
+    const std::filesystem::path previousScenePath = currentScenePath_;
+    currentScenePath_ = resolvedPath;
+    if (!saveTransformSettings()) {
+        currentScenePath_ = previousScenePath;
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Failed to save scene: " + resolvedPath.string();
+        return false;
+    }
+
+    discoverSceneResources();
+    scenePathBuffer_.fill('\0');
+    const std::string pathString = currentScenePath_.string();
+    const std::size_t copyCount = std::min(pathString.size(), scenePathBuffer_.size() - 1);
+    std::copy_n(pathString.data(), copyCount, scenePathBuffer_.data());
+    sceneStatus_ = "Saved scene " + currentScenePath_.filename().string() + ".";
+    return true;
+}
+
+bool Renderer::loadSceneResource(const std::filesystem::path& path) {
+    sceneStatusFailed_ = false;
+    sceneStatus_.clear();
+    std::error_code error;
+    const std::filesystem::path resolvedScenePath = normalizedPath(path);
+    if (!std::filesystem::is_regular_file(resolvedScenePath, error)) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Scene file was not found: " + resolvedScenePath.string();
+        return false;
+    }
+
+    std::vector<std::filesystem::path> modelPaths;
+    bool sceneHasSun = false;
+    std::ifstream sceneFile(resolvedScenePath);
+    if (!sceneFile.is_open()) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Scene file could not be opened: " + resolvedScenePath.string();
+        return false;
+    }
+    std::string key;
+    while (sceneFile >> key) {
+        if (key == "model_resource_path") {
+            std::string configuredPath;
+            if (!(sceneFile >> std::quoted(configuredPath))) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid model path.";
+                return false;
+            }
+            modelPaths.emplace_back(configuredPath);
+        } else if (key == "sun_present") {
+            int present = 0;
+            if (!(sceneFile >> present) || (present != 0 && present != 1)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid sun state.";
+                return false;
+            }
+            sceneHasSun = present != 0;
+        } else {
+            std::string ignoredLine;
+            std::getline(sceneFile, ignoredLine);
+        }
+    }
+
+    for (std::filesystem::path& modelPath : modelPaths) {
+        if (modelPath.is_relative()) {
+            const std::filesystem::path sceneRelativePath =
+                resolvedScenePath.parent_path() / modelPath;
+            if (std::filesystem::is_regular_file(sceneRelativePath, error)) {
+                modelPath = sceneRelativePath;
+            } else {
+                error.clear();
+                modelPath = std::filesystem::absolute(modelPath, error);
+            }
+        }
+        if (!std::filesystem::is_regular_file(modelPath, error)) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Model referenced by scene was not found: " + modelPath.string();
+            return false;
+        }
+    }
+
+    clearSceneData();
+    for (const std::filesystem::path& modelPath : modelPaths) {
+        if (!importModelResource(modelPath)) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Failed to load scene model: " + resourceImportStatus_;
+            return false;
+        }
+    }
+
+    if (sceneHasSun) {
+        createSunMesh();
+        rebuildSceneGeometryResources();
+    }
+
+    currentScenePath_ = resolvedScenePath;
+    loadTransformSettings();
+    for (const SceneModelResource& model : sceneModelResources_) {
+        refreshModelResourceCacheFromScene(model.path);
+    }
+    createParticleTextures();
+    rebuildMaterialResources();
+    discoverSceneResources();
+    scenePathBuffer_.fill('\0');
+    const std::string pathString = currentScenePath_.string();
+    const std::size_t copyCount = std::min(pathString.size(), scenePathBuffer_.size() - 1);
+    std::copy_n(pathString.data(), copyCount, scenePathBuffer_.data());
+    selectedModelNode_ = nullptr;
+    selectedResourceType_ = ResourceSelectionType::Model;
+    selectedResourceMaterialIndex_ = -1;
+    updateBoundingBoxVertices();
+    sceneStatus_ = "Loaded scene " + currentScenePath_.filename().string() + ".";
+    return true;
+}
+
+void Renderer::loadResourceSettings() {
+    // Models are scene content now. Start with a blank scene instead of
+    // implicitly importing the compile-time demo model or legacy ini entry.
+    sceneModelResources_.clear();
+    currentScenePath_.clear();
+    sceneStatus_.clear();
+    sceneStatusFailed_ = false;
+
+    modelImportPathBuffer_.fill('\0');
+    scenePathBuffer_.fill('\0');
 }
 
 void Renderer::loadTransformSettings() {
-    const std::filesystem::path configPath(kConfigPath);
+    if (currentScenePath_.empty()) {
+        return;
+    }
+
+    const std::filesystem::path configPath(currentScenePath_);
     std::ifstream file(configPath);
     if (!file.is_open()) {
         return;
     }
+
+    removedSceneNodeIds_.clear();
 
     glm::vec3 legacyTranslation(0.0f);
     glm::vec3 legacyRotationDegrees(0.0f);
@@ -1406,6 +2261,9 @@ void Renderer::loadTransformSettings() {
         std::uint32_t nodeId = 0;
         bool enabled = true;
     };
+    struct PendingRemovedNode {
+        std::uint32_t nodeId = 0;
+    };
     struct PendingNodeShaders {
         std::uint32_t nodeId = 0;
         ShaderConfiguration configuration;
@@ -1434,6 +2292,7 @@ void Renderer::loadTransformSettings() {
     std::vector<PendingNodeAnimation> pendingNodeAnimations;
     std::vector<PendingNodeTransform> pendingNodeTransforms;
     std::vector<PendingNodeRender> pendingNodeRenderSettings;
+    std::vector<PendingRemovedNode> pendingRemovedNodes;
     std::vector<PendingNodeShaders> pendingNodeShaders;
     std::vector<PendingNodeWater> pendingNodeWater;
     std::vector<PendingMaterial> pendingMaterials;
@@ -1482,6 +2341,13 @@ void Renderer::loadTransformSettings() {
             }
             render.enabled = enabled != 0;
             pendingNodeRenderSettings.push_back(render);
+        } else if (key == "node_removed") {
+            PendingRemovedNode removed;
+            if (!(file >> removed.nodeId)) {
+                valid = false;
+                break;
+            }
+            pendingRemovedNodes.push_back(removed);
         } else if (key == "node_animation") {
             PendingNodeAnimation animation;
             int enabled = 0;
@@ -1808,6 +2674,14 @@ void Renderer::loadTransformSettings() {
         return;
     }
 
+    for (const PendingRemovedNode& removed : pendingRemovedNodes) {
+        if (!removeSceneNodeById(removed.nodeId)) {
+            // This also covers generated objects (such as particle systems)
+            // that are restored from their own settings later in this method.
+            removedSceneNodeIds_.insert(removed.nodeId);
+        }
+    }
+
     ambientLightColor_ = glm::clamp(ambientLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
     ambientLightIntensity_ = std::clamp(ambientLightIntensity, 0.0f, 4.0f);
     sunLightDirection_ = sunLightDirection;
@@ -1826,6 +2700,9 @@ void Renderer::loadTransformSettings() {
     postProcessSplitPosition_ = std::clamp(postProcessSplitPosition, 0.1f, 0.9f);
     postProcessSplitView_ = postProcessSplitView != 0;
     for (PendingParticleSystem& pending : pendingParticleSystems) {
+        if (removedSceneNodeIds_.contains(pending.nodeId)) {
+            continue;
+        }
         ModelNode* node = findSceneNodeById(meshData_, pending.nodeId);
         if (node == nullptr) {
             if (particleSystems_.size() >= kMaximumParticleSystems) {
@@ -2033,18 +2910,26 @@ void Renderer::loadTransformSettings() {
     }
 }
 
-void Renderer::saveTransformSettings() const {
-    const std::filesystem::path configPath(kConfigPath);
-    std::ofstream file(configPath, std::ios::trunc);
-    if (!file.is_open()) {
-        std::cerr << "warning: failed to save VulkCore transform settings to '"
-                  << configPath.string() << "'\n";
-        return;
+bool Renderer::saveTransformSettings() const {
+    if (currentScenePath_.empty()) {
+        return false;
     }
 
-    file << "# VulkCore transform settings\n"
-         << std::setprecision(9)
-         << "model_resource_path " << std::quoted(currentModelPath_.string()) << "\n"
+    const std::filesystem::path configPath(currentScenePath_);
+    std::ofstream file(configPath, std::ios::trunc);
+    if (!file.is_open()) {
+        std::cerr << "warning: failed to save VulkCore scene settings to '"
+                  << configPath.string() << "'\n";
+        return false;
+    }
+
+    file << "# VulkCore scene\n"
+         << std::setprecision(9);
+    for (const SceneModelResource& model : sceneModelResources_) {
+        file << "model_resource_path " << std::quoted(model.path.string()) << ' '
+             << model.rootNodeId << "\n";
+    }
+    file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
          << "ambient_color " << ambientLightColor_.r << ' '
          << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
          << "ambient_intensity " << ambientLightIntensity_ << "\n"
@@ -2056,6 +2941,9 @@ void Renderer::saveTransformSettings() const {
          << "shader_demo " << postProcessEffect_ << ' '
          << postProcessStrength_ << ' ' << postProcessParameter_ << ' '
          << postProcessSplitPosition_ << ' ' << (postProcessSplitView_ ? 1 : 0) << "\n";
+    for (const std::uint32_t nodeId : removedSceneNodeIds_) {
+        file << "node_removed " << nodeId << "\n";
+    }
     for (const ModelNode& node : meshData_.additionalNodes) {
         if (node.objectType != SceneObjectType::ParticleSystem) {
             continue;
@@ -2082,20 +2970,123 @@ void Renderer::saveTransformSettings() const {
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeMaterialSettings(file, node);
     }
+    return static_cast<bool>(file);
+}
+
+bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
+    std::vector<std::uint32_t> removedNodeIds;
+    bool removed = false;
+    const bool removingSun = sunPresent_ && nodeId == sunNodeId_;
+    if (meshData_.hierarchy.nodeId == nodeId) {
+        if (meshData_.hierarchy.name == "Scene") {
+            clearSceneData();
+            selectedModelNode_ = nullptr;
+            updateBoundingBoxVertices();
+            return true;
+        }
+        collectModelNodeIds(meshData_.hierarchy, removedNodeIds);
+        ModelNode replacement;
+        replacement.nodeId = nodeId;
+        replacement.renderEnabled = false;
+        meshData_.hierarchy = std::move(replacement);
+        removed = true;
+    } else if (removeModelNodeFromChildren(meshData_.hierarchy, nodeId, removedNodeIds)) {
+        removed = true;
+    } else {
+        const auto nodeIt = std::find_if(
+            meshData_.additionalNodes.begin(),
+            meshData_.additionalNodes.end(),
+            [nodeId](const ModelNode& node) {
+                return node.nodeId == nodeId;
+            }
+        );
+        if (nodeIt != meshData_.additionalNodes.end()) {
+            collectModelNodeIds(*nodeIt, removedNodeIds);
+            meshData_.additionalNodes.erase(nodeIt);
+            removed = true;
+        }
+    }
+    if (!removed) {
+        return false;
+    }
+
+    bool hasParticleResources = false;
+    for (const std::uint32_t removedNodeId : removedNodeIds) {
+        hasParticleResources = hasParticleResources ||
+            particleSystems_.contains(removedNodeId) ||
+            particleTextures_.contains(removedNodeId) ||
+            particleDescriptorSets_.contains(removedNodeId);
+    }
+    if (hasParticleResources && context_ != nullptr) {
+        context_->waitIdle();
+    }
+
+    for (const std::uint32_t removedNodeId : removedNodeIds) {
+        removedSceneNodeIds_.insert(removedNodeId);
+        particleSystems_.erase(removedNodeId);
+        particleTextures_.erase(removedNodeId);
+        const auto descriptorIt = particleDescriptorSets_.find(removedNodeId);
+        if (descriptorIt != particleDescriptorSets_.end()) {
+            if (descriptorPool_ != VK_NULL_HANDLE) {
+                vkFreeDescriptorSets(
+                    context_->device(),
+                    descriptorPool_,
+                    kMaxFramesInFlight,
+                    descriptorIt->second.data()
+                );
+            }
+            particleDescriptorSets_.erase(descriptorIt);
+        }
+        sceneNodeTransforms_.erase(removedNodeId);
+        sceneNodeRenderEnabled_.erase(removedNodeId);
+    }
+    if (std::find(
+            removedNodeIds.begin(),
+            removedNodeIds.end(),
+            particleTexturePathNodeId_
+        ) != removedNodeIds.end()) {
+        particleTexturePathNodeId_ = std::numeric_limits<std::uint32_t>::max();
+        particleTexturePathBuffer_.fill('\0');
+    }
+
+    sceneModelResources_.erase(
+        std::remove_if(
+            sceneModelResources_.begin(),
+            sceneModelResources_.end(),
+            [&removedNodeIds](const SceneModelResource& model) {
+                return std::find(
+                    removedNodeIds.begin(),
+                    removedNodeIds.end(),
+                    model.rootNodeId
+                ) != removedNodeIds.end();
+            }
+        ),
+        sceneModelResources_.end()
+    );
+
+    recalculateSceneBounds();
+    selectedModelNode_ = nullptr;
+    if (removingSun) {
+        removeSunMesh();
+        rebuildSceneGeometryResources();
+    }
+    updateBoundingBoxVertices();
+    return true;
 }
 
 void Renderer::createParticleSystemObject() {
     if (particleSystems_.size() >= kMaximumParticleSystems) {
         return;
     }
-    std::uint32_t maximumNodeId = maximumModelNodeId(meshData_.hierarchy);
-    for (const ModelNode& node : meshData_.additionalNodes) {
-        maximumNodeId = std::max(maximumNodeId, maximumModelNodeId(node));
+    std::uint32_t particleNodeId = kParticleSceneNodeBase;
+    while (particleNodeId == kSunSceneNodeId ||
+           findSceneNodeById(meshData_, particleNodeId) != nullptr) {
+        ++particleNodeId;
     }
 
     ModelNode particleNode;
-    particleNode.name = "Particle System " + std::to_string(maximumNodeId + 1);
-    particleNode.nodeId = maximumNodeId + 1;
+    particleNode.name = "Particle System " + std::to_string(particleNodeId);
+    particleNode.nodeId = particleNodeId;
     particleNode.objectType = SceneObjectType::ParticleSystem;
     meshData_.additionalNodes.push_back(std::move(particleNode));
     ModelNode& createdNode = meshData_.additionalNodes.back();
@@ -2319,13 +3310,44 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     );
     ImGui::SameLine();
     if (ImGui::Button("Import Model", ImVec2(kImportButtonWidth, 0.0f))) {
-        importModelResource(std::filesystem::path(modelImportPathBuffer_.data()));
+        if (importModelResource(std::filesystem::path(modelImportPathBuffer_.data()))) {
+            saveTransformSettings();
+        }
     }
     if (!resourceImportStatus_.empty()) {
         const ImVec4 color = resourceImportFailed_
             ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f)
             : ImVec4(0.42f, 0.88f, 0.56f, 1.0f);
         ImGui::TextColored(color, "%s", resourceImportStatus_.c_str());
+    }
+
+    constexpr float kSceneSaveButtonWidth = 96.0f;
+    constexpr float kNewSceneButtonWidth = 132.0f;
+    const float scenePathWidth = std::max(
+        180.0f,
+        ImGui::GetContentRegionAvail().x - kSceneSaveButtonWidth -
+            kNewSceneButtonWidth - ImGui::GetStyle().ItemSpacing.x * 2.0f
+    );
+    ImGui::SetNextItemWidth(scenePathWidth);
+    ImGui::InputTextWithHint(
+        "##ScenePath",
+        "Scene path, e.g. scenes/demo.scene",
+        scenePathBuffer_.data(),
+        scenePathBuffer_.size()
+    );
+    ImGui::SameLine();
+    if (ImGui::Button("Save Scene", ImVec2(kSceneSaveButtonWidth, 0.0f))) {
+        saveSceneResource(std::filesystem::path(scenePathBuffer_.data()));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("New Empty Scene", ImVec2(kNewSceneButtonWidth, 0.0f))) {
+        createNewEmptyScene();
+    }
+    if (!sceneStatus_.empty()) {
+        const ImVec4 color = sceneStatusFailed_
+            ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f)
+            : ImVec4(0.42f, 0.88f, 0.56f, 1.0f);
+        ImGui::TextColored(color, "%s", sceneStatus_.c_str());
     }
 
     ImGui::Separator();
@@ -2370,7 +3392,21 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         }
         return material.embeddedTexture;
     };
-    const auto textureIsLoaded = [this](std::size_t materialIndex, ResourceTextureSlot slot) {
+    const MeshData* selectedResourceModelData = selectedResourceType_ == ResourceSelectionType::Model
+        ? selectedModelPreview_.get()
+        : nullptr;
+    const bool editingCachedModelMaterials = selectedModelPreview_ != nullptr &&
+        !selectedModelResourcePath_.empty();
+    std::vector<MaterialData>* resourceMaterials = editingCachedModelMaterials
+        ? &selectedModelPreview_->materials
+        : &meshData_.materials;
+    const auto textureIsLoaded = [this, editingCachedModelMaterials](
+        std::size_t materialIndex,
+        ResourceTextureSlot slot
+    ) {
+        if (editingCachedModelMaterials) {
+            return false;
+        }
         switch (slot) {
         case ResourceTextureSlot::BaseColor:
             return materialIndex < materialTextures_.size() &&
@@ -2388,32 +3424,99 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     ImGui::TableSetColumnIndex(0);
     ImGui::BeginChild("ResourceLibrary", ImVec2(0.0f, 0.0f), false);
     ImGui::TextUnformatted("Assets");
-    ImGui::TextDisabled("Current runtime resource set");
+    ImGui::TextDisabled("Model resources under assets");
+    ImGui::TextDisabled("Select a model to inspect and edit its cached materials");
     ImGui::Separator();
 
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNodeEx("Models", ImGuiTreeNodeFlags_SpanAvailWidth)) {
-        std::string modelLabel = currentModelPath_.filename().string();
-        if (modelLabel.empty()) {
-            modelLabel = "Generated Rectangle";
+    const auto modelResourceLabel = [this](const std::filesystem::path& path) {
+        std::string label;
+        if (!assetsDirectory_.empty()) {
+            std::error_code error;
+            const std::filesystem::path relativePath =
+                std::filesystem::relative(path, assetsDirectory_, error);
+            if (!error && !relativePath.empty() && relativePath.string() != ".") {
+                label = relativePath.generic_string();
+            }
         }
-        const bool selected = selectedResourceType_ == ResourceSelectionType::Model &&
-            selectedResourceMaterialIndex_ < 0;
-        if (ImGui::Selectable(modelLabel.c_str(), selected)) {
-            selectedResourceType_ = ResourceSelectionType::Model;
-            selectedResourceMaterialIndex_ = -1;
+        if (label.empty()) {
+            label = path.filename().string();
+        }
+        return label.empty() ? std::string("Unnamed model") : label;
+    };
+    const auto sceneResourceLabel = [this](const std::filesystem::path& path) {
+        std::string label;
+        if (!scenesDirectory_.empty()) {
+            std::error_code error;
+            const std::filesystem::path relativePath =
+                std::filesystem::relative(path, scenesDirectory_, error);
+            if (!error && !relativePath.empty() && relativePath.string() != ".") {
+                label = relativePath.generic_string();
+            }
+        }
+        if (label.empty()) {
+            label = path.filename().string();
+        }
+        return label.empty() ? std::string("Unnamed scene") : label;
+    };
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    const std::string modelsLabel = "Models (" +
+        std::to_string(modelResourcePaths_.size()) + ")";
+    if (ImGui::TreeNodeEx(modelsLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        if (modelResourcePaths_.empty()) {
+            ImGui::TextDisabled("No model resources found under assets.");
+        }
+        for (std::size_t modelIndex = 0;
+             modelIndex < modelResourcePaths_.size();
+             ++modelIndex) {
+            const std::filesystem::path& modelPath = modelResourcePaths_[modelIndex];
+            const std::string label = modelResourceLabel(modelPath);
+            const bool selected = selectedResourceType_ == ResourceSelectionType::Model &&
+                pathsEqual(selectedModelResourcePath_, modelPath);
+            ImGui::PushID(static_cast<int>(modelIndex));
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                selectModelResource(modelPath);
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    const std::string scenesLabel = "Scenes (" +
+        std::to_string(sceneResourcePaths_.size()) + ")";
+    if (ImGui::TreeNodeEx(scenesLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        if (sceneResourcePaths_.empty()) {
+            ImGui::TextDisabled("No scene files found. Save one above.");
+        }
+        for (std::size_t sceneIndex = 0;
+             sceneIndex < sceneResourcePaths_.size();
+             ++sceneIndex) {
+            const std::filesystem::path& scenePath = sceneResourcePaths_[sceneIndex];
+            const std::string label = sceneResourceLabel(scenePath);
+            const bool selected = !currentScenePath_.empty() &&
+                pathsEqual(currentScenePath_, scenePath);
+            ImGui::PushID(static_cast<int>(sceneIndex));
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                loadSceneResource(scenePath);
+            }
+            if (selected) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("[active]");
+            }
+            ImGui::PopID();
         }
         ImGui::TreePop();
     }
 
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     const std::string materialsLabel = "Materials (" +
-        std::to_string(meshData_.materials.size()) + ")";
+        std::to_string(resourceMaterials->size()) + ")";
     if (ImGui::TreeNodeEx(materialsLabel.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
         for (std::size_t materialIndex = 0;
-             materialIndex < meshData_.materials.size();
+             materialIndex < resourceMaterials->size();
              ++materialIndex) {
-            const MaterialData& material = meshData_.materials[materialIndex];
+            const MaterialData& material = (*resourceMaterials)[materialIndex];
             const std::string label = material.name.empty()
                 ? "Material " + std::to_string(materialIndex)
                 : material.name;
@@ -2435,9 +3538,9 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     if (ImGui::TreeNodeEx("Textures", ImGuiTreeNodeFlags_SpanAvailWidth)) {
         bool hasTextureResource = false;
         for (std::size_t materialIndex = 0;
-             materialIndex < meshData_.materials.size();
+             materialIndex < resourceMaterials->size();
              ++materialIndex) {
-            const MaterialData& material = meshData_.materials[materialIndex];
+            const MaterialData& material = (*resourceMaterials)[materialIndex];
             for (std::size_t slotIndex = 0; slotIndex < textureSlotLabels.size(); ++slotIndex) {
                 const auto slot = static_cast<ResourceTextureSlot>(slotIndex);
                 const std::filesystem::path& path = texturePath(material, slot);
@@ -2480,17 +3583,31 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     ImGui::TableSetColumnIndex(1);
     ImGui::BeginChild("ResourceModelHierarchy", ImVec2(0.0f, 0.0f), false);
     ImGui::TextUnformatted("Model Hierarchy");
-    ImGui::TextDisabled(
-        "%zu nodes / %zu mesh nodes",
-        countModelNodes(meshData_.hierarchy),
-        countMeshNodes(meshData_.hierarchy)
-    );
-    ImGui::Separator();
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (!meshData_.hierarchy.name.empty()) {
-        drawModelHierarchy(meshData_.hierarchy);
+    const MeshData* hierarchyData = selectedResourceType_ == ResourceSelectionType::Model
+        ? selectedResourceModelData
+        : &meshData_;
+    if (hierarchyData == nullptr) {
+        ImGui::TextDisabled("Unable to inspect the selected model resource.");
+        if (!selectedModelPreviewError_.empty()) {
+            ImGui::TextWrapped("%s", selectedModelPreviewError_.c_str());
+        }
     } else {
-        ImGui::TextDisabled("No imported model hierarchy available.");
+        ImGui::TextDisabled(
+            "%zu nodes / %zu mesh nodes",
+            countModelNodes(hierarchyData->hierarchy),
+            countMeshNodes(hierarchyData->hierarchy)
+        );
+        ImGui::Separator();
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (!hierarchyData->hierarchy.name.empty()) {
+            if (selectedResourceType_ == ResourceSelectionType::Model) {
+                drawResourceModelHierarchy(hierarchyData->hierarchy);
+            } else {
+                drawModelHierarchy(meshData_.hierarchy);
+            }
+        } else {
+            ImGui::TextDisabled("No model hierarchy available for this resource.");
+        }
     }
     ImGui::EndChild();
 
@@ -2500,24 +3617,84 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     ImGui::Separator();
 
     if (selectedResourceType_ == ResourceSelectionType::Model) {
-        ImGui::Text("Model: %s", currentModelPath_.filename().string().c_str());
-        ImGui::TextWrapped("Source: %s", currentModelPath_.string().c_str());
-        ImGui::Text(
-            "%zu vertices / %zu triangles / %zu materials",
-            meshData_.vertices.size(),
-            meshData_.indices.size() / 3,
-            meshData_.materials.size()
-        );
-        ImGui::SeparatorText("Engine-ready import");
-        ImGui::BulletText("Triangulated mesh with 32-bit indices");
-        ImGui::BulletText("Position, generated/preserved normals, UV0, vertex color");
-        ImGui::BulletText("Base Color, Normal, and Specular texture slots");
-
-        if (selectedModelNode_ == nullptr) {
-            ImGui::TextDisabled("Select a hierarchy node to inspect its material bindings.");
-        } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
-            ImGui::TextDisabled("The selected object is a Particle System, not a model node.");
+        if (selectedResourceModelData == nullptr) {
+            ImGui::TextDisabled("Unable to inspect the selected model resource.");
+            if (!selectedModelPreviewError_.empty()) {
+                ImGui::TextWrapped("%s", selectedModelPreviewError_.c_str());
+            }
         } else {
+            const MeshData& modelData = *selectedResourceModelData;
+            const std::string modelName = selectedModelResourcePath_.filename().string();
+            ImGui::Text("Model: %s", modelName.empty() ? "Unnamed model" : modelName.c_str());
+            ImGui::TextWrapped("Source: %s", selectedModelResourcePath_.string().c_str());
+            ImGui::TextColored(
+                ImVec4(0.52f, 0.72f, 1.0f, 1.0f),
+                "Cached model information"
+            );
+            const auto cacheIt = modelResourceCache_.find(
+                normalizedPath(selectedModelResourcePath_).string()
+            );
+            if (cacheIt != modelResourceCache_.end()) {
+                ImGui::Text(
+                    "%zu texture candidates from adjacent tex folder",
+                    cacheIt->second.texturePaths.size()
+                );
+            }
+
+            ImGui::SeparatorText("Model Information");
+            ImGui::Text(
+                "%zu vertices / %zu triangles / %zu materials",
+                modelData.vertices.size(),
+                modelData.indices.size() / 3,
+                modelData.materials.size()
+            );
+            ImGui::Text(
+                "%zu mesh parts / %zu hierarchy nodes",
+                modelData.parts.size(),
+                countModelNodes(modelData.hierarchy)
+            );
+            if (!modelData.vertices.empty()) {
+                glm::vec3 minimum(std::numeric_limits<float>::max());
+                glm::vec3 maximum(std::numeric_limits<float>::lowest());
+                for (const Vertex& vertex : modelData.vertices) {
+                    minimum = glm::min(minimum, vertex.position);
+                    maximum = glm::max(maximum, vertex.position);
+                }
+                ImGui::Text("Bounds min: (%.2f, %.2f, %.2f)", minimum.x, minimum.y, minimum.z);
+                ImGui::Text("Bounds max: (%.2f, %.2f, %.2f)", maximum.x, maximum.y, maximum.z);
+            }
+            ImGui::SeparatorText("Engine-ready import");
+            ImGui::BulletText("Triangulated mesh with 32-bit indices");
+            ImGui::BulletText("Position, generated/preserved normals, UV0, vertex color");
+            ImGui::BulletText("Base Color, Normal, and Specular texture slots");
+
+            if (!modelData.materials.empty()) {
+                ImGui::SeparatorText("Materials in Model");
+                for (std::size_t materialIndex = 0;
+                     materialIndex < modelData.materials.size();
+                     ++materialIndex) {
+                    const MaterialData& material = modelData.materials[materialIndex];
+                    const std::string materialLabel = material.name.empty()
+                        ? "Material " + std::to_string(materialIndex)
+                        : material.name;
+                    ImGui::BulletText("%s", materialLabel.c_str());
+                }
+            }
+
+            ImGui::TextDisabled(
+                "Select a material or texture in Assets to edit this cached model resource."
+            );
+            ImGui::TextDisabled("Import this resource to append another model to the scene.");
+            if (ImGui::Button("Import Model to Scene")) {
+                if (importModelResource(selectedModelResourcePath_)) {
+                    saveTransformSettings();
+                }
+            }
+            if (selectedModelNode_ == nullptr) {
+            ImGui::TextDisabled("Select a hierarchy node to inspect its material bindings.");
+            } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
+            ImGui::TextDisabled("The selected object is a Particle System, not a model node.");
+            } else {
             ImGui::SeparatorText("Selected Model Node");
             ImGui::Text("%s  (ID %u)",
                 selectedModelNode_->name.c_str(),
@@ -2571,15 +3748,19 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             }
             drawNodeMaterialControls(*selectedModelNode_, shouldSaveSettings);
         }
+        }
     } else if (selectedResourceMaterialIndex_ < 0 ||
                static_cast<std::size_t>(selectedResourceMaterialIndex_) >=
-                   meshData_.materials.size()) {
+                   resourceMaterials->size()) {
         ImGui::TextDisabled("The selected resource is no longer available.");
     } else {
         const std::size_t materialIndex = static_cast<std::size_t>(
             selectedResourceMaterialIndex_
         );
-        MaterialData& material = meshData_.materials[materialIndex];
+        MaterialData& material = (*resourceMaterials)[materialIndex];
+        const std::filesystem::path* editedModelPath = editingCachedModelMaterials
+            ? &selectedModelResourcePath_
+            : nullptr;
         if (selectedResourceType_ == ResourceSelectionType::Material) {
             ImGui::Text("Material #%zu", materialIndex);
             ImGui::Text("Name: %s", material.name.c_str());
@@ -2588,9 +3769,10 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 const auto slot = static_cast<ResourceTextureSlot>(slotIndex);
                 const std::filesystem::path& path = texturePath(material, slot);
                 const EmbeddedTextureData& embedded = embeddedTexture(material, slot);
-                const char* state = textureIsLoaded(materialIndex, slot)
-                    ? "loaded"
-                    : "fallback";
+                const bool configured = !path.empty() || !embedded.empty();
+                const char* state = editingCachedModelMaterials
+                    ? (configured ? "cached" : "fallback")
+                    : (textureIsLoaded(materialIndex, slot) ? "loaded" : "fallback");
                 if (!path.empty()) {
                     ImGui::TextWrapped(
                         "%s [%s]: %s",
@@ -2630,15 +3812,26 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             } else {
                 ImGui::TextDisabled("Source: engine fallback texture");
             }
-            const bool loaded = textureIsLoaded(materialIndex, selectedResourceTextureSlot_);
+            const bool loaded = editingCachedModelMaterials
+                ? (!path.empty() || !embedded.empty())
+                : textureIsLoaded(materialIndex, selectedResourceTextureSlot_);
+            const char* resourceState = editingCachedModelMaterials
+                ? (loaded ? "Cached texture configuration" : "Using engine fallback")
+                : (loaded ? "GPU resource loaded" : "Using engine fallback");
             ImGui::TextColored(
                 loaded ? ImVec4(0.42f, 0.88f, 0.56f, 1.0f)
                        : ImVec4(1.0f, 0.72f, 0.28f, 1.0f),
-                loaded ? "GPU resource loaded" : "Using engine fallback"
+                "%s",
+                resourceState
             );
         }
         ImGui::SeparatorText("Material Mapping");
-        drawMaterialControls(selectedResourceMaterialIndex_, shouldSaveSettings);
+        drawMaterialControls(
+            material,
+            selectedResourceMaterialIndex_,
+            shouldSaveSettings,
+            editedModelPath
+        );
     }
 
     ImGui::EndChild();
@@ -2666,8 +3859,10 @@ void Renderer::buildImGuiFrame() {
     constexpr float kPanelMargin = 16.0f;
     constexpr float kLeftPanelWidth = 300.0f;
     constexpr float kRightPanelWidth = 360.0f;
+    constexpr float kToolbarHeight = 42.0f;
     const float mainWindowWidth = ImGui::GetWindowWidth();
     const float mainWindowHeight = ImGui::GetWindowHeight();
+    const bool canCreateParticleSystem = particleSystems_.size() < kMaximumParticleSystems;
     const float bottomPanelHeight = std::clamp(
         mainWindowHeight * 0.36f,
         260.0f,
@@ -2675,10 +3870,43 @@ void Renderer::buildImGuiFrame() {
     );
     const float topPanelHeight = std::max(
         180.0f,
-        mainWindowHeight - bottomPanelHeight - kPanelMargin * 3.0f
+        mainWindowHeight - bottomPanelHeight - kToolbarHeight - kPanelMargin * 4.0f
     );
 
     ImGui::SetCursorPos(ImVec2(kPanelMargin, kPanelMargin));
+    ImGui::BeginChild(
+        "SceneToolbar",
+        ImVec2(std::max(320.0f, mainWindowWidth - kPanelMargin * 2.0f), kToolbarHeight),
+        true
+    );
+    ImGui::TextUnformatted("Scene Tools");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!canCreateParticleSystem);
+    if (ImGui::Button("Create Particle System")) {
+        createParticleSystemObject();
+    }
+    ImGui::EndDisabled();
+    if (!canCreateParticleSystem) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Particle System limit reached (%u)", kMaximumParticleSystems);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(sunPresent_ ? "Remove Sun" : "Add Sun")) {
+        if (sunPresent_) {
+            removeSceneNodeById(sunNodeId_);
+        } else {
+            createSunMesh();
+            rebuildSceneGeometryResources();
+            selectedModelNode_ = &meshData_.additionalNodes.back();
+            updateBoundingBoxVertices();
+        }
+        saveTransformSettings();
+    }
+    const bool toolbarHovered = ImGui::IsWindowHovered();
+    ImGui::EndChild();
+
+    const float topPanelY = kPanelMargin * 2.0f + kToolbarHeight;
+    ImGui::SetCursorPos(ImVec2(kPanelMargin, topPanelY));
     ImGui::BeginChild(
         "SceneControls",
         ImVec2(kLeftPanelWidth, topPanelHeight),
@@ -2690,60 +3918,17 @@ void Renderer::buildImGuiFrame() {
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
     bool shouldSaveTransformSettings = false;
-    ImGui::SeparatorText("Environment Light");
-    ImGui::ColorEdit3("Ambient color", &ambientLightColor_.x);
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        ambientLightColor_ = glm::clamp(
-            ambientLightColor_,
-            glm::vec3(0.0f),
-            glm::vec3(1.0f)
-        );
-        shouldSaveTransformSettings = true;
-    }
-    ImGui::SliderFloat(
-        "Ambient intensity",
-        &ambientLightIntensity_,
-        0.0f,
-        4.0f,
-        "%.2f"
-    );
-    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::ColorEdit3("Sun light color", &sunLightColor_.x);
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        sunLightColor_ = glm::clamp(sunLightColor_, glm::vec3(0.0f), glm::vec3(1.0f));
-        shouldSaveTransformSettings = true;
-    }
-    ImGui::SliderFloat("Sun light intensity", &sunLightIntensity_, 0.0f, 4.0f, "%.2f");
-    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::DragFloat3(
-        "Sun light direction",
-        &sunLightDirection_.x,
-        0.01f,
-        -1.0f,
-        1.0f,
-        "%.2f"
-    );
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        if (glm::length(sunLightDirection_) < 0.001f) {
-            sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
-        } else {
-            sunLightDirection_ = glm::normalize(sunLightDirection_);
-        }
-        shouldSaveTransformSettings = true;
-    }
-    if (ImGui::Button("Reset environment light")) {
-        ambientLightColor_ = glm::vec3(0.18f, 0.21f, 0.24f);
-        ambientLightIntensity_ = 1.0f;
-        sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
-        sunLightColor_ = glm::vec3(0.82f, 0.86f, 0.9f);
-        sunLightIntensity_ = 1.0f;
-        shouldSaveTransformSettings = true;
-    }
-    drawShaderDemoControls(shouldSaveTransformSettings);
+    bool removeSelectedNodeRequested = false;
+    std::uint32_t selectedNodeIdToRemove = std::numeric_limits<std::uint32_t>::max();
     ImGui::SeparatorText("Transform");
     if (selectedModelNode_ != nullptr) {
         ImGui::SeparatorText("Selected Node");
         ImGui::Text("Node: %s", selectedModelNode_->name.c_str());
+        selectedNodeIdToRemove = selectedModelNode_->nodeId;
+        ImGui::TextDisabled("Remove this node and all of its children from the scene.");
+        if (ImGui::Button("Remove from Scene")) {
+            removeSelectedNodeRequested = true;
+        }
         bool renderEnabled = selectedModelNode_->renderEnabled;
         if (ImGui::Checkbox("Render Enabled", &renderEnabled)) {
             selectedModelNode_->renderEnabled = renderEnabled;
@@ -2759,13 +3944,22 @@ void Renderer::buildImGuiFrame() {
                 ImGui::TextDisabled("Generated spherical sun mesh");
             }
             const bool isRootNode = selectedModelNode_ == &meshData_.hierarchy;
+            const bool isImportedModelRoot = std::any_of(
+                sceneModelResources_.begin(),
+                sceneModelResources_.end(),
+                [this](const SceneModelResource& model) {
+                    return model.rootNodeId == selectedModelNode_->nodeId;
+                }
+            );
             const bool isNamedMeshNode = selectedModelNode_->meshCount > 0 &&
                 !selectedModelNode_->name.empty() &&
                 selectedModelNode_->name != "<unnamed>";
-            if (isRootNode || isNamedMeshNode) {
+            if (isRootNode || isImportedModelRoot || isNamedMeshNode) {
                 ImGui::TextDisabled(
                     isRootNode
-                        ? "Transform applies to the whole imported model."
+                        ? "Transform applies to the scene root."
+                        : isImportedModelRoot
+                            ? "Transform applies to this imported model."
                         : "Position is in scene units; rotation and scale use local axes."
                 );
                 ImGui::DragFloat3(
@@ -2834,19 +4028,72 @@ void Renderer::buildImGuiFrame() {
                 selectedModelNode_->rotationAnimationSpeedDegrees = glm::vec3(0.0f);
                 shouldSaveTransformSettings = true;
             }
-            drawNodeMaterialControls(*selectedModelNode_, shouldSaveTransformSettings);
         }
     } else {
         ImGui::TextDisabled("Select a scene object to edit its transform.");
     }
+    drawShaderDemoControls(shouldSaveTransformSettings);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
+    ImGui::SeparatorText("Environment Light");
+    ImGui::ColorEdit3("Ambient color", &ambientLightColor_.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        ambientLightColor_ = glm::clamp(
+            ambientLightColor_,
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        );
+        shouldSaveTransformSettings = true;
+    }
+    ImGui::SliderFloat(
+        "Ambient intensity",
+        &ambientLightIntensity_,
+        0.0f,
+        4.0f,
+        "%.2f"
+    );
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::ColorEdit3("Sun light color", &sunLightColor_.x);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        sunLightColor_ = glm::clamp(sunLightColor_, glm::vec3(0.0f), glm::vec3(1.0f));
+        shouldSaveTransformSettings = true;
+    }
+    ImGui::SliderFloat("Sun light intensity", &sunLightIntensity_, 0.0f, 4.0f, "%.2f");
+    shouldSaveTransformSettings |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat3(
+        "Sun light direction",
+        &sunLightDirection_.x,
+        0.01f,
+        -1.0f,
+        1.0f,
+        "%.2f"
+    );
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        if (glm::length(sunLightDirection_) < 0.001f) {
+            sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
+        } else {
+            sunLightDirection_ = glm::normalize(sunLightDirection_);
+        }
+        shouldSaveTransformSettings = true;
+    }
+    if (ImGui::Button("Reset environment light")) {
+        ambientLightColor_ = glm::vec3(0.18f, 0.21f, 0.24f);
+        ambientLightIntensity_ = 1.0f;
+        sunLightDirection_ = glm::vec3(0.45f, 0.55f, 0.75f);
+        sunLightColor_ = glm::vec3(0.82f, 0.86f, 0.9f);
+        sunLightIntensity_ = 1.0f;
+        shouldSaveTransformSettings = true;
+    }
     const bool leftPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
 
+    if (removeSelectedNodeRequested) {
+        shouldSaveTransformSettings |= removeSceneNodeById(selectedNodeIdToRemove);
+    }
+
     ImGui::SetCursorPos(ImVec2(
         std::max(kPanelMargin, mainWindowWidth - kRightPanelWidth - kPanelMargin),
-        kPanelMargin
+        topPanelY
     ));
     ImGui::BeginChild(
         "ModelHierarchy",
@@ -2855,15 +4102,6 @@ void Renderer::buildImGuiFrame() {
     );
     ImGui::TextUnformatted("Scene Objects");
     ImGui::TextDisabled("Imported model and generated GameObjects");
-    const bool canCreateParticleSystem = particleSystems_.size() < kMaximumParticleSystems;
-    ImGui::BeginDisabled(!canCreateParticleSystem);
-    if (ImGui::Button("Create Particle System")) {
-        createParticleSystemObject();
-    }
-    ImGui::EndDisabled();
-    if (!canCreateParticleSystem) {
-        ImGui::TextDisabled("Particle System limit reached (%u)", kMaximumParticleSystems);
-    }
     ImGui::Separator();
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!meshData_.hierarchy.name.empty()) {
@@ -2878,7 +4116,7 @@ void Renderer::buildImGuiFrame() {
     const bool rightPanelHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();
 
-    const float resourcePanelY = kPanelMargin * 2.0f + topPanelHeight;
+    const float resourcePanelY = topPanelY + topPanelHeight + kPanelMargin;
     ImGui::SetCursorPos(ImVec2(kPanelMargin, resourcePanelY));
     ImGui::BeginChild(
         "ResourceManagerPanel",
@@ -2900,6 +4138,7 @@ void Renderer::buildImGuiFrame() {
         ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !leftPanelHovered &&
         !rightPanelHovered &&
+        !toolbarHovered &&
         !resourcePanelHovered &&
         ImGui::IsWindowHovered()) {
         selectedModelNode_ = nullptr;
@@ -3650,13 +4889,7 @@ void Renderer::createGraphicsPipeline() {
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout_;
     VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT |
-        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
-        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
-        VK_SHADER_STAGE_GEOMETRY_BIT |
-        VK_SHADER_STAGE_FRAGMENT_BIT |
-        VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.stageFlags = kMaterialPushConstantStageFlags;
     pushConstantRange.offset = 0;
     pushConstantRange.size = sizeof(MaterialPushConstants);
     pipelineLayoutInfo.pushConstantRangeCount = 1;
@@ -4025,63 +5258,7 @@ void Renderer::createBoundingBoxBuffers() {
 }
 
 void Renderer::createMeshData() {
-    if (currentModelPath_.empty()) {
-        meshData_.vertices.assign(kRectangleVertices.begin(), kRectangleVertices.end());
-        meshData_.indices.assign(kRectangleIndices.begin(), kRectangleIndices.end());
-        meshData_.materials.emplace_back();
-        meshData_.materials.back().name = "DefaultMaterial";
-        meshData_.parts.push_back({0, static_cast<uint32_t>(meshData_.indices.size()), 0});
-        meshData_.hierarchy.name = "Rectangle";
-        meshData_.hierarchy.meshCount = 1;
-        meshData_.hierarchy.meshPartIndices.push_back(0);
-        meshData_.hierarchy.hasBounds = true;
-        meshData_.hierarchy.boundsMinimum = glm::vec3(-0.5f, -0.5f, 0.0f);
-        meshData_.hierarchy.boundsMaximum = glm::vec3(0.5f, 0.5f, 0.0f);
-        modelCenter_ = glm::vec3(0.0f);
-        modelScale_ = 1.0f;
-        return;
-    }
-
-    try {
-        meshData_ = loadModelMesh(currentModelPath_);
-    } catch (const std::exception& error) {
-        const std::filesystem::path defaultModelPath(kModelPath);
-        if (currentModelPath_ == defaultModelPath || defaultModelPath.empty()) {
-            throw;
-        }
-        resourceImportFailed_ = true;
-        resourceImportStatus_ = "Saved model could not be restored; using the default: " +
-            std::string(error.what());
-        currentModelPath_ = defaultModelPath;
-        modelImportPathBuffer_.fill('\0');
-        const std::string defaultPathString = currentModelPath_.string();
-        const std::size_t copyCount = std::min(
-            defaultPathString.size(),
-            modelImportPathBuffer_.size() - 1
-        );
-        std::copy_n(
-            defaultPathString.data(),
-            copyCount,
-            modelImportPathBuffer_.data()
-        );
-        meshData_ = loadModelMesh(currentModelPath_);
-    }
-
-    glm::vec3 minimum(std::numeric_limits<float>::max());
-    glm::vec3 maximum(std::numeric_limits<float>::lowest());
-    for (const Vertex& vertex : meshData_.vertices) {
-        minimum = glm::min(minimum, vertex.position);
-        maximum = glm::max(maximum, vertex.position);
-    }
-
-    const glm::vec3 extent = maximum - minimum;
-    const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
-    if (largestExtent <= std::numeric_limits<float>::epsilon()) {
-        throw std::runtime_error("model has no measurable bounds");
-    }
-
-    modelCenter_ = (minimum + maximum) * 0.5f;
-    modelScale_ = 1.8f / largestExtent;
+    initializeEmptyScene();
 }
 
 bool Renderer::importModelResource(const std::filesystem::path& path) {
@@ -4111,112 +5288,73 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
         resourceImportStatus_ = "Model file was not found: " + resolvedPath.string();
         return false;
     }
+    resolvedPath = normalizedPath(resolvedPath);
 
     MeshData importedMesh;
-    glm::vec3 importedCenter(0.0f);
-    float importedScale = 1.0f;
     try {
-        importedMesh = loadModelMesh(resolvedPath);
+        ModelResourceCacheEntry& cache = modelResourceCache_[resolvedPath.string()];
+        if (cache.mesh != nullptr) {
+            importedMesh = *cache.mesh;
+        } else {
+            if (!cache.error.empty()) {
+                throw std::runtime_error(cache.error);
+            }
+            auto loadedMesh = std::make_shared<MeshData>(loadModelMesh(resolvedPath));
+            if (loadedMesh->vertices.empty() || loadedMesh->indices.empty()) {
+                throw std::runtime_error("the imported model contains no renderable triangles");
+            }
+            cache.mesh = std::move(loadedMesh);
+            cache.error.clear();
+            discoverModelTextureResources(resolvedPath, cache);
+            importedMesh = *cache.mesh;
+        }
         if (importedMesh.vertices.empty() || importedMesh.indices.empty()) {
             throw std::runtime_error("the imported model contains no renderable triangles");
         }
-
-        glm::vec3 minimum(std::numeric_limits<float>::max());
-        glm::vec3 maximum(std::numeric_limits<float>::lowest());
-        for (const Vertex& vertex : importedMesh.vertices) {
-            minimum = glm::min(minimum, vertex.position);
-            maximum = glm::max(maximum, vertex.position);
-        }
-        const glm::vec3 extent = maximum - minimum;
-        const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
-        if (largestExtent <= std::numeric_limits<float>::epsilon()) {
-            throw std::runtime_error("the imported model has no measurable bounds");
-        }
-        importedCenter = (minimum + maximum) * 0.5f;
-        importedScale = 1.8f / largestExtent;
     } catch (const std::exception& importError) {
         resourceImportFailed_ = true;
         resourceImportStatus_ = "Import failed: " + std::string(importError.what());
         return false;
     }
 
-    struct PreservedParticleResource {
-        std::string name;
-        glm::vec3 translation{0.0f};
-        glm::vec3 rotationDegrees{0.0f};
-        float scaleFactor = 1.0f;
-        bool renderEnabled = true;
-        ParticleSystemSettings settings;
-        bool playing = false;
-    };
-    std::vector<PreservedParticleResource> preservedParticles;
-    preservedParticles.reserve(particleSystems_.size());
-    for (const ModelNode& node : meshData_.additionalNodes) {
-        if (node.objectType != SceneObjectType::ParticleSystem) {
-            continue;
+    ModelNode preservedSunNode;
+    MaterialData preservedSunMaterial;
+    const bool preserveSun = sunPresent_;
+    if (preserveSun) {
+        const auto sunNodeIt = std::find_if(
+            meshData_.additionalNodes.begin(),
+            meshData_.additionalNodes.end(),
+            [this](const ModelNode& node) {
+                return node.nodeId == sunNodeId_;
+            }
+        );
+        if (sunNodeIt != meshData_.additionalNodes.end()) {
+            preservedSunNode = *sunNodeIt;
+            if (sunMaterialIndex_ < meshData_.materials.size()) {
+                preservedSunMaterial = meshData_.materials[sunMaterialIndex_];
+            }
         }
-        const auto systemIt = particleSystems_.find(node.nodeId);
-        if (systemIt == particleSystems_.end()) {
-            continue;
-        }
-        preservedParticles.push_back({
-            node.name,
-            node.transformTranslation,
-            node.transformRotationDegrees,
-            node.transformScaleFactor,
-            node.renderEnabled,
-            systemIt->second.settings(),
-            systemIt->second.playing(),
-        });
     }
 
-    // GPU resources are replaced only after the complete CPU-side import has
-    // succeeded, so a malformed model leaves the current scene untouched.
+    // The CPU import is complete before changing scene data. Existing models,
+    // particles, and the optional Sun remain in the scene.
     context_->waitIdle();
     selectedModelNode_ = nullptr;
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
-    particleSystems_.clear();
     particleDrawRanges_.clear();
     particleVertices_.clear();
-    particleTextures_.clear();
-    meshData_ = std::move(importedMesh);
-    modelCenter_ = importedCenter;
-    modelScale_ = importedScale;
-    currentModelPath_ = resolvedPath;
-    createSunMesh();
-
-    std::uint32_t maximumNodeId = maximumModelNodeId(meshData_.hierarchy);
-    for (const ModelNode& node : meshData_.additionalNodes) {
-        maximumNodeId = std::max(maximumNodeId, maximumModelNodeId(node));
+    const std::size_t importedVertexCount = importedMesh.vertices.size();
+    const std::size_t importedTriangleCount = importedMesh.indices.size() / 3;
+    if (preserveSun) {
+        removeSunMesh();
     }
-    for (const PreservedParticleResource& preserved : preservedParticles) {
-        ModelNode particleNode;
-        particleNode.name = preserved.name;
-        particleNode.nodeId = ++maximumNodeId;
-        particleNode.objectType = SceneObjectType::ParticleSystem;
-        particleNode.transformTranslation = preserved.translation;
-        particleNode.transformRotationDegrees = preserved.rotationDegrees;
-        particleNode.transformScaleFactor = preserved.scaleFactor;
-        particleNode.renderEnabled = preserved.renderEnabled;
-        meshData_.additionalNodes.push_back(std::move(particleNode));
-
-        ParticleSystem particleSystem;
-        particleSystem.setSettings(preserved.settings);
-        if (preserved.playing) {
-            particleSystem.restart();
-        } else {
-            particleSystem.stop();
-        }
-        particleSystems_.emplace(maximumNodeId, std::move(particleSystem));
+    appendImportedModel(std::move(importedMesh), resolvedPath);
+    discoverModelResources();
+    if (preserveSun) {
+        createSunMesh(&preservedSunNode, &preservedSunMaterial);
     }
-
-    vertexBuffer_.reset();
-    indexBuffer_.reset();
-    createVertexBuffer();
-    createIndexBuffer();
-    createParticleTextures();
-    rebuildMaterialResources();
+    rebuildSceneGeometryResources();
 
     boundingBoxVertices_.fill(Vertex{});
     materialNameMaterialIndex_ = -1;
@@ -4225,23 +5363,21 @@ bool Renderer::importModelResource(const std::filesystem::path& path) {
     materialSpecularTexturePathMaterialIndex_ = -1;
     selectedResourceType_ = ResourceSelectionType::Model;
     selectedResourceMaterialIndex_ = -1;
-
-    modelImportPathBuffer_.fill('\0');
-    const std::string pathString = currentModelPath_.string();
-    const std::size_t copyCount = std::min(
-        pathString.size(),
-        modelImportPathBuffer_.size() - 1
-    );
-    std::copy_n(pathString.data(), copyCount, modelImportPathBuffer_.data());
-
-    resourceImportStatus_ = "Imported " + currentModelPath_.filename().string() +
-        " (" + std::to_string(meshData_.vertices.size()) + " vertices, " +
-        std::to_string(meshData_.indices.size() / 3) + " triangles).";
-    saveTransformSettings();
+    resourceImportStatus_ = "Imported " + resolvedPath.filename().string() +
+        " into the scene (" + std::to_string(importedVertexCount) + " vertices, " +
+        std::to_string(importedTriangleCount) + " triangles).";
+    selectModelResource(resolvedPath);
     return true;
 }
 
-void Renderer::createSunMesh() {
+void Renderer::createSunMesh(
+    const ModelNode* preservedNode,
+    const MaterialData* preservedMaterial
+) {
+    if (sunPresent_) {
+        return;
+    }
+
     constexpr std::uint32_t kLatitudeSegments = 24;
     constexpr std::uint32_t kLongitudeSegments = 36;
     constexpr float kSunRadiusInViewport = 0.15f;
@@ -4250,35 +5386,27 @@ void Renderer::createSunMesh() {
     const glm::vec3 center = modelCenter_ + sunPositionInViewport / safeModelScale;
     const float radius = kSunRadiusInViewport / safeModelScale;
 
-    const auto sunMaterial = std::find_if(
-        meshData_.materials.begin(),
-        meshData_.materials.end(),
-        [](const MaterialData& material) {
-            return material.name == "Sun";
-        }
-    );
-    if (sunMaterial == meshData_.materials.end()) {
-        MaterialData material;
-        material.name = "Sun";
-        material.baseColor = glm::vec4(1.0f, 0.55f, 0.06f, 1.0f);
-        material.roughness = 0.24f;
-        material.doubleSided = true;
-        material.userCreated = true;
+    MaterialData material = preservedMaterial != nullptr
+        ? *preservedMaterial
+        : MaterialData{};
+    material.name = "Sun";
+    material.baseColor = preservedMaterial != nullptr
+        ? material.baseColor
+        : glm::vec4(1.0f, 0.55f, 0.06f, 1.0f);
+    material.roughness = preservedMaterial != nullptr ? material.roughness : 0.24f;
+    material.doubleSided = true;
+    material.userCreated = true;
+    if (material.shaderConfiguration.shader(ShaderStage::Fragment).empty()) {
         material.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_sun.frag";
+    }
+    if (preservedMaterial == nullptr) {
         material.emissionColor = glm::vec3(1.0f, 0.22f, 0.015f);
         material.emissionStrength = 3.5f;
-        meshData_.materials.push_back(std::move(material));
-        sunMaterialIndex_ = static_cast<std::uint32_t>(meshData_.materials.size() - 1);
-    } else {
-        sunMaterialIndex_ = static_cast<std::uint32_t>(
-            std::distance(meshData_.materials.begin(), sunMaterial)
-        );
-        if (sunMaterial->shaderConfiguration.shader(ShaderStage::Fragment).empty()) {
-            sunMaterial->shaderConfiguration.shader(ShaderStage::Fragment) = "shader_sun.frag";
-        }
     }
+    meshData_.materials.push_back(std::move(material));
+    sunMaterialIndex_ = static_cast<std::uint32_t>(meshData_.materials.size() - 1);
 
-    const std::uint32_t sunNodeId = maximumModelNodeId(meshData_.hierarchy) + 1;
+    const std::uint32_t sunNodeId = kSunSceneNodeId;
     const std::uint32_t firstIndex = static_cast<std::uint32_t>(meshData_.indices.size());
     const std::uint32_t vertexStart = static_cast<std::uint32_t>(meshData_.vertices.size());
     const float pi = std::acos(-1.0f);
@@ -4330,11 +5458,13 @@ void Renderer::createSunMesh() {
     const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
     meshData_.parts.push_back({firstIndex, indexCount, sunMaterialIndex_, sunNodeId});
 
-    ModelNode sunNode;
+    ModelNode sunNode = preservedNode != nullptr ? *preservedNode : ModelNode{};
     sunNode.name = "Sun";
     sunNode.nodeId = sunNodeId;
+    sunNode.objectType = SceneObjectType::ImportedMesh;
     sunNode.meshCount = 1;
     sunNode.globalTransform = glm::translate(glm::mat4(1.0f), center);
+    sunNode.meshPartIndices.clear();
     sunNode.meshPartIndices.push_back(partIndex);
     sunNode.hasBounds = true;
     sunNode.boundsMinimum = center - glm::vec3(radius);
@@ -4342,14 +5472,126 @@ void Renderer::createSunMesh() {
     sunNode.materialOverride = static_cast<std::int32_t>(sunMaterialIndex_);
     meshData_.additionalNodes.push_back(std::move(sunNode));
     sunNodeId_ = sunNodeId;
+    sunPartIndex_ = partIndex;
+    sunVertexStart_ = vertexStart;
+    sunIndexStart_ = firstIndex;
+    sunPresent_ = true;
+    removedSceneNodeIds_.erase(sunNodeId_);
+}
+
+void Renderer::removeSunMesh() {
+    if (!sunPresent_) {
+        return;
+    }
+
+    const std::uint32_t removedNodeId = sunNodeId_;
+    const std::uint32_t removedMaterialIndex = sunMaterialIndex_;
+    if (sunPartIndex_ < meshData_.parts.size() &&
+        meshData_.parts[sunPartIndex_].nodeId == removedNodeId) {
+        const MeshPart& sunPart = meshData_.parts[sunPartIndex_];
+        if (sunVertexStart_ <= meshData_.vertices.size() &&
+            sunIndexStart_ <= meshData_.indices.size() &&
+            sunPart.firstIndex + sunPart.indexCount == meshData_.indices.size()) {
+            meshData_.vertices.resize(sunVertexStart_);
+            meshData_.indices.resize(sunIndexStart_);
+        }
+        meshData_.parts.erase(meshData_.parts.begin() + sunPartIndex_);
+        for (ModelNode& node : meshData_.additionalNodes) {
+            std::vector<std::uint32_t> adjustedParts;
+            adjustedParts.reserve(node.meshPartIndices.size());
+            for (const std::uint32_t partIndex : node.meshPartIndices) {
+                if (partIndex == sunPartIndex_) {
+                    continue;
+                }
+                adjustedParts.push_back(
+                    partIndex > sunPartIndex_ ? partIndex - 1 : partIndex
+                );
+            }
+            node.meshPartIndices = std::move(adjustedParts);
+        }
+    }
+
+    const auto materialIsUsed = [this, removedMaterialIndex]() {
+        if (std::any_of(
+                meshData_.parts.begin(),
+                meshData_.parts.end(),
+                [removedMaterialIndex](const MeshPart& part) {
+                    return part.materialIndex == removedMaterialIndex;
+                })) {
+            return true;
+        }
+        const auto nodeUsesMaterial = [removedMaterialIndex](const auto& self, const ModelNode& node) {
+            if (node.materialOverride == static_cast<std::int32_t>(removedMaterialIndex)) {
+                return true;
+            }
+            return std::any_of(
+                node.children.begin(),
+                node.children.end(),
+                [&self](const ModelNode& child) {
+                    return self(self, child);
+                }
+            );
+        };
+        if (nodeUsesMaterial(nodeUsesMaterial, meshData_.hierarchy)) {
+            return true;
+        }
+        return std::any_of(
+            meshData_.additionalNodes.begin(),
+            meshData_.additionalNodes.end(),
+            [&nodeUsesMaterial](const ModelNode& node) {
+                return nodeUsesMaterial(nodeUsesMaterial, node);
+            }
+        );
+    };
+    if (removedMaterialIndex < meshData_.materials.size() && !materialIsUsed()) {
+        meshData_.materials.erase(meshData_.materials.begin() + removedMaterialIndex);
+        const auto adjustMaterialOverrides = [removedMaterialIndex](
+            const auto& self,
+            ModelNode& node
+        ) -> void {
+            if (node.materialOverride > static_cast<std::int32_t>(removedMaterialIndex)) {
+                --node.materialOverride;
+            }
+            for (ModelNode& child : node.children) {
+                self(self, child);
+            }
+        };
+        for (MeshPart& part : meshData_.parts) {
+            if (part.materialIndex > removedMaterialIndex) {
+                --part.materialIndex;
+            }
+        }
+        adjustMaterialOverrides(adjustMaterialOverrides, meshData_.hierarchy);
+        for (ModelNode& node : meshData_.additionalNodes) {
+            adjustMaterialOverrides(adjustMaterialOverrides, node);
+        }
+    }
+
+    sunNodeId_ = 0;
+    sunMaterialIndex_ = 0;
+    sunPartIndex_ = 0;
+    sunVertexStart_ = 0;
+    sunIndexStart_ = 0;
+    sunPresent_ = false;
+    selectedResourceMaterialIndex_ = -1;
+}
+
+void Renderer::rebuildSceneGeometryResources() {
+    context_->waitIdle();
+    vertexBuffer_.reset();
+    indexBuffer_.reset();
+    createVertexBuffer();
+    createIndexBuffer();
+    rebuildMaterialResources();
 }
 
 void Renderer::createVertexBuffer() {
-    if (meshData_.vertices.empty()) {
-        throw std::runtime_error("mesh has no vertices");
-    }
-
-    const VkDeviceSize bufferSize = sizeof(meshData_.vertices[0]) * meshData_.vertices.size();
+    const Vertex emptyVertex{};
+    const Vertex* vertexData = meshData_.vertices.empty()
+        ? &emptyVertex
+        : meshData_.vertices.data();
+    const std::size_t vertexCount = std::max<std::size_t>(1, meshData_.vertices.size());
+    const VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
     Buffer stagingBuffer(
         *context_,
@@ -4357,7 +5599,7 @@ void Renderer::createVertexBuffer() {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    stagingBuffer.upload(meshData_.vertices.data(), bufferSize);
+    stagingBuffer.upload(vertexData, bufferSize);
 
     vertexBuffer_ = std::make_unique<Buffer>(
         *context_,
@@ -4369,18 +5611,19 @@ void Renderer::createVertexBuffer() {
 }
 
 void Renderer::createIndexBuffer() {
-    if (meshData_.indices.empty()) {
-        throw std::runtime_error("mesh has no indices");
-    }
-
-    const VkDeviceSize bufferSize = sizeof(meshData_.indices[0]) * meshData_.indices.size();
+    const std::uint32_t emptyIndex = 0;
+    const std::uint32_t* indexData = meshData_.indices.empty()
+        ? &emptyIndex
+        : meshData_.indices.data();
+    const std::size_t indexCount = std::max<std::size_t>(1, meshData_.indices.size());
+    const VkDeviceSize bufferSize = sizeof(std::uint32_t) * indexCount;
     Buffer indexStagingBuffer(
         *context_,
         bufferSize,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    indexStagingBuffer.upload(meshData_.indices.data(), bufferSize);
+    indexStagingBuffer.upload(indexData, bufferSize);
 
     indexBuffer_ = std::make_unique<Buffer>(
         *context_,
@@ -4644,6 +5887,7 @@ void Renderer::createDescriptorPool() {
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = materialDescriptorCount + particleDescriptorCapacity;
@@ -5085,7 +6329,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            kMaterialPushConstantStageFlags,
             0,
             sizeof(MaterialPushConstants),
             &materialPushConstants
@@ -5354,7 +6598,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     vkCmdPushConstants(
         commandBuffer,
         pipelineLayout_,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        kMaterialPushConstantStageFlags,
         0,
         sizeof(MaterialPushConstants),
         &postProcessConstants
@@ -5413,7 +6657,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             vkCmdPushConstants(
                 commandBuffer,
                 pipelineLayout_,
-                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                kMaterialPushConstantStageFlags,
                 0,
                 sizeof(MaterialPushConstants),
                 &particlePushConstants
@@ -5444,7 +6688,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            kMaterialPushConstantStageFlags,
             0,
             sizeof(MaterialPushConstants),
             &boundingBoxPushConstants
