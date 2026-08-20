@@ -136,6 +136,8 @@ struct ModelNode {
     glm::vec3 transformTranslation{0.0f};
     glm::vec3 transformRotationDegrees{0.0f};
     float transformScaleFactor = 1.0f;
+    // Disabling a node also hides all of its descendants from the renderer.
+    bool renderEnabled = true;
     bool rotationAnimationEnabled = false;
     glm::vec3 rotationAnimationInitialDegrees{0.0f};
     glm::vec3 rotationAnimationSpeedDegrees{0.0f};

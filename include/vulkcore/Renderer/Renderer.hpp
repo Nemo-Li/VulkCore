@@ -78,6 +78,7 @@ private:
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
+    bool isSceneNodeRenderEnabled(std::uint32_t nodeId) const;
     glm::mat4 nodeManualTransform(const ModelNode& node) const;
     glm::mat4 particleObjectTransform(const ModelNode& node) const;
     glm::mat4 nodeAnimationTransform(const ModelNode& node, float elapsedSeconds) const;
@@ -152,6 +153,7 @@ private:
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
+    std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
     std::unique_ptr<Buffer> vertexBuffer_;
