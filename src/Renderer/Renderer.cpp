@@ -69,7 +69,7 @@ Renderer::~Renderer() {
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();
-    vertexBuffer_.reset();
+    vertexBuffers_.clear();
     particleVertexBuffers_.clear();
     boundingBoxVertexBuffers_.clear();
 

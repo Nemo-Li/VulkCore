@@ -114,7 +114,8 @@ private:
     void createParticleSystemObject();
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
-    void updateSceneNodeTransforms(float elapsedSeconds);
+    void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds);
+    void updateSkeletalAnimations(float deltaSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
     bool isSceneNodeRenderEnabled(std::uint32_t nodeId) const;
     glm::mat4 nodeManualTransform(const ModelNode& node) const;
@@ -175,6 +176,7 @@ private:
     std::uint32_t materialIndexForPart(const MeshPart& part) const;
     std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
     void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
+    void drawSkeletalAnimationControls(ModelNode& node, bool& shouldSaveSettings);
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
     void drawShaderDemoControls(bool& shouldSaveSettings);
     void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
@@ -211,7 +213,7 @@ private:
     std::unordered_set<std::uint32_t> removedSceneNodeIds_;
     glm::vec3 modelCenter_{0.0f};
     float modelScale_ = 1.0f;
-    std::unique_ptr<Buffer> vertexBuffer_;
+    std::vector<std::unique_ptr<Buffer>> vertexBuffers_;
     std::unique_ptr<Buffer> indexBuffer_;
     std::vector<std::unique_ptr<Buffer>> particleVertexBuffers_;
     std::vector<ParticleVertex> particleVertices_;

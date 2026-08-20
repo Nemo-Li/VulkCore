@@ -1294,6 +1294,7 @@ void Renderer::buildImGuiFrame() {
                 ImGui::TextWrapped("Transform is available for named mesh nodes only.");
             }
 
+            drawSkeletalAnimationControls(*selectedModelNode_, shouldSaveTransformSettings);
             ImGui::SeparatorText("Node Animation");
             ImGui::Checkbox(
                 "Enable rotation animation",

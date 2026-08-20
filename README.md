@@ -6,7 +6,7 @@
 - Vulkan 核心：实例、调试消息、物理设备、逻辑设备、队列和命令池
 - 渲染器：交换链、渲染管线、帧同步以及 vertex/index buffer
 - 纹理：`stb_image.h` 图片解码、FBX 材质纹理加载、staging 上传和采样器
-- 模型：Assimp FBX 网格导入、节点变换、三角化、法线和 UV 提取
+- 模型：Assimp FBX 网格导入、节点变换、三角化、法线和 UV 提取，以及四骨骼 CPU 蒙皮动画播放
 - UI：Dear ImGui 1.92.9 GLFW/Vulkan backend，主画面控制面板和调试窗口
 - 粒子：Unity 风格基础 Particle System，支持发射、生命周期、速度、重力、形状、颜色/尺寸渐变、旋转、混合和 billboard 渲染
 - Shader Demo Lab：对照 `3d-game-shaders-for-beginners` 提供可切换的材质 shader 与全屏后处理演示
@@ -85,8 +85,9 @@ Resource Manager 导入，或通过场景文件恢复。
 三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；同时保留 FBX 原始节点
 层级，供右侧 Model Hierarchy 面板展示。没有 UV 的顶点会使用 `(0, 0)`。每个材质对应
 一个绘制分段，材质纹理不可用时使用其 Base Color/Diffuse 颜色。
-模型中的骨骼绑定、骨骼层级、动画 Clip、节点通道和 Position/Rotation/Scale 关键帧也会
-一并解析并缓存，Resource Manager 的 Inspector 会显示对应摘要。
+模型中的骨骼绑定、骨骼层级、动画 Clip、节点通道和 Position/Rotation/Scale 关键帧会
+一并解析并缓存；带动画的导入模型默认播放第一个 Clip，Resource Manager 的 Inspector
+会显示骨骼与动画摘要，选中场景中的模型节点后可切换 Clip、播放/暂停、循环、速度和时间。
 渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
 CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 pkg-config
@@ -116,6 +117,8 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 - 首个 UV 通道、顶点颜色和材质信息读取
 - FBX 原始节点层级保留，供右侧 Model Hierarchy 面板展示
 - 骨骼、绑定影响、动画 Clip/Channel 和 Position/Rotation/Scale 关键帧读取
+- 每个顶点最多保留 4 个骨骼影响；每帧在 CPU 上采样关键帧并更新当前帧顶点缓冲，兼容现有材质 Shader ABI
+- 模型实例之间使用独立的骨骼/Clip 索引范围，重复导入同一个动画模型也会分别播放
 
 没有 UV 的顶点会使用 `(0, 0)`。每个材质对应一个绘制分段，材质纹理不可用时使用其
 Base Color/Diffuse 颜色。渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于

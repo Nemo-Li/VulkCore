@@ -10,8 +10,10 @@
 #include <assimp/scene.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -21,6 +23,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 
 namespace {
@@ -147,7 +150,8 @@ std::optional<std::uint32_t> appendMeshGeometry(
     const aiMesh* mesh,
     const aiMatrix4x4& transform,
     std::uint32_t nodeId,
-    VulkCore::MeshData& meshData
+    VulkCore::MeshData& meshData,
+    const std::unordered_map<std::string, std::uint32_t>& boneIndices
 ) {
     if (mesh == nullptr || mesh->mNumVertices == 0) {
         return std::nullopt;
@@ -163,12 +167,64 @@ std::optional<std::uint32_t> appendMeshGeometry(
     const std::uint32_t firstIndex = static_cast<std::uint32_t>(meshData.indices.size());
     const std::uint32_t materialIndex =
         mesh->mMaterialIndex < meshData.materials.size() ? mesh->mMaterialIndex : 0;
+    const bool isSkinned = mesh->mNumBones > 0 && mesh->mBones != nullptr;
     aiMatrix3x3 normalTransform(transform);
     normalTransform.Inverse().Transpose();
 
+    struct VertexInfluences {
+        std::array<std::uint32_t, 4> indices{};
+        std::array<float, 4> weights{};
+        std::size_t count = 0;
+    };
+    std::vector<VertexInfluences> influences(mesh->mNumVertices);
+    if (isSkinned) {
+        for (unsigned int sourceBoneIndex = 0;
+             sourceBoneIndex < mesh->mNumBones;
+             ++sourceBoneIndex) {
+            const aiBone* bone = mesh->mBones[sourceBoneIndex];
+            if (bone == nullptr) {
+                continue;
+            }
+            const auto boneIt = boneIndices.find(bone->mName.C_Str());
+            if (boneIt == boneIndices.end()) {
+                continue;
+            }
+            for (unsigned int weightIndex = 0;
+                 weightIndex < bone->mNumWeights;
+                 ++weightIndex) {
+                const aiVertexWeight& weight = bone->mWeights[weightIndex];
+                if (weight.mVertexId >= influences.size() || weight.mWeight <= 0.0f) {
+                    continue;
+                }
+                VertexInfluences& vertexInfluences = influences[weight.mVertexId];
+                if (vertexInfluences.count < vertexInfluences.indices.size()) {
+                    vertexInfluences.indices[vertexInfluences.count] = boneIt->second;
+                    vertexInfluences.weights[vertexInfluences.count] = weight.mWeight;
+                    ++vertexInfluences.count;
+                } else {
+                    const auto minimumIt = std::min_element(
+                        vertexInfluences.weights.begin(),
+                        vertexInfluences.weights.end()
+                    );
+                    if (*minimumIt >= weight.mWeight) {
+                        continue;
+                    }
+                    const std::size_t minimumIndex = static_cast<std::size_t>(
+                        minimumIt - vertexInfluences.weights.begin()
+                    );
+                    vertexInfluences.indices[minimumIndex] = boneIt->second;
+                    vertexInfluences.weights[minimumIndex] = weight.mWeight;
+                }
+            }
+        }
+    }
+
     meshData.vertices.reserve(meshData.vertices.size() + mesh->mNumVertices);
+    meshData.bindPoseVertices.reserve(meshData.bindPoseVertices.size() + mesh->mNumVertices);
+    meshData.skinSourceVertices.reserve(meshData.skinSourceVertices.size() + mesh->mNumVertices);
     for (unsigned int vertexIndex = 0; vertexIndex < mesh->mNumVertices; ++vertexIndex) {
-        const aiVector3D transformedPosition = transform * mesh->mVertices[vertexIndex];
+        const aiVector3D sourcePosition = mesh->mVertices[vertexIndex];
+        const aiVector3D transformedPosition = transform * sourcePosition;
         const aiVector3D localNormal = mesh->HasNormals()
             ? mesh->mNormals[vertexIndex]
             : aiVector3D(0.0f, 0.0f, 1.0f);
@@ -180,12 +236,45 @@ std::optional<std::uint32_t> appendMeshGeometry(
             ? mesh->mColors[0][vertexIndex]
             : aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
 
-        meshData.vertices.push_back({
+        VulkCore::Vertex vertex{
             {transformedPosition.x, transformedPosition.y, transformedPosition.z},
             {transformedNormal.x, transformedNormal.y, transformedNormal.z},
             {texCoord.x, texCoord.y},
             {color.r, color.g, color.b, color.a}
-        });
+        };
+        if (isSkinned) {
+            const VertexInfluences& vertexInfluences = influences[vertexIndex];
+            float totalWeight = 0.0f;
+            for (std::size_t influenceIndex = 0;
+                 influenceIndex < vertexInfluences.count;
+                 ++influenceIndex) {
+                vertex.boneIndices[static_cast<int>(influenceIndex)] = static_cast<int>(
+                    vertexInfluences.indices[influenceIndex]
+                );
+                vertex.boneWeights[static_cast<int>(influenceIndex)] =
+                    vertexInfluences.weights[influenceIndex];
+                totalWeight += vertexInfluences.weights[influenceIndex];
+            }
+            if (totalWeight > std::numeric_limits<float>::epsilon()) {
+                vertex.boneWeights /= totalWeight;
+            }
+        }
+        meshData.vertices.push_back(vertex);
+        meshData.bindPoseVertices.push_back(vertex);
+        VulkCore::Vertex skinSourceVertex = vertex;
+        if (isSkinned) {
+            skinSourceVertex.position = {
+                sourcePosition.x,
+                sourcePosition.y,
+                sourcePosition.z
+            };
+            skinSourceVertex.normal = {
+                localNormal.x,
+                localNormal.y,
+                localNormal.z
+            };
+        }
+        meshData.skinSourceVertices.push_back(skinSourceVertex);
     }
 
     for (unsigned int faceIndex = 0; faceIndex < mesh->mNumFaces; ++faceIndex) {
@@ -206,6 +295,8 @@ std::optional<std::uint32_t> appendMeshGeometry(
     const std::size_t indexCount = meshData.indices.size() - firstIndex;
     if (indexCount == 0) {
         meshData.vertices.resize(initialVertexCount);
+        meshData.bindPoseVertices.resize(initialVertexCount);
+        meshData.skinSourceVertices.resize(initialVertexCount);
         return std::nullopt;
     }
     if (indexCount > std::numeric_limits<std::uint32_t>::max()) {
@@ -258,7 +349,8 @@ VulkCore::ModelNode readModelNode(
     const aiNode* node,
     const aiMatrix4x4& parentTransform,
     std::uint32_t& nextNodeId,
-    VulkCore::MeshData& meshData
+    VulkCore::MeshData& meshData,
+    const std::unordered_map<std::string, std::uint32_t>& boneIndices
 ) {
     VulkCore::ModelNode modelNode;
     if (node == nullptr) {
@@ -272,6 +364,7 @@ VulkCore::ModelNode readModelNode(
     modelNode.children.reserve(node->mNumChildren);
 
     const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+    modelNode.localTransform = toGlmMatrix(node->mTransformation);
     modelNode.globalTransform = toGlmMatrix(globalTransform);
     for (unsigned int meshIndex = 0; meshIndex < node->mNumMeshes; ++meshIndex) {
         if (node->mMeshes == nullptr || node->mMeshes[meshIndex] >= scene.mNumMeshes) {
@@ -283,7 +376,8 @@ VulkCore::ModelNode readModelNode(
             scene.mMeshes[node->mMeshes[meshIndex]],
             globalTransform,
             modelNode.nodeId,
-            meshData
+            meshData,
+            boneIndices
         );
         if (partIndex.has_value()) {
             modelNode.meshPartIndices.push_back(*partIndex);
@@ -301,7 +395,8 @@ VulkCore::ModelNode readModelNode(
             node->mChildren[childIndex],
             globalTransform,
             nextNodeId,
-            meshData
+            meshData,
+            boneIndices
         );
         mergeBounds(modelNode, child);
         modelNode.children.push_back(std::move(child));
@@ -444,25 +539,140 @@ VulkCore::AnimationBehavior readAnimationBehavior(aiAnimBehaviour behavior) {
     return VulkCore::AnimationBehavior::Default;
 }
 
+std::size_t repairIsolatedRotationKeys(
+    std::vector<VulkCore::AnimationRotationKey>& keys
+) {
+    if (keys.size() < 3) {
+        return 0;
+    }
+
+    const auto normalized = [](const VulkCore::AnimationRotationKey& key) {
+        glm::quat rotation(key.value.w, key.value.x, key.value.y, key.value.z);
+        const float length = glm::length(rotation);
+        if (!std::isfinite(length) || length <= std::numeric_limits<float>::epsilon()) {
+            return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+        return rotation / length;
+    };
+    const auto store = [](VulkCore::AnimationRotationKey& key, const glm::quat& rotation) {
+        const glm::quat normalizedRotation = glm::normalize(rotation);
+        key.value = {
+            normalizedRotation.x,
+            normalizedRotation.y,
+            normalizedRotation.z,
+            normalizedRotation.w
+        };
+    };
+
+    // Work from an immutable snapshot. Several adjacent sub-frame keys can
+    // be emitted around one FBX Euler-rotation discontinuity; repairing them
+    // in place would make the first repair become the input of the next one.
+    const std::vector<VulkCore::AnimationRotationKey> sourceKeys = keys;
+    std::vector<glm::quat> sourceRotations;
+    sourceRotations.reserve(sourceKeys.size());
+    for (const auto& key : sourceKeys) {
+        glm::quat rotation = normalized(key);
+        if (!sourceRotations.empty() && glm::dot(sourceRotations.back(), rotation) < 0.0f) {
+            rotation = -rotation;
+        }
+        sourceRotations.push_back(rotation);
+    }
+
+    // Most FBX tracks are sampled on a regular cadence, but Assimp can also
+    // expose an extra sub-frame key at an Euler wrap. Estimate that cadence
+    // from the median spacing and only inspect dense, off-grid keys. This
+    // keeps legitimate non-uniform animation keys intact.
+    std::vector<double> spacings;
+    spacings.reserve(sourceKeys.size() - 1);
+    for (std::size_t keyIndex = 1; keyIndex < sourceKeys.size(); ++keyIndex) {
+        const double spacing = sourceKeys[keyIndex].timeTicks - sourceKeys[keyIndex - 1].timeTicks;
+        if (spacing > std::numeric_limits<double>::epsilon()) {
+            spacings.push_back(spacing);
+        }
+    }
+    if (spacings.empty()) {
+        return 0;
+    }
+    std::sort(spacings.begin(), spacings.end());
+    const double regularSpacing = spacings[spacings.size() / 2];
+    if (regularSpacing <= std::numeric_limits<double>::epsilon()) {
+        return 0;
+    }
+
+    std::vector<bool> removeKey(sourceKeys.size(), false);
+    std::size_t repairedCount = 0;
+    for (std::size_t keyIndex = 1; keyIndex + 1 < sourceKeys.size(); ++keyIndex) {
+        const double gridPosition =
+            (sourceKeys[keyIndex].timeTicks - sourceKeys.front().timeTicks) / regularSpacing;
+        const double gridOffset = std::abs(gridPosition - std::round(gridPosition));
+        const double localSpan =
+            sourceKeys[keyIndex + 1].timeTicks - sourceKeys[keyIndex - 1].timeTicks;
+        if (gridOffset <= 1.0e-3 || localSpan > regularSpacing * 1.5) {
+            continue;
+        }
+
+        glm::quat next = sourceRotations[keyIndex + 1];
+        if (glm::dot(sourceRotations[keyIndex - 1], next) < 0.0f) {
+            next = -next;
+        }
+        const double span = sourceKeys[keyIndex + 1].timeTicks - sourceKeys[keyIndex - 1].timeTicks;
+        const float factor = span > std::numeric_limits<double>::epsilon()
+            ? static_cast<float>(
+                (sourceKeys[keyIndex].timeTicks - sourceKeys[keyIndex - 1].timeTicks) / span
+            )
+            : 0.5f;
+        const glm::quat predicted = glm::slerp(
+            sourceRotations[keyIndex - 1],
+            next,
+            std::clamp(factor, 0.0f, 1.0f)
+        );
+        if (glm::dot(sourceRotations[keyIndex], predicted) >= 0.99f) {
+            continue;
+        }
+        removeKey[keyIndex] = true;
+        ++repairedCount;
+    }
+
+    if (repairedCount == 0) {
+        for (std::size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
+            store(keys[keyIndex], sourceRotations[keyIndex]);
+        }
+        return 0;
+    }
+
+    std::vector<VulkCore::AnimationRotationKey> repairedKeys;
+    repairedKeys.reserve(sourceKeys.size() - repairedCount);
+    for (std::size_t keyIndex = 0; keyIndex < sourceKeys.size(); ++keyIndex) {
+        if (!removeKey[keyIndex]) {
+            repairedKeys.push_back(sourceKeys[keyIndex]);
+            store(repairedKeys.back(), sourceRotations[keyIndex]);
+        }
+    }
+    keys = std::move(repairedKeys);
+    return repairedCount;
+}
+
 void collectModelNodeMetadata(
     const VulkCore::ModelNode& node,
     std::unordered_map<std::string, std::uint32_t>& nodeIds,
-    std::unordered_map<std::uint32_t, std::uint32_t>& parentNodeIds
+    std::unordered_map<std::uint32_t, std::uint32_t>& parentNodeIds,
+    std::unordered_map<std::uint32_t, glm::mat4>& globalTransforms
 ) {
     if (!node.name.empty()) {
         nodeIds.emplace(node.name, node.nodeId);
     }
+    globalTransforms.emplace(node.nodeId, node.globalTransform);
     for (const VulkCore::ModelNode& child : node.children) {
         parentNodeIds[child.nodeId] = node.nodeId;
-        collectModelNodeMetadata(child, nodeIds, parentNodeIds);
+        collectModelNodeMetadata(child, nodeIds, parentNodeIds, globalTransforms);
     }
 }
 
 void readSkeleton(
     const aiScene& scene,
-    VulkCore::MeshData& meshData
+    VulkCore::MeshData& meshData,
+    std::unordered_map<std::string, std::uint32_t>& boneIndices
 ) {
-    std::unordered_map<std::string, std::uint32_t> boneIndices;
     boneIndices.reserve(scene.mNumMeshes);
 
     for (unsigned int meshIndex = 0; meshIndex < scene.mNumMeshes; ++meshIndex) {
@@ -499,13 +709,18 @@ void readSkeleton(
         }
     }
 
+}
+
+void resolveSkeleton(
+    VulkCore::MeshData& meshData
+) {
     if (meshData.skeletonBones.empty()) {
         return;
     }
-
     std::unordered_map<std::string, std::uint32_t> nodeIds;
     std::unordered_map<std::uint32_t, std::uint32_t> parentNodeIds;
-    collectModelNodeMetadata(meshData.hierarchy, nodeIds, parentNodeIds);
+    std::unordered_map<std::uint32_t, glm::mat4> globalTransforms;
+    collectModelNodeMetadata(meshData.hierarchy, nodeIds, parentNodeIds, globalTransforms);
 
     std::unordered_map<std::uint32_t, std::uint32_t> nodeBoneIndices;
     for (std::size_t boneIndex = 0;
@@ -518,6 +733,10 @@ void readSkeleton(
         }
 
         bone.nodeId = nodeIt->second;
+        const auto globalTransformIt = globalTransforms.find(bone.nodeId);
+        if (globalTransformIt != globalTransforms.end()) {
+            bone.bindPoseGlobalTransform = globalTransformIt->second;
+        }
         nodeBoneIndices.emplace(bone.nodeId, static_cast<std::uint32_t>(boneIndex));
     }
 
@@ -565,6 +784,15 @@ void readSkeletalAnimations(
             static_cast<std::int32_t>(boneIndex)
         );
     }
+    std::unordered_map<std::string, std::uint32_t> nodeIds;
+    std::unordered_map<std::uint32_t, std::uint32_t> ignoredParentNodeIds;
+    std::unordered_map<std::uint32_t, glm::mat4> ignoredGlobalTransforms;
+    collectModelNodeMetadata(
+        meshData.hierarchy,
+        nodeIds,
+        ignoredParentNodeIds,
+        ignoredGlobalTransforms
+    );
 
     animations.reserve(scene.mNumAnimations);
     for (unsigned int animationIndex = 0;
@@ -583,6 +811,7 @@ void readSkeletalAnimations(
         clip.ticksPerSecond = animation->mTicksPerSecond;
         clip.meshChannelCount = animation->mNumMeshChannels;
         clip.channels.reserve(animation->mNumChannels);
+        std::size_t repairedRotationKeyCount = 0;
 
         for (unsigned int channelIndex = 0;
              channelIndex < animation->mNumChannels;
@@ -599,6 +828,10 @@ void readSkeletalAnimations(
             animationChannel.nodeName = channel->mNodeName.length > 0
                 ? channel->mNodeName.C_Str()
                 : "<unnamed node>";
+            const auto nodeIt = nodeIds.find(animationChannel.nodeName);
+            if (nodeIt != nodeIds.end()) {
+                animationChannel.nodeId = nodeIt->second;
+            }
             const auto boneIt = boneIndices.find(animationChannel.nodeName);
             if (boneIt != boneIndices.end()) {
                 animationChannel.boneIndex = boneIt->second;
@@ -638,7 +871,15 @@ void readSkeletalAnimations(
                     {key.mValue.x, key.mValue.y, key.mValue.z}
                 });
             }
+            repairedRotationKeyCount += repairIsolatedRotationKeys(
+                animationChannel.rotationKeys
+            );
             clip.channels.push_back(std::move(animationChannel));
+        }
+        if (repairedRotationKeyCount > 0) {
+            std::cerr << "[VulkCore][FBX] repaired " << repairedRotationKeyCount
+                      << " isolated rotation key(s) in animation '" << clip.name
+                      << "' to prevent skeletal transform spikes\n";
         }
         animations.push_back(std::move(clip));
     }
@@ -691,17 +932,30 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
         meshData.materials.emplace_back();
     }
 
+    std::unordered_map<std::string, std::uint32_t> boneIndices;
     aiMatrix4x4 identityTransform;
     std::uint32_t nextNodeId = 0;
+    readSkeleton(*scene, meshData, boneIndices);
     meshData.hierarchy = readModelNode(
         *scene,
         scene->mRootNode,
         identityTransform,
         nextNodeId,
-        meshData
+        meshData,
+        boneIndices
     );
-    readSkeleton(*scene, meshData);
+    resolveSkeleton(meshData);
     readSkeletalAnimations(*scene, meshData, meshData.skeletalAnimations);
+    meshData.bindPoseVertices = meshData.vertices;
+    meshData.skeletalAnimationInstances.clear();
+    if (!meshData.skeletonBones.empty() && !meshData.skeletalAnimations.empty()) {
+        VulkCore::SkeletalAnimationInstance instance;
+        instance.rootNodeId = meshData.hierarchy.nodeId;
+        instance.boneCount = static_cast<std::uint32_t>(meshData.skeletonBones.size());
+        instance.animationCount = static_cast<std::uint32_t>(meshData.skeletalAnimations.size());
+        instance.globalInverseTransform = glm::inverse(meshData.hierarchy.globalTransform);
+        meshData.skeletalAnimationInstances.push_back(instance);
+    }
 
     std::cerr << "[VulkCore][FBX] parsed "
               << meshData.skeletalAnimations.size() << " skeletal animation clip(s)\n";

@@ -2,11 +2,323 @@
 
 namespace VulkCore {
 
+namespace {
+
+double animationTicksForTime(
+    double timeTicks,
+    const std::vector<AnimationVectorKey>& keys,
+    AnimationBehavior behavior
+) {
+    if (keys.size() < 2 || (timeTicks >= keys.front().timeTicks &&
+        timeTicks <= keys.back().timeTicks)) {
+        return timeTicks;
+    }
+    const double first = keys.front().timeTicks;
+    const double last = keys.back().timeTicks;
+    const double span = last - first;
+    if (behavior == AnimationBehavior::Repeat && span > std::numeric_limits<double>::epsilon()) {
+        double wrapped = std::fmod(timeTicks - first, span);
+        if (wrapped < 0.0) {
+            wrapped += span;
+        }
+        return first + wrapped;
+    }
+    return std::clamp(timeTicks, first, last);
+}
+
+glm::vec3 sampleVectorKeys(
+    const std::vector<AnimationVectorKey>& keys,
+    double timeTicks,
+    AnimationBehavior preBehavior,
+    AnimationBehavior postBehavior,
+    const glm::vec3& fallback
+) {
+    if (keys.empty()) {
+        return fallback;
+    }
+    const AnimationBehavior behavior = timeTicks < keys.front().timeTicks
+        ? preBehavior
+        : postBehavior;
+    const double sampleTime = animationTicksForTime(timeTicks, keys, behavior);
+    if (sampleTime <= keys.front().timeTicks) {
+        return keys.front().value;
+    }
+    if (sampleTime >= keys.back().timeTicks) {
+        return keys.back().value;
+    }
+    const auto upperIt = std::upper_bound(
+        keys.begin(),
+        keys.end(),
+        sampleTime,
+        [](double value, const AnimationVectorKey& key) {
+            return value < key.timeTicks;
+        }
+    );
+    const std::size_t upperIndex = static_cast<std::size_t>(upperIt - keys.begin());
+    if (upperIndex == 0 || upperIndex >= keys.size()) {
+        return keys.back().value;
+    }
+    const AnimationVectorKey& left = keys[upperIndex - 1];
+    const AnimationVectorKey& right = keys[upperIndex];
+    const double span = right.timeTicks - left.timeTicks;
+    const float factor = span <= std::numeric_limits<double>::epsilon()
+        ? 0.0f
+        : static_cast<float>((sampleTime - left.timeTicks) / span);
+    return glm::mix(left.value, right.value, factor);
+}
+
+double animationTicksForTime(
+    double timeTicks,
+    const std::vector<AnimationRotationKey>& keys,
+    AnimationBehavior behavior
+) {
+    if (keys.size() < 2 || (timeTicks >= keys.front().timeTicks &&
+        timeTicks <= keys.back().timeTicks)) {
+        return timeTicks;
+    }
+    const double first = keys.front().timeTicks;
+    const double last = keys.back().timeTicks;
+    const double span = last - first;
+    if (behavior == AnimationBehavior::Repeat && span > std::numeric_limits<double>::epsilon()) {
+        double wrapped = std::fmod(timeTicks - first, span);
+        if (wrapped < 0.0) {
+            wrapped += span;
+        }
+        return first + wrapped;
+    }
+    return std::clamp(timeTicks, first, last);
+}
+
+glm::quat sampleRotationKeys(
+    const std::vector<AnimationRotationKey>& keys,
+    double timeTicks,
+    AnimationBehavior preBehavior,
+    AnimationBehavior postBehavior,
+    const glm::quat& fallback
+) {
+    if (keys.empty()) {
+        return fallback;
+    }
+    const AnimationBehavior behavior = timeTicks < keys.front().timeTicks
+        ? preBehavior
+        : postBehavior;
+    const double sampleTime = animationTicksForTime(timeTicks, keys, behavior);
+    if (sampleTime <= keys.front().timeTicks) {
+        return glm::normalize(glm::quat(
+            keys.front().value.w,
+            keys.front().value.x,
+            keys.front().value.y,
+            keys.front().value.z
+        ));
+    }
+    if (sampleTime >= keys.back().timeTicks) {
+        return glm::normalize(glm::quat(
+            keys.back().value.w,
+            keys.back().value.x,
+            keys.back().value.y,
+            keys.back().value.z
+        ));
+    }
+    const auto upperIt = std::upper_bound(
+        keys.begin(),
+        keys.end(),
+        sampleTime,
+        [](double value, const AnimationRotationKey& key) {
+            return value < key.timeTicks;
+        }
+    );
+    const std::size_t upperIndex = static_cast<std::size_t>(upperIt - keys.begin());
+    if (upperIndex == 0 || upperIndex >= keys.size()) {
+        return fallback;
+    }
+    const AnimationRotationKey& left = keys[upperIndex - 1];
+    const AnimationRotationKey& right = keys[upperIndex];
+    const double span = right.timeTicks - left.timeTicks;
+    const float factor = span <= std::numeric_limits<double>::epsilon()
+        ? 0.0f
+        : static_cast<float>((sampleTime - left.timeTicks) / span);
+    const glm::quat leftRotation = glm::normalize(glm::quat(
+        left.value.w, left.value.x, left.value.y, left.value.z
+    ));
+    glm::quat rightRotation = glm::normalize(glm::quat(
+        right.value.w, right.value.x, right.value.y, right.value.z
+    ));
+    // Assimp/FBX may encode the same orientation as q and -q. Keep every
+    // interpolation on the short arc explicitly instead of relying on the
+    // math library to repair the sign at this call site.
+    if (glm::dot(leftRotation, rightRotation) < 0.0f) {
+        rightRotation = -rightRotation;
+    }
+    return glm::normalize(glm::slerp(leftRotation, rightRotation, factor));
+}
+
+glm::mat4 animatedLocalTransform(
+    const ModelNode& node,
+    const SkeletalAnimationChannel* channel,
+    double timeTicks
+) {
+    if (channel == nullptr) {
+        return node.localTransform;
+    }
+
+    glm::vec3 baseScale(1.0f);
+    glm::vec3 baseTranslation(0.0f);
+    glm::vec3 skew(0.0f);
+    glm::vec4 perspective(0.0f);
+    glm::quat baseRotation(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::decompose(
+        node.localTransform,
+        baseScale,
+        baseRotation,
+        baseTranslation,
+        skew,
+        perspective
+    );
+
+    const glm::vec3 translation = sampleVectorKeys(
+        channel->positionKeys,
+        timeTicks,
+        channel->preBehavior,
+        channel->postBehavior,
+        baseTranslation
+    );
+    const glm::vec3 scale = sampleVectorKeys(
+        channel->scalingKeys,
+        timeTicks,
+        channel->preBehavior,
+        channel->postBehavior,
+        baseScale
+    );
+    const glm::quat rotation = sampleRotationKeys(
+        channel->rotationKeys,
+        timeTicks,
+        channel->preBehavior,
+        channel->postBehavior,
+        baseRotation
+    );
+    return glm::translate(glm::mat4(1.0f), translation) *
+        glm::mat4_cast(rotation) *
+        glm::scale(glm::mat4(1.0f), scale);
+}
+
+} // namespace
+
 void Renderer::selectModelNode(ModelNode& node) {
     selectedModelNode_ = &node;
     selectedResourceType_ = ResourceSelectionType::Model;
     selectedResourceMaterialIndex_ = -1;
     updateBoundingBoxVertices();
+}
+
+void Renderer::drawSkeletalAnimationControls(
+    ModelNode& node,
+    bool& shouldSaveSettings
+) {
+    (void)shouldSaveSettings;
+    SkeletalAnimationInstance* instance = nullptr;
+    for (SkeletalAnimationInstance& candidate : meshData_.skeletalAnimationInstances) {
+        if (node.nodeId >= candidate.rootNodeId &&
+            node.nodeId - candidate.rootNodeId < kSceneModelNodeStride) {
+            instance = &candidate;
+            break;
+        }
+    }
+    if (instance == nullptr || instance->animationCount == 0) {
+        return;
+    }
+
+    ImGui::SeparatorText("Skeletal Animation");
+    ImGui::TextWrapped(
+        "CPU skinning is active for this imported model. Changes apply to the whole model instance."
+    );
+    ImGui::Checkbox("Animation Enabled", &instance->enabled);
+    ImGui::Checkbox("Loop", &instance->looping);
+    ImGui::DragFloat(
+        "Playback Speed",
+        &instance->playbackSpeed,
+        0.01f,
+        -4.0f,
+        4.0f,
+        "%.2fx"
+    );
+    if (instance->playbackSpeed == 0.0f) {
+        instance->playbackSpeed = 1.0f;
+    }
+
+    const std::size_t animationStart = instance->animationStart;
+    const std::size_t animationEnd = animationStart + instance->animationCount;
+    if (animationStart >= meshData_.skeletalAnimations.size() ||
+        animationEnd > meshData_.skeletalAnimations.size()) {
+        ImGui::TextUnformatted("Animation data is incomplete for this instance.");
+        return;
+    }
+    instance->activeClip = std::min<std::uint32_t>(
+        instance->activeClip,
+        instance->animationCount - 1
+    );
+    const SkeletalAnimationClip& activeClip = meshData_.skeletalAnimations[
+        animationStart + instance->activeClip
+    ];
+    const char* activeClipName = activeClip.name.empty()
+        ? "Unnamed clip"
+        : activeClip.name.c_str();
+    if (ImGui::BeginCombo("Clip", activeClipName)) {
+        for (std::uint32_t clipIndex = 0;
+             clipIndex < instance->animationCount;
+             ++clipIndex) {
+            const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
+                animationStart + clipIndex
+            ];
+            const bool selected = clipIndex == instance->activeClip;
+            const std::string label = clip.name.empty()
+                ? "Animation " + std::to_string(clipIndex)
+                : clip.name;
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                instance->activeClip = clipIndex;
+                instance->timeSeconds = 0.0f;
+                instance->playing = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    if (instance->playing) {
+        if (ImGui::Button("Pause")) {
+            instance->playing = false;
+        }
+    } else if (ImGui::Button("Play")) {
+        instance->playing = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Restart")) {
+        instance->timeSeconds = 0.0f;
+        instance->playing = true;
+    }
+
+    const double ticksPerSecond = activeClip.ticksPerSecond > 0.0
+        ? activeClip.ticksPerSecond
+        : 25.0;
+    const float durationSeconds = activeClip.durationTicks > 0.0
+        ? static_cast<float>(activeClip.durationTicks / ticksPerSecond)
+        : 0.0f;
+    if (durationSeconds > 0.0f) {
+        instance->timeSeconds = std::clamp(instance->timeSeconds, 0.0f, durationSeconds);
+        ImGui::SliderFloat(
+            "Time",
+            &instance->timeSeconds,
+            0.0f,
+            durationSeconds,
+            "%.3f s"
+        );
+        ImGui::Text(
+            "Clip %.3f s / %zu channels",
+            durationSeconds,
+            activeClip.channels.size()
+        );
+    }
 }
 
 glm::mat4 Renderer::nodeManualTransform(const ModelNode& node) const {
@@ -98,7 +410,161 @@ glm::mat4 Renderer::nodeAnimationTransform(
     return node.globalTransform * rotation * glm::inverse(node.globalTransform);
 }
 
-void Renderer::updateSceneNodeTransforms(float elapsedSeconds) {
+void Renderer::updateSkeletalAnimations(float deltaSeconds) {
+    if (meshData_.skeletalAnimationInstances.empty() ||
+        meshData_.bindPoseVertices.size() != meshData_.vertices.size() ||
+        meshData_.skinSourceVertices.size() != meshData_.vertices.size()) {
+        return;
+    }
+
+    meshData_.vertices = meshData_.bindPoseVertices;
+    bool hasAnimatedInstance = false;
+    for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
+        if (instance.animationCount == 0 || instance.boneCount == 0 || !instance.enabled) {
+            continue;
+        }
+        const std::size_t animationStart = instance.animationStart;
+        const std::size_t animationEnd = animationStart + instance.animationCount;
+        if (animationStart >= meshData_.skeletalAnimations.size() ||
+            animationEnd > meshData_.skeletalAnimations.size()) {
+            continue;
+        }
+        const std::size_t clipIndex = std::min<std::size_t>(
+            instance.activeClip,
+            instance.animationCount - 1
+        );
+        const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
+            animationStart + clipIndex
+        ];
+        const double ticksPerSecond = clip.ticksPerSecond > 0.0
+            ? clip.ticksPerSecond
+            : 25.0;
+        const double durationSeconds = clip.durationTicks > 0.0
+            ? clip.durationTicks / ticksPerSecond
+            : 0.0;
+        if (instance.playing) {
+            instance.timeSeconds += deltaSeconds * instance.playbackSpeed;
+        }
+        if (durationSeconds > 0.0) {
+            if (instance.looping) {
+                double wrappedTime = std::fmod(
+                    static_cast<double>(instance.timeSeconds),
+                    durationSeconds
+                );
+                if (wrappedTime < 0.0) {
+                    wrappedTime += durationSeconds;
+                }
+                instance.timeSeconds = static_cast<float>(wrappedTime);
+            } else {
+                instance.timeSeconds = std::clamp(
+                    instance.timeSeconds,
+                    0.0f,
+                    static_cast<float>(durationSeconds)
+                );
+            }
+        } else {
+            instance.timeSeconds = 0.0f;
+        }
+        const double timeTicks = static_cast<double>(instance.timeSeconds) * ticksPerSecond;
+
+        const ModelNode* root = findModelNodeById(meshData_.hierarchy, instance.rootNodeId);
+        if (root == nullptr) {
+            continue;
+        }
+        std::unordered_map<std::uint32_t, const SkeletalAnimationChannel*> channels;
+        channels.reserve(clip.channels.size());
+        for (const SkeletalAnimationChannel& channel : clip.channels) {
+            if (channel.nodeId != std::numeric_limits<std::uint32_t>::max()) {
+                channels[channel.nodeId] = &channel;
+            }
+        }
+        std::unordered_map<std::uint32_t, glm::mat4> animatedGlobals;
+        const auto evaluateNode = [&channels, timeTicks, &animatedGlobals](
+                                       const auto& self,
+                                       const ModelNode& node,
+                                       const glm::mat4& parentTransform
+                                   ) -> void {
+            const auto channelIt = channels.find(node.nodeId);
+            const SkeletalAnimationChannel* channel = channelIt == channels.end()
+                ? nullptr
+                : channelIt->second;
+            const glm::mat4 globalTransform = parentTransform * animatedLocalTransform(
+                node,
+                channel,
+                timeTicks
+            );
+            animatedGlobals[node.nodeId] = globalTransform;
+            for (const ModelNode& child : node.children) {
+                self(self, child, globalTransform);
+            }
+        };
+        evaluateNode(evaluateNode, *root, glm::mat4(1.0f));
+
+        std::unordered_map<std::uint32_t, glm::mat4> boneMatrices;
+        const std::size_t boneStart = instance.boneStart;
+        const std::size_t boneEnd = boneStart + instance.boneCount;
+        for (std::size_t boneIndex = boneStart; boneIndex < boneEnd; ++boneIndex) {
+            if (boneIndex >= meshData_.skeletonBones.size()) {
+                break;
+            }
+            const SkeletonBone& bone = meshData_.skeletonBones[boneIndex];
+            const auto globalIt = animatedGlobals.find(bone.nodeId);
+            const glm::mat4 animatedGlobal = globalIt == animatedGlobals.end()
+                ? bone.bindPoseGlobalTransform
+                : globalIt->second;
+            boneMatrices.emplace(
+                static_cast<std::uint32_t>(boneIndex),
+                instance.globalInverseTransform * animatedGlobal * bone.offsetMatrix
+            );
+        }
+
+        for (Vertex& vertex : meshData_.vertices) {
+            glm::vec4 skinnedPosition(0.0f);
+            glm::vec3 skinnedNormal(0.0f);
+            float totalWeight = 0.0f;
+            for (int influenceIndex = 0; influenceIndex < 4; ++influenceIndex) {
+                const float weight = vertex.boneWeights[influenceIndex];
+                const std::uint32_t boneIndex = static_cast<std::uint32_t>(
+                    std::max(vertex.boneIndices[influenceIndex], 0)
+                );
+                if (weight <= 0.0f || boneIndex < boneStart || boneIndex >= boneEnd) {
+                    continue;
+                }
+                const auto matrixIt = boneMatrices.find(boneIndex);
+                if (matrixIt == boneMatrices.end()) {
+                    continue;
+                }
+                const glm::mat4& boneMatrix = matrixIt->second;
+                const std::size_t vertexIndex = static_cast<std::size_t>(
+                    &vertex - meshData_.vertices.data()
+                );
+                skinnedPosition += boneMatrix * glm::vec4(
+                    meshData_.skinSourceVertices[vertexIndex].position,
+                    1.0f
+                ) * weight;
+                const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(boneMatrix)));
+                skinnedNormal += normalMatrix * meshData_.skinSourceVertices[vertexIndex].normal * weight;
+                totalWeight += weight;
+            }
+            if (totalWeight > std::numeric_limits<float>::epsilon()) {
+                vertex.position = glm::vec3(skinnedPosition) / totalWeight;
+                vertex.normal = glm::normalize(skinnedNormal / totalWeight);
+                hasAnimatedInstance = true;
+            }
+        }
+    }
+
+    if ((!meshData_.skeletalAnimationInstances.empty() || hasAnimatedInstance) &&
+        currentFrame_ < vertexBuffers_.size()) {
+        vertexBuffers_[currentFrame_]->upload(
+            meshData_.vertices.data(),
+            sizeof(Vertex) * meshData_.vertices.size()
+        );
+    }
+}
+
+void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds) {
+    updateSkeletalAnimations(deltaSeconds);
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
 

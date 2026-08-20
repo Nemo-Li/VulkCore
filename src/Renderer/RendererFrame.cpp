@@ -21,7 +21,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     VkRect2D scissor{};
     scissor.extent = extent;
 
-    const VkBuffer buffers[] = {vertexBuffer_->handle()};
+    const VkBuffer buffers[] = {vertexBuffers_[currentFrame_]->handle()};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
@@ -497,12 +497,12 @@ void Renderer::drawFrame() {
     buildImGuiFrame();
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    updateSceneNodeTransforms(elapsedSeconds);
     const float particleDeltaSeconds = std::clamp(
         elapsedSeconds - lastFrameElapsedSeconds_,
         0.0f,
         0.1f
     );
+    updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
     lastFrameElapsedSeconds_ = elapsedSeconds;
     const glm::vec3 cameraTarget(0.0f);
     const glm::vec3 cameraPosition = cameraPosition_;

@@ -262,7 +262,7 @@ void Renderer::clearSceneData() {
     modelImportPathBuffer_.fill('\0');
     boundingBoxVertices_.fill(Vertex{});
 
-    vertexBuffer_.reset();
+    vertexBuffers_.clear();
     indexBuffer_.reset();
     createVertexBuffer();
     createIndexBuffer();
@@ -366,8 +366,38 @@ void Renderer::appendImportedModel(
     const std::uint32_t importedMaterialCount =
         static_cast<std::uint32_t>(importedMesh.materials.size());
     const std::uint32_t partOffset = static_cast<std::uint32_t>(meshData_.parts.size());
-    for (const Vertex& vertex : importedMesh.vertices) {
-        meshData_.vertices.push_back(vertex);
+    const std::uint32_t boneOffset = static_cast<std::uint32_t>(meshData_.skeletonBones.size());
+    const std::uint32_t animationOffset = static_cast<std::uint32_t>(
+        meshData_.skeletalAnimations.size()
+    );
+    const auto appendVertex = [boneOffset](Vertex vertex) {
+        for (int influenceIndex = 0; influenceIndex < 4; ++influenceIndex) {
+            if (vertex.boneWeights[influenceIndex] > 0.0f) {
+                vertex.boneIndices[influenceIndex] += static_cast<int>(boneOffset);
+            }
+        }
+        return vertex;
+    };
+    for (const Vertex& sourceVertex : importedMesh.vertices) {
+        meshData_.vertices.push_back(appendVertex(sourceVertex));
+    }
+    if (importedMesh.bindPoseVertices.size() == importedMesh.vertices.size()) {
+        for (const Vertex& sourceVertex : importedMesh.bindPoseVertices) {
+            meshData_.bindPoseVertices.push_back(appendVertex(sourceVertex));
+        }
+    } else {
+        for (const Vertex& sourceVertex : importedMesh.vertices) {
+            meshData_.bindPoseVertices.push_back(appendVertex(sourceVertex));
+        }
+    }
+    if (importedMesh.skinSourceVertices.size() == importedMesh.vertices.size()) {
+        for (const Vertex& sourceVertex : importedMesh.skinSourceVertices) {
+            meshData_.skinSourceVertices.push_back(appendVertex(sourceVertex));
+        }
+    } else {
+        for (const Vertex& sourceVertex : importedMesh.vertices) {
+            meshData_.skinSourceVertices.push_back(appendVertex(sourceVertex));
+        }
     }
     for (const std::uint32_t index : importedMesh.indices) {
         meshData_.indices.push_back(index + vertexOffset);
@@ -380,6 +410,25 @@ void Renderer::appendImportedModel(
         part.materialIndex += materialOffset;
         part.nodeId += nodeOffset;
         meshData_.parts.push_back(part);
+    }
+    for (SkeletonBone bone : importedMesh.skeletonBones) {
+        if (bone.nodeId != std::numeric_limits<std::uint32_t>::max()) {
+            bone.nodeId += nodeOffset;
+        }
+        meshData_.skeletonBones.push_back(std::move(bone));
+    }
+    meshData_.skinnedMeshCount += importedMesh.skinnedMeshCount;
+    meshData_.skinWeightCount += importedMesh.skinWeightCount;
+    for (SkeletalAnimationClip animation : importedMesh.skeletalAnimations) {
+        for (SkeletalAnimationChannel& channel : animation.channels) {
+            if (channel.nodeId != std::numeric_limits<std::uint32_t>::max()) {
+                channel.nodeId += nodeOffset;
+            }
+            if (channel.boneIndex >= 0) {
+                channel.boneIndex += static_cast<std::int32_t>(boneOffset);
+            }
+        }
+        meshData_.skeletalAnimations.push_back(std::move(animation));
     }
 
     const auto remapNode = [nodeOffset, partOffset, materialOffset](
@@ -398,6 +447,13 @@ void Renderer::appendImportedModel(
         }
     };
     remapNode(remapNode, importedMesh.hierarchy);
+
+    for (SkeletalAnimationInstance instance : importedMesh.skeletalAnimationInstances) {
+        instance.rootNodeId += nodeOffset;
+        instance.boneStart += boneOffset;
+        instance.animationStart += animationOffset;
+        meshData_.skeletalAnimationInstances.push_back(std::move(instance));
+    }
 
     if (meshData_.hierarchy.name.empty()) {
         meshData_.hierarchy.name = "Scene";
