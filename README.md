@@ -85,6 +85,12 @@ cmake --build build --parallel
 ./build/vulkcore
 ```
 
+也可以直接加载指定场景；`--hide-ui` 适合纯游戏画面或截图验收：
+
+```bash
+./build/vulkcore --scene scenes/game.scene --hide-ui
+```
+
 程序启动时默认显示空场景，不会自动导入 `assets/models` 中的模型。模型需要在运行时由
 Resource Manager 导入，或通过场景文件恢复。
 
@@ -223,6 +229,18 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 - Player Inspector 中的落地状态与实时速度信息
 
 当前地形碰撞使用渲染网格精度；物理材质、碰撞层、触发器、接触事件和通用刚体组件仍属于后续扩展。
+
+#### BOTW 风格草地、LOD 与踩踏
+
+包含 BOTW Terrain 和 Player 的场景会在 Player 出生点周围生成确定性草地。近景使用约
+75–90 根/㎡、基本覆盖地皮的独立四段弯曲 Mesh 草叶，中景切换为三片相交的 Alpha Cutout 草簇，远景
+切换为稀疏贴图卡片；重叠距离内通过
+整叶 dissolve 和下沉完成无硬切 LOD。草根固定，草梢叠加双频风场；Player 附近 1.25 m
+内的草会根据角色位置和移动方向压低、推倒，离开后自然恢复。
+
+种植会过滤陡坡和高海拔雪区，并保持固定 seed，避免场景重载后分布变化；草地中还会随机
+散布使用透明花簇贴图的白、黄、蓝色野花。完整的参数、调研
+依据与开放世界 clipmap 升级方案见 [BOTW 风格草地技术方案](docs/07-botw-grass.md)。
 
 #### Material Shaders 与水面预设
 

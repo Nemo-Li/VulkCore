@@ -1139,6 +1139,13 @@ void Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
+    if (playerController_.active()) {
+        const glm::vec3 normalizedPlayerPosition = modelScale_ * (
+            playerController_.position() - modelCenter_
+        );
+        ubo.playerPosition = glm::vec4(normalizedPlayerPosition, 1.0f);
+        ubo.playerVelocity = glm::vec4(playerController_.velocity(), 0.0f);
+    }
 
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
 }

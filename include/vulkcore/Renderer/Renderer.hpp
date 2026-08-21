@@ -33,7 +33,11 @@ class TerrainScene;
 
 class Renderer {
 public:
-    explicit Renderer(GLFWwindow* window);
+    explicit Renderer(
+        GLFWwindow* window,
+        const std::filesystem::path& startupScene = {},
+        bool hideTools = false
+    );
     ~Renderer();
 
     Renderer(const Renderer&) = delete;
@@ -80,6 +84,7 @@ private:
     );
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
+    void appendGrassToScene(const TerrainScene& terrain, const glm::vec3& center);
     void updatePlayerController(float deltaSeconds);
     void updatePlayerCamera();
     void clearSceneData();

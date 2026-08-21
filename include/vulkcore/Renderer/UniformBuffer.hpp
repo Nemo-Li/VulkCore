@@ -18,6 +18,13 @@ struct UniformBufferObject {
     // xyz is the camera position in normalized scene space; w is the scene
     // normalization scale used to convert terrain LOD distances to world units.
     glm::vec4 cameraPosition{0.0f};
+    // xyz is the normalized player foot position. w is one while the player
+    // is active, allowing vegetation shaders to disable interaction in editor
+    // scenes without a separate descriptor layout.
+    glm::vec4 playerPosition{0.0f};
+    // xyz remains in terrain-world units because grass only needs its
+    // direction and relative speed when choosing a trampling direction.
+    glm::vec4 playerVelocity{0.0f};
 };
 
 } // namespace VulkCore

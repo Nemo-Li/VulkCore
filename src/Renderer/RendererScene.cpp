@@ -1,6 +1,7 @@
 #include "RendererImplementation.hpp"
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
+#include "vulkcore/Terrain/Grass.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 namespace VulkCore {
@@ -11,6 +12,8 @@ constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
 constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
 constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
 constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
+constexpr std::uint32_t kGrassSceneNodeId = 0xE5000000u;
+constexpr std::uint32_t kGrassLodNodeBase = 0xE5100000u;
 
 } // namespace
 
@@ -551,6 +554,137 @@ void Renderer::appendPlayerToScene() {
     });
     meshData_.additionalNodes.push_back(std::move(playerNode));
     recalculateSceneBounds();
+}
+
+void Renderer::appendGrassToScene(
+    const TerrainScene& terrain,
+    const glm::vec3& center
+) {
+    if (findSceneNodeById(meshData_, kGrassSceneNodeId) != nullptr) {
+        return;
+    }
+
+    const GrassPatchMesh grassMesh = buildBotwGrassPatch(terrain, center);
+    if (grassMesh.vertices.empty() || grassMesh.indices.empty()) {
+        std::cerr << "warning: no grass planting points were found around the player spawn\n";
+        return;
+    }
+    if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
+            grassMesh.vertices.size() ||
+        meshData_.indices.size() > std::numeric_limits<std::uint32_t>::max() -
+            grassMesh.indices.size()) {
+        throw std::runtime_error("BOTW grass exceeds the renderer's 32-bit mesh limits");
+    }
+
+    MaterialData grassMaterial;
+    grassMaterial.name = "BOTW Grass (three-stage LOD)";
+    grassMaterial.baseColor = glm::vec4(1.0f);
+    grassMaterial.roughness = 0.92f;
+    grassMaterial.doubleSided = true;
+    grassMaterial.texturePath = assetsDirectory_ / "textures" /
+        "botw_grass_clump.png";
+    grassMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
+        "shader_grass.vert";
+    grassMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
+        "shader_grass.frag";
+    const std::uint32_t materialIndex = static_cast<std::uint32_t>(
+        meshData_.materials.size()
+    );
+    meshData_.materials.push_back(std::move(grassMaterial));
+
+    MaterialData flowerMaterial;
+    flowerMaterial.name = "BOTW Meadow Wildflowers";
+    flowerMaterial.baseColor = glm::vec4(1.0f);
+    flowerMaterial.roughness = 0.88f;
+    flowerMaterial.doubleSided = true;
+    flowerMaterial.texturePath = assetsDirectory_ / "textures" /
+        "botw_wildflowers.png";
+    flowerMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
+        "shader_grass.vert";
+    flowerMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
+        "shader_grass.frag";
+    const std::uint32_t flowerMaterialIndex = static_cast<std::uint32_t>(
+        meshData_.materials.size()
+    );
+    meshData_.materials.push_back(std::move(flowerMaterial));
+
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    meshData_.vertices.insert(
+        meshData_.vertices.end(),
+        grassMesh.vertices.begin(),
+        grassMesh.vertices.end()
+    );
+    meshData_.bindPoseVertices.insert(
+        meshData_.bindPoseVertices.end(),
+        grassMesh.vertices.begin(),
+        grassMesh.vertices.end()
+    );
+    meshData_.skinSourceVertices.insert(
+        meshData_.skinSourceVertices.end(),
+        grassMesh.vertices.begin(),
+        grassMesh.vertices.end()
+    );
+    for (const std::uint32_t index : grassMesh.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+
+    ModelNode grassNode;
+    grassNode.name = "BOTW Grass";
+    grassNode.nodeId = kGrassSceneNodeId;
+    grassNode.globalTransform = glm::mat4(1.0f);
+    grassNode.hasBounds = true;
+    grassNode.boundsMinimum = grassMesh.boundsMinimum;
+    grassNode.boundsMaximum = grassMesh.boundsMaximum;
+
+    constexpr std::array<const char*, 4> kLodNames = {
+        "LOD0 Near Curved Mesh",
+        "LOD1 Mid Three-Card Textured Clusters",
+        "LOD2 Far Sparse Textured Cards",
+        "Wildflower Cross Cards"
+    };
+    for (std::size_t lodIndex = 0; lodIndex < grassMesh.lods.size(); ++lodIndex) {
+        const GrassLodMeshRange& range = grassMesh.lods[lodIndex];
+        if (range.indexCount == 0) {
+            continue;
+        }
+        if (range.indexCount > std::numeric_limits<std::uint32_t>::max() ||
+            range.indexOffset > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("grass LOD range exceeds 32-bit draw limits");
+        }
+        const std::uint32_t nodeId = kGrassLodNodeBase +
+            static_cast<std::uint32_t>(lodIndex);
+        const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
+        const std::uint32_t rangeMaterialIndex =
+            lodIndex == static_cast<std::size_t>(GrassLod::FlowerCard)
+                ? flowerMaterialIndex
+                : materialIndex;
+        meshData_.parts.push_back({
+            indexOffset + static_cast<std::uint32_t>(range.indexOffset),
+            static_cast<std::uint32_t>(range.indexCount),
+            rangeMaterialIndex,
+            nodeId
+        });
+
+        ModelNode lodNode;
+        lodNode.name = std::string(kLodNames[lodIndex]) + " (" +
+            std::to_string(range.primitiveCount) + " blades/cards)";
+        lodNode.nodeId = nodeId;
+        lodNode.meshCount = 1;
+        lodNode.globalTransform = glm::mat4(1.0f);
+        lodNode.meshPartIndices.push_back(partIndex);
+        lodNode.hasBounds = true;
+        lodNode.boundsMinimum = grassMesh.boundsMinimum;
+        lodNode.boundsMaximum = grassMesh.boundsMaximum;
+        grassNode.children.push_back(std::move(lodNode));
+        ++grassNode.meshCount;
+    }
+
+    meshData_.additionalNodes.push_back(std::move(grassNode));
+    recalculateSceneBounds();
+    std::cerr << "Generated BOTW grass patch: " << grassMesh.vertices.size()
+              << " vertices, " << grassMesh.indices.size() / 3u
+              << " triangles\n";
 }
 
 void Renderer::updatePlayerController(float deltaSeconds) {
@@ -1155,6 +1289,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                     playerSpawnPosition_
                 );
                 appendPlayerToScene();
+                appendGrassToScene(*terrainScene_, playerController_.spawnPosition());
             }
             generatedGeometryChanged = true;
             std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()

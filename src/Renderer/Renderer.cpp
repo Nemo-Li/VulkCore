@@ -14,7 +14,11 @@
 
 namespace VulkCore {
 
-Renderer::Renderer(GLFWwindow* window)
+Renderer::Renderer(
+    GLFWwindow* window,
+    const std::filesystem::path& startupScene,
+    bool hideTools
+)
     : window_(window), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
         throw std::invalid_argument("Renderer requires a valid GLFW window!");
@@ -54,6 +58,14 @@ Renderer::Renderer(GLFWwindow* window)
     createCommandBuffers();
     createSyncObjects();
     initializeImGui();
+    toolUiVisible_ = !hideTools;
+    if (!startupScene.empty() && !loadSceneResource(startupScene)) {
+        throw std::runtime_error(
+            sceneStatus_.empty()
+                ? "failed to load startup scene: " + startupScene.string()
+                : sceneStatus_
+        );
+    }
 }
 
 Renderer::~Renderer() {
