@@ -14,6 +14,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 ambientLight;
     vec4 sunLightDirection;
     vec4 sunLightColor;
+    vec4 cameraPosition;
 } ubo;
 
 layout(push_constant) uniform MaterialPushConstants {

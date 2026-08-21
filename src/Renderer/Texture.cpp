@@ -1,5 +1,6 @@
 #include "vulkcore/Renderer/Texture.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -96,6 +97,26 @@ void Texture::uploadRgbaPixels(
     }
     const VkDeviceSize imageSize = static_cast<VkDeviceSize>(pixelCount) * 4;
 
+    mipLevels_ = 1;
+    for (std::uint32_t dimension = std::max(width, height);
+         dimension > 1;
+         dimension >>= 1) {
+        ++mipLevels_;
+    }
+
+    VkFormatProperties formatProperties{};
+    vkGetPhysicalDeviceFormatProperties(
+        context_.physicalDevice(),
+        VK_FORMAT_R8G8B8A8_SRGB,
+        &formatProperties
+    );
+    if ((formatProperties.optimalTilingFeatures &
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+        // Mip generation below uses a linear blit. Keeping the base level is
+        // safer than rejecting otherwise valid textures on such devices.
+        mipLevels_ = 1;
+    }
+
     try {
         Buffer stagingBuffer(
             context_,
@@ -111,10 +132,7 @@ void Texture::uploadRgbaPixels(
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         );
         copyBufferToImage(stagingBuffer.handle(), width, height);
-        transitionImageLayout(
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        );
+        generateMipmaps(width, height);
         createImageView();
         createSampler();
     } catch (...) {
@@ -141,11 +159,13 @@ void Texture::createImage(uint32_t width, uint32_t height) {
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
     imageInfo.extent = {width, height, 1};
-    imageInfo.mipLevels = 1;
+    imageInfo.mipLevels = mipLevels_;
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -190,7 +210,7 @@ void Texture::createImageView() {
     viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.levelCount = mipLevels_;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
@@ -207,8 +227,15 @@ void Texture::createSampler() {
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(context_.physicalDevice(), &supportedFeatures);
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
+    const bool anisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
+    samplerInfo.anisotropyEnable = anisotropySupported ? VK_TRUE : VK_FALSE;
+    samplerInfo.maxAnisotropy = anisotropySupported
+        ? std::min(8.0f, properties.limits.maxSamplerAnisotropy)
+        : 1.0f;
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
@@ -216,7 +243,7 @@ void Texture::createSampler() {
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     samplerInfo.mipLodBias = 0.0f;
     samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = 0.0f;
+    samplerInfo.maxLod = static_cast<float>(mipLevels_ - 1);
 
     if (vkCreateSampler(context_.device(), &samplerInfo, nullptr, &sampler_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture sampler!");
@@ -242,7 +269,7 @@ void Texture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLa
     barrier.image = image_;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.levelCount = mipLevels_;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
 
@@ -298,6 +325,112 @@ void Texture::copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1,
         &region
+    );
+    context_.endSingleTimeCommands(commandBuffer);
+}
+
+void Texture::generateMipmaps(uint32_t width, uint32_t height) {
+    if (mipLevels_ == 1) {
+        transitionImageLayout(
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
+        return;
+    }
+
+    VkCommandBuffer commandBuffer = context_.beginSingleTimeCommands();
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.levelCount = 1;
+
+    std::int32_t sourceWidth = static_cast<std::int32_t>(width);
+    std::int32_t sourceHeight = static_cast<std::int32_t>(height);
+    for (std::uint32_t level = 1; level < mipLevels_; ++level) {
+        barrier.subresourceRange.baseMipLevel = level - 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            1,
+            &barrier
+        );
+
+        const std::int32_t targetWidth = std::max(1, sourceWidth / 2);
+        const std::int32_t targetHeight = std::max(1, sourceHeight / 2);
+        VkImageBlit blit{};
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.mipLevel = level - 1;
+        blit.srcSubresource.baseArrayLayer = 0;
+        blit.srcSubresource.layerCount = 1;
+        blit.srcOffsets[1] = {sourceWidth, sourceHeight, 1};
+        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.dstSubresource.mipLevel = level;
+        blit.dstSubresource.baseArrayLayer = 0;
+        blit.dstSubresource.layerCount = 1;
+        blit.dstOffsets[1] = {targetWidth, targetHeight, 1};
+        vkCmdBlitImage(
+            commandBuffer,
+            image_,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image_,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &blit,
+            VK_FILTER_LINEAR
+        );
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            1,
+            &barrier
+        );
+
+        sourceWidth = targetWidth;
+        sourceHeight = targetHeight;
+    }
+
+    barrier.subresourceRange.baseMipLevel = mipLevels_ - 1;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &barrier
     );
     context_.endSingleTimeCommands(commandBuffer);
 }

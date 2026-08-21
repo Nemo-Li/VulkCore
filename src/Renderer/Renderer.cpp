@@ -66,6 +66,7 @@ Renderer::~Renderer() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
+    terrainDetailTextures_ = {};
     particleTextures_.clear();
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();

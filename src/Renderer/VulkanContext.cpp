@@ -254,6 +254,12 @@ void VulkanContext::createLogicalDevice() {
     }
 
     VkPhysicalDeviceFeatures deviceFeatures{};
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(physicalDevice_, &supportedFeatures);
+    // Texture samplers use anisotropy when the selected device supports it.
+    // Keeping this optional preserves compatibility with software Vulkan
+    // implementations and older integrated GPUs.
+    deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -473,8 +473,11 @@ void Renderer::createMaterialTextures() {
     materialTextures_.resize(meshData_.materials.size());
     normalTextures_.resize(meshData_.materials.size());
     specularTextures_.resize(meshData_.materials.size());
+    terrainDetailTextures_ = {};
+    terrainDetailTexturesReady_ = false;
     bool needsWhiteFallbackTexture = false;
     bool needsNormalFallbackTexture = false;
+    std::filesystem::path terrainAtlasDirectory;
 
     const auto loadTexture = [this](
         const EmbeddedTextureData& embeddedTexture,
@@ -525,6 +528,10 @@ void Renderer::createMaterialTextures() {
             "specular",
             materialIndex
         );
+        if (material.texturePath.filename() == "terrain_atlas.png" &&
+            materialTextures_[materialIndex] != nullptr) {
+            terrainAtlasDirectory = material.texturePath.parent_path();
+        }
 
         needsWhiteFallbackTexture = needsWhiteFallbackTexture ||
             materialTextures_[materialIndex] == nullptr ||
@@ -545,6 +552,36 @@ void Renderer::createMaterialTextures() {
             1,
             1
         );
+    }
+
+    if (!terrainAtlasDirectory.empty()) {
+        static constexpr std::array<const char*, kTerrainDetailTextureCount> kTerrainDetailNames = {
+            "terrain_grass.png",
+            "terrain_dirt.png",
+            "terrain_rock.png",
+            "terrain_sand.png",
+            "terrain_snow.png",
+            "terrain_mud.png",
+            "terrain_gravel.png",
+            "terrain_ash.png"
+        };
+        terrainDetailTexturesReady_ = true;
+        for (std::size_t index = 0; index < kTerrainDetailTextureCount; ++index) {
+            try {
+                terrainDetailTextures_[index] = std::make_unique<Texture>(
+                    *context_,
+                    terrainAtlasDirectory / kTerrainDetailNames[index]
+                );
+            } catch (const std::exception& error) {
+                terrainDetailTexturesReady_ = false;
+                std::cerr << "warning: failed to load terrain detail texture '"
+                          << kTerrainDetailNames[index] << "': " << error.what() << '\n';
+                break;
+            }
+        }
+        if (!terrainDetailTexturesReady_) {
+            terrainDetailTextures_ = {};
+        }
     }
 }
 
@@ -595,6 +632,8 @@ void Renderer::rebuildMaterialResources() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
+    terrainDetailTextures_ = {};
+    terrainDetailTexturesReady_ = false;
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     descriptorSets_.clear();
@@ -631,7 +670,8 @@ void Renderer::createDescriptorPool() {
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = materialDescriptorCount + particleDescriptorCapacity;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = materialDescriptorCount * 5 + particleDescriptorCapacity;
+    poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity) *
+        (5 + static_cast<uint32_t>(kTerrainDetailTextureCount));
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -697,12 +737,27 @@ void Renderer::createDescriptorSets() {
             imageInfos[2].imageView = specularTexture->imageView();
             imageInfos[2].sampler = specularTexture->sampler();
 
+            std::array<VkDescriptorImageInfo, kTerrainDetailTextureCount>
+                terrainDetailImageInfos{};
+            for (std::size_t detailIndex = 0;
+                 detailIndex < kTerrainDetailTextureCount;
+                 ++detailIndex) {
+                const Texture* detailTexture = terrainDetailTextures_[detailIndex].get();
+                if (detailTexture == nullptr) {
+                    detailTexture = fallbackTexture_.get();
+                }
+                terrainDetailImageInfos[detailIndex].imageLayout =
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                terrainDetailImageInfos[detailIndex].imageView = detailTexture->imageView();
+                terrainDetailImageInfos[detailIndex].sampler = detailTexture->sampler();
+            }
+
             VkDescriptorImageInfo depthImageInfo{};
             depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
-            std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
+            std::array<VkWriteDescriptorSet, 6> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
@@ -742,6 +797,16 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorWrites[4].descriptorCount = 1;
             descriptorWrites[4].pImageInfo = &depthImageInfo;
+
+            descriptorWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[5].dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites[5].dstBinding = 6;
+            descriptorWrites[5].dstArrayElement = 0;
+            descriptorWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[5].descriptorCount = static_cast<uint32_t>(
+                kTerrainDetailTextureCount
+            );
+            descriptorWrites[5].pImageInfo = terrainDetailImageInfos.data();
 
             vkUpdateDescriptorSets(
                 context_->device(),
@@ -993,6 +1058,7 @@ void Renderer::updateUniformBuffer() {
         glm::clamp(sunLightColor_, glm::vec3(0.0f), glm::vec3(1.0f)),
         1.0f
     );
+    ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
 
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
 }
