@@ -16,6 +16,7 @@ namespace VulkCore {
 
 inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
 inline constexpr std::uint32_t kTerrainWaterResolution = 64;
+inline constexpr std::uint32_t kTerrainRenderSampleStride = 2;
 
 struct TerrainMaterialInfo {
     std::uint32_t index = 0;
@@ -62,6 +63,12 @@ public:
         const glm::vec2& worldPosition,
         float worldScale,
         float maximumHeight
+    ) const;
+    std::optional<float> renderedHeightAtWorld(
+        const glm::vec2& worldPosition,
+        float worldScale,
+        float maximumHeight,
+        std::uint32_t sampleStride
     ) const;
 
     // Appends a sampled regular grid to a shared mesh. The stride is applied
@@ -151,9 +158,10 @@ private:
 };
 
 struct TerrainMeshOptions {
-    // Four keeps the 144 supplied LOD4 tiles at a practical editor size
-    // while retaining the source .hght data for future higher detail modes.
-    std::uint32_t sampleStride = 4;
+    // The source tiles are 256x256. A stride of two keeps the generated
+    // terrain practical while reducing the long, visibly planar mountain
+    // faces produced by the previous stride-four mesh.
+    std::uint32_t sampleStride = kTerrainRenderSampleStride;
 };
 
 struct TerrainSceneHeader {
@@ -180,6 +188,7 @@ public:
     std::size_t waterTileCount() const;
 
     std::optional<float> heightAtWorld(const glm::vec2& worldPosition) const;
+    std::optional<float> renderedHeightAtWorld(const glm::vec2& worldPosition) const;
     glm::vec3 centerPosition() const;
 
     TerrainMeshData buildMesh(const TerrainMeshOptions& options = {}) const;

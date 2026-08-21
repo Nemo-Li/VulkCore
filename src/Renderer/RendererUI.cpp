@@ -1197,6 +1197,7 @@ void Renderer::buildImGuiFrame() {
     ImGui::Separator();
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
+    ImGui::TextWrapped("%s", screenshotStatus_.c_str());
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
     ImGui::TextWrapped("The camera looks at the scene origin.");

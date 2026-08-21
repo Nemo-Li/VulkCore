@@ -24,6 +24,7 @@ public:
     VkDeviceSize size() const;
 
     void upload(const void* data, VkDeviceSize dataSize);
+    void download(void* data, VkDeviceSize dataSize) const;
 
 private:
     VulkanContext& context_;

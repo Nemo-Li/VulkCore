@@ -1,8 +1,165 @@
 #include "RendererImplementation.hpp"
 
+#include <ctime>
+
+#include "vulkcore/Utils/Screenshot.hpp"
+
 namespace VulkCore {
 
-void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+void Renderer::ensureScreenshotBuffer() {
+    const VkExtent2D extent = swapChain_->extent();
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::runtime_error("cannot capture a zero-sized swap chain image");
+    }
+
+    const VkDeviceSize requiredSize =
+        static_cast<VkDeviceSize>(extent.width) *
+        static_cast<VkDeviceSize>(extent.height) * 4u;
+    if (screenshotBuffer_ != nullptr && screenshotBufferSize_ >= requiredSize) {
+        return;
+    }
+
+    screenshotBuffer_ = std::make_unique<Buffer>(
+        *context_,
+        requiredSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    screenshotBufferSize_ = requiredSize;
+}
+
+void Renderer::recordScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    if (screenshotBuffer_ == nullptr) {
+        throw std::runtime_error("screenshot buffer has not been initialized");
+    }
+
+    const VkExtent2D extent = swapChain_->extent();
+    VkImageMemoryBarrier imageToTransfer{};
+    imageToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageToTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imageToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    imageToTransfer.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imageToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imageToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageToTransfer.image = swapChain_->image(imageIndex);
+    imageToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageToTransfer.subresourceRange.levelCount = 1;
+    imageToTransfer.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &imageToTransfer
+    );
+
+    VkBufferImageCopy copyRegion{};
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageExtent = {extent.width, extent.height, 1};
+    vkCmdCopyImageToBuffer(
+        commandBuffer,
+        swapChain_->image(imageIndex),
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        screenshotBuffer_->handle(),
+        1,
+        &copyRegion
+    );
+
+    VkImageMemoryBarrier imageToPresent{};
+    imageToPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageToPresent.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    imageToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imageToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imageToPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageToPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageToPresent.image = swapChain_->image(imageIndex);
+    imageToPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageToPresent.subresourceRange.levelCount = 1;
+    imageToPresent.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &imageToPresent
+    );
+}
+
+void Renderer::saveScreenshot() {
+    if (screenshotBuffer_ == nullptr) {
+        throw std::runtime_error("screenshot buffer has not been initialized");
+    }
+
+    const VkExtent2D extent = swapChain_->extent();
+    const std::size_t pixelCount =
+        static_cast<std::size_t>(extent.width) * static_cast<std::size_t>(extent.height);
+    const std::size_t byteCount = pixelCount * 4u;
+    std::vector<std::uint8_t> sourcePixels(byteCount);
+    screenshotBuffer_->download(sourcePixels.data(), byteCount);
+
+    const VkFormat format = swapChain_->imageFormat();
+    const bool isBgra =
+        format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+    const bool isRgba =
+        format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM;
+    if (!isBgra && !isRgba) {
+        throw std::runtime_error("unsupported swap chain format for screenshot");
+    }
+
+    std::vector<std::uint8_t> rgbaPixels(byteCount);
+    if (isRgba) {
+        rgbaPixels = std::move(sourcePixels);
+    } else {
+        for (std::size_t index = 0; index < pixelCount; ++index) {
+            const std::size_t offset = index * 4u;
+            rgbaPixels[offset + 0] = sourcePixels[offset + 2];
+            rgbaPixels[offset + 1] = sourcePixels[offset + 1];
+            rgbaPixels[offset + 2] = sourcePixels[offset + 0];
+            rgbaPixels[offset + 3] = sourcePixels[offset + 3];
+        }
+    }
+
+    const std::filesystem::path directory =
+        std::filesystem::current_path() / "screenshots";
+    std::filesystem::create_directories(directory);
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t timestamp = std::chrono::system_clock::to_time_t(now);
+    const std::tm* localTime = std::localtime(&timestamp);
+    if (localTime == nullptr) {
+        throw std::runtime_error("failed to determine screenshot timestamp");
+    }
+
+    std::ostringstream filename;
+    filename << "vulkcore_"
+             << std::put_time(localTime, "%Y%m%d_%H%M%S")
+             << "_" << screenshotSequence_++ << ".png";
+    const std::filesystem::path path = directory / filename.str();
+    writeRgbaPng(path, extent.width, extent.height, rgbaPixels);
+    const std::filesystem::path absolutePath = std::filesystem::absolute(path);
+    screenshotStatus_ = "Screenshot saved: " + absolutePath.string();
+    std::cerr << screenshotStatus_ << '\n';
+}
+
+void Renderer::recordCommandBuffer(
+    VkCommandBuffer commandBuffer,
+    uint32_t imageIndex,
+    bool captureScreenshot
+) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
@@ -463,6 +620,9 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
     vkCmdEndRenderPass(commandBuffer);
+    if (captureScreenshot) {
+        recordScreenshotCopy(commandBuffer, imageIndex);
+    }
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to record command buffer!");
     }
@@ -497,6 +657,18 @@ void Renderer::drawFrame() {
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
+    const bool screenshotPressed = glfwGetKey(context_->window(), GLFW_KEY_F12) == GLFW_PRESS;
+    const bool screenshotRequested = screenshotPressed && !screenshotKeyDown_;
+    screenshotKeyDown_ = screenshotPressed;
+    const bool captureScreenshot = screenshotRequested && swapChain_->supportsTransferSource();
+    if (screenshotRequested && !swapChain_->supportsTransferSource()) {
+        screenshotStatus_ = "Screenshot unavailable: swap chain does not support readback";
+        std::cerr << "Warning: " << screenshotStatus_ << '\n';
+    }
+    if (captureScreenshot) {
+        ensureScreenshotBuffer();
+    }
+
     buildImGuiFrame();
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
@@ -521,7 +693,7 @@ void Renderer::drawFrame() {
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }
-    recordCommandBuffer(commandBuffers_[currentFrame_], imageIndex);
+    recordCommandBuffer(commandBuffers_[currentFrame_], imageIndex, captureScreenshot);
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -550,6 +722,23 @@ void Renderer::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     const VkResult presentResult = vkQueuePresentKHR(context_->presentQueue(), &presentInfo);
+    if (captureScreenshot) {
+        if (vkWaitForFences(
+                context_->device(),
+                1,
+                &inFlightFences_[currentFrame_],
+                VK_TRUE,
+                UINT64_MAX
+            ) != VK_SUCCESS) {
+            throw std::runtime_error("failed to wait for screenshot frame fence!");
+        }
+        try {
+            saveScreenshot();
+        } catch (const std::exception& error) {
+            screenshotStatus_ = "Screenshot failed: " + std::string(error.what());
+            std::cerr << "Warning: " << screenshotStatus_ << '\n';
+        }
+    }
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
         presentResult == VK_SUBOPTIMAL_KHR ||
         framebufferResized_) {

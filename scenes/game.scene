@@ -4,11 +4,11 @@ player_present 1
 player_spawn_position 937.5 0 -937.5
 water_resource "../assets/terrain/terrain_water"
 sun_present 0
-camera_position 0.224962115 0.00464619882 -0.22616452
+camera_position 0.315652251 0.0433080755 -0.335029662
 ambient_color 0.180000007 0.209999993 0.239999995
 ambient_intensity 1
-sun_light_direction 0.435540557 0.532327354 0.725900888
+sun_light_direction 0.449999988 0.550000012 0.75
 sun_light_color 0.819999993 0.860000014 0.899999976
 sun_light_intensity 1
-shader_demo 0 1 0.5 0.5 0
+shader_demo 0 1 0.25 0.5 0
 node_render 3791650816 0

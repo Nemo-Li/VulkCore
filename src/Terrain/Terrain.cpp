@@ -173,6 +173,57 @@ std::vector<std::uint16_t> loadHeightSamples(const std::filesystem::path& path) 
         const std::uint32_t high = static_cast<unsigned char>(bytes[index * 2 + 1]);
         samples[index] = static_cast<std::uint16_t>(low | (high << 8));
     }
+
+    // A few extracted tiles contain isolated one-sample spikes. They are not
+    // broad cliffs: the center sample is a strict local extremum and differs
+    // substantially from all eight neighbours. Connecting such a point with
+    // triangles creates a needle-like pyramid, and changing mesh stride only
+    // changes how many of those pyramids are visible. Replace only these
+    // unsupported extrema with the neighbourhood median; leave supported
+    // ridges and genuine cliffs untouched.
+    constexpr int kIsolatedSpikeThreshold = 2048; // roughly 25 m at 800 m range
+    constexpr int kNeighbourSupportThreshold = kIsolatedSpikeThreshold / 4;
+    std::vector<std::uint16_t> repairedSamples = samples;
+    for (std::uint32_t z = 1; z + 1 < kTerrainHeightmapResolution; ++z) {
+        for (std::uint32_t x = 1; x + 1 < kTerrainHeightmapResolution; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(z) * kTerrainHeightmapResolution + x;
+            const int center = static_cast<int>(samples[index]);
+            std::array<int, 8> neighbours{};
+            std::size_t neighbourIndex = 0;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    neighbours[neighbourIndex++] = static_cast<int>(samples[
+                        static_cast<std::size_t>(z + dz) * kTerrainHeightmapResolution +
+                        static_cast<std::size_t>(x + dx)
+                    ]);
+                }
+            }
+            std::sort(neighbours.begin(), neighbours.end());
+            const int median = neighbours[neighbours.size() / 2];
+            const int minimum = neighbours.front();
+            const int maximum = neighbours.back();
+            const int deviation = std::abs(center - median);
+            const int supportingNeighbours = static_cast<int>(std::count_if(
+                neighbours.begin(),
+                neighbours.end(),
+                [center](int neighbour) {
+                    return std::abs(neighbour - center) <= kNeighbourSupportThreshold;
+                }
+            ));
+            const bool isolatedExtremum =
+                (center > maximum || center < minimum) &&
+                deviation > kIsolatedSpikeThreshold &&
+                supportingNeighbours == 0;
+            if (isolatedExtremum) {
+                repairedSamples[index] = static_cast<std::uint16_t>(median);
+            }
+        }
+    }
+    samples.swap(repairedSamples);
     return samples;
 }
 
@@ -479,6 +530,104 @@ std::optional<float> TerrainTile::heightAtWorld(
     );
 }
 
+std::optional<float> TerrainTile::renderedHeightAtWorld(
+    const glm::vec2& worldPosition,
+    float worldScale,
+    float maximumHeight,
+    std::uint32_t sampleStride
+) const {
+    if (!containsWorldPoint(worldPosition)) {
+        return std::nullopt;
+    }
+
+    const float worldExtent = worldScale * kTerrainWorldExtentMultiplier;
+    const glm::vec2 worldCenter =
+        metadata_.gridPosition / kTerrainGridSize * worldExtent;
+    const float worldSize = metadata_.areaSize / kTerrainGridSize * worldExtent;
+    if (worldSize <= std::numeric_limits<float>::epsilon()) {
+        return std::nullopt;
+    }
+
+    sampleStride = std::clamp(
+        sampleStride,
+        1u,
+        kTerrainHeightmapResolution - 1
+    );
+    const glm::vec2 normalized = glm::clamp(
+        (worldPosition - (worldCenter - glm::vec2(worldSize * 0.5f))) / worldSize,
+        glm::vec2(0.0f),
+        glm::vec2(1.0f)
+    );
+    const float sampleX = normalized.x *
+        static_cast<float>(kTerrainHeightmapResolution - 1);
+    const float sampleZ = normalized.y *
+        static_cast<float>(kTerrainHeightmapResolution - 1);
+    const std::uint32_t x0 =
+        static_cast<std::uint32_t>(std::floor(sampleX)) / sampleStride * sampleStride;
+    const std::uint32_t z0 =
+        static_cast<std::uint32_t>(std::floor(sampleZ)) / sampleStride * sampleStride;
+    const std::uint32_t x1 = std::min(
+        x0 + sampleStride,
+        kTerrainHeightmapResolution - 1
+    );
+    const std::uint32_t z1 = std::min(
+        z0 + sampleStride,
+        kTerrainHeightmapResolution - 1
+    );
+    const float tx = x1 == x0
+        ? 0.0f
+        : (sampleX - static_cast<float>(x0)) /
+            static_cast<float>(x1 - x0);
+    const float tz = z1 == z0
+        ? 0.0f
+        : (sampleZ - static_cast<float>(z0)) /
+            static_cast<float>(z1 - z0);
+
+    const glm::vec3 first = position(x0, z0, worldScale, maximumHeight);
+    const glm::vec3 second = position(x0, z1, worldScale, maximumHeight);
+    const glm::vec3 third = position(x1, z0, worldScale, maximumHeight);
+    const glm::vec3 fourth = position(x1, z1, worldScale, maximumHeight);
+    const glm::vec3 firstDiagonal = first - fourth;
+    const glm::vec3 secondDiagonal = second - third;
+    const float firstDiagonalLengthSquared = glm::dot(
+        firstDiagonal,
+        firstDiagonal
+    );
+    const float secondDiagonalLengthSquared = glm::dot(
+        secondDiagonal,
+        secondDiagonal
+    );
+    const float diagonalDifference = std::abs(
+        firstDiagonalLengthSquared - secondDiagonalLengthSquared
+    );
+    const float diagonalTolerance = std::max(
+        0.000001f,
+        std::max(firstDiagonalLengthSquared, secondDiagonalLengthSquared) *
+            0.000001f
+    );
+    const std::uint32_t cellX = x0 / sampleStride;
+    const std::uint32_t cellZ = z0 / sampleStride;
+    const bool useFirstDiagonal =
+        firstDiagonalLengthSquared + diagonalTolerance <
+            secondDiagonalLengthSquared ||
+        (diagonalDifference <= diagonalTolerance && ((cellX + cellZ) & 1u) == 0u);
+
+    if (useFirstDiagonal) {
+        if (tz >= tx) {
+            return first.y * (1.0f - tz) +
+                second.y * (tz - tx) + fourth.y * tx;
+        }
+        return first.y * (1.0f - tx) +
+            fourth.y * tz + third.y * (tx - tz);
+    }
+    if (tx + tz <= 1.0f) {
+        return first.y * (1.0f - tx - tz) +
+            second.y * tz + third.y * tx;
+    }
+    return second.y * (1.0f - tx) +
+        fourth.y * (tx + tz - 1.0f) + third.y * (1.0f - tz);
+}
+
 std::uint16_t TerrainTile::sample(std::uint32_t x, std::uint32_t z) const {
     x = std::min(x, kTerrainHeightmapResolution - 1);
     z = std::min(z, kTerrainHeightmapResolution - 1);
@@ -531,6 +680,8 @@ void TerrainTile::appendMesh(
 
     const std::uint32_t rowSize = static_cast<std::uint32_t>(sampleCoordinates.size());
     const std::size_t vertexStart = vertices.size();
+    const float worldExtent = worldScale * kTerrainWorldExtentMultiplier;
+    const float tileWorldSize = metadata_.areaSize / kTerrainGridSize * worldExtent;
     vertices.reserve(vertices.size() +
         static_cast<std::size_t>(rowSize) * rowSize);
     for (const std::uint32_t z : sampleCoordinates) {
@@ -570,7 +721,7 @@ void TerrainTile::appendMesh(
             } else {
                 normal = glm::normalize(normal);
             }
-            vertices.push_back({
+            Vertex vertex{
                 current,
                 normal,
                 glm::vec2(
@@ -585,7 +736,9 @@ void TerrainTile::appendMesh(
                     glm::clamp(metadata_.materialInfo.paletteBias, 0.0f, 1.0f),
                     glm::clamp(metadata_.materialInfo.paletteContrast, 0.2f, 1.63f)
                 )
-            });
+            };
+            vertex.terrainMapping = glm::vec4(tileWorldSize, tileWorldSize, 0.0f, 0.0f);
+            vertices.push_back(vertex);
         }
     }
 
@@ -597,10 +750,49 @@ void TerrainTile::appendMesh(
                 vertexStart + static_cast<std::size_t>(z) * rowSize + x
             );
             const std::uint32_t second = first + rowSize;
-            indices.insert(indices.end(), {
-                first, second, first + 1,
-                second, second + 1, first + 1
-            });
+            const std::uint32_t third = first + 1;
+            const std::uint32_t fourth = second + 1;
+
+            // Always using the same diagonal makes a coarse heightfield read
+            // as a collection of long, straight triangular ridges. Select
+            // the shorter diagonal in 3D so steep local features are split
+            // along the less visible direction. The parity fallback keeps
+            // genuinely equal cells from forming a long repeated diagonal.
+            const glm::vec3 firstDiagonal =
+                vertices[first].position - vertices[fourth].position;
+            const glm::vec3 secondDiagonal =
+                vertices[second].position - vertices[third].position;
+            const float firstDiagonalLengthSquared = glm::dot(
+                firstDiagonal,
+                firstDiagonal
+            );
+            const float secondDiagonalLengthSquared = glm::dot(
+                secondDiagonal,
+                secondDiagonal
+            );
+            const float diagonalDifference = std::abs(
+                firstDiagonalLengthSquared - secondDiagonalLengthSquared
+            );
+            const float diagonalTolerance = std::max(
+                0.000001f,
+                std::max(firstDiagonalLengthSquared, secondDiagonalLengthSquared) *
+                    0.000001f
+            );
+            const bool useFirstDiagonal = firstDiagonalLengthSquared + diagonalTolerance <
+                    secondDiagonalLengthSquared ||
+                (diagonalDifference <= diagonalTolerance && ((x + z) & 1u) == 0u);
+
+            if (useFirstDiagonal) {
+                indices.insert(indices.end(), {
+                    first, second, fourth,
+                    first, fourth, third
+                });
+            } else {
+                indices.insert(indices.end(), {
+                    first, second, third,
+                    second, fourth, third
+                });
+            }
         }
     }
 }
@@ -942,6 +1134,31 @@ std::optional<float> TerrainScene::heightAtWorld(const glm::vec2& worldPosition)
             worldPosition,
             header_.worldScale,
             header_.maximumHeight
+        );
+}
+
+std::optional<float> TerrainScene::renderedHeightAtWorld(
+    const glm::vec2& worldPosition
+) const {
+    const TerrainTile* selectedTile = nullptr;
+    for (const TerrainChunk& chunk : chunks_) {
+        for (const TerrainTile& tile : chunk.tiles()) {
+            if (!tile.containsWorldPoint(worldPosition)) {
+                continue;
+            }
+            if (selectedTile == nullptr ||
+                tile.metadata().lod > selectedTile->metadata().lod) {
+                selectedTile = &tile;
+            }
+        }
+    }
+    return selectedTile == nullptr
+        ? std::nullopt
+        : selectedTile->renderedHeightAtWorld(
+            worldPosition,
+            header_.worldScale,
+            header_.maximumHeight,
+            kTerrainRenderSampleStride
         );
 }
 

@@ -18,6 +18,8 @@ struct Vertex {
     // fields at zero and therefore continue to use the bind-pose position.
     glm::ivec4 boneIndices{0};
     glm::vec4 boneWeights{0.0f};
+    // Optional terrain-only mapping data. Other meshes leave this at zero.
+    glm::vec4 terrainMapping{0.0f};
 
     static VkVertexInputBindingDescription bindingDescription() {
         VkVertexInputBindingDescription description{};
@@ -27,8 +29,8 @@ struct Vertex {
         return description;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 6> attributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 6> descriptions{};
+    static std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 7> descriptions{};
 
         descriptions[0].binding = 0;
         descriptions[0].location = 0;
@@ -59,6 +61,11 @@ struct Vertex {
         descriptions[5].location = 5;
         descriptions[5].format = VK_FORMAT_R32G32B32A32_SFLOAT;
         descriptions[5].offset = offsetof(Vertex, boneWeights);
+
+        descriptions[6].binding = 0;
+        descriptions[6].location = 6;
+        descriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        descriptions[6].offset = offsetof(Vertex, terrainMapping);
 
         return descriptions;
     }

@@ -482,7 +482,7 @@ void Renderer::appendPlayerToScene() {
 
     const CapsuleMeshData capsule = createCapsuleMesh(
         PlayerController::kBotwLinkHeight,
-        0.27f
+        PlayerController::kBotwLinkRadius
     );
     if (capsule.vertices.empty() || capsule.indices.empty()) {
         throw std::runtime_error("player capsule mesh contains no renderable triangles");
@@ -525,11 +525,15 @@ void Renderer::appendPlayerToScene() {
     playerNode.globalTransform = glm::mat4(1.0f);
     playerNode.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
     playerNode.hasBounds = true;
-    playerNode.boundsMinimum = spawnPosition + glm::vec3(-0.27f, 0.0f, -0.27f);
+    playerNode.boundsMinimum = spawnPosition + glm::vec3(
+        -PlayerController::kBotwLinkRadius,
+        0.0f,
+        -PlayerController::kBotwLinkRadius
+    );
     playerNode.boundsMaximum = spawnPosition + glm::vec3(
-        0.27f,
+        PlayerController::kBotwLinkRadius,
         PlayerController::kBotwLinkHeight,
-        0.27f
+        PlayerController::kBotwLinkRadius
     );
     meshData_.parts.push_back({
         indexOffset,
@@ -556,10 +560,10 @@ void Renderer::updatePlayerController(float deltaSeconds) {
         io.WantCaptureKeyboard && editingUiItem,
         io.WantCaptureMouse && (editingUiItem || hoveringUiItem)
     );
-    updatePlayerCamera();
+    updatePlayerCamera(deltaSeconds);
 }
 
-void Renderer::updatePlayerCamera() {
+void Renderer::updatePlayerCamera(float deltaSeconds) {
     if (!terrainScene_ || !playerController_.active()) {
         cameraTarget_ = glm::vec3(0.0f);
         return;
@@ -569,7 +573,7 @@ void Renderer::updatePlayerCamera() {
         playerController_.cameraTargetWorld() - modelCenter_
     );
     cameraPosition_ = safeScale * (
-        playerController_.cameraPositionWorld() - modelCenter_
+        playerController_.cameraPositionWorld(*terrainScene_, deltaSeconds) - modelCenter_
     );
     cameraBasisInitialized_ = false;
 }

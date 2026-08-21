@@ -6,6 +6,7 @@
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace VulkCore {
@@ -16,9 +17,83 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMovementSpeed = 4.5f;
 constexpr float kGravity = 18.0f;
 constexpr float kJumpSpeed = 6.2f;
+constexpr float kPlayerTerrainClearance = 0.025f;
+constexpr float kPlayerGroundSnapDistance = 0.35f;
 constexpr float kMouseSensitivity = 0.006f;
 constexpr float kCameraDistance = 5.0f;
 constexpr float kCameraTargetHeight = 0.92f;
+constexpr float kCameraTerrainClearance = 0.75f;
+constexpr float kCameraTerrainProbeRadius = 0.45f;
+constexpr float kCameraTerrainRetreat = 0.35f;
+constexpr float kMinimumCameraDistance = 1.25f;
+constexpr int kCameraTerrainCollisionSamples = 80;
+constexpr float kCameraDistanceRecoverySpeed = 3.0f;
+constexpr float kCameraHeightRecoverySpeed = 4.0f;
+
+std::optional<float> maximumTerrainHeightNear(
+    const TerrainScene& terrain,
+    const glm::vec2& position,
+    float radius
+) {
+    constexpr float kDiagonal = 0.70710678118f;
+    static const std::array<glm::vec2, 9> kProbeDirections{
+        glm::vec2(0.0f, 0.0f),
+        glm::vec2(1.0f, 0.0f),
+        glm::vec2(-1.0f, 0.0f),
+        glm::vec2(0.0f, 1.0f),
+        glm::vec2(0.0f, -1.0f),
+        glm::vec2(kDiagonal, kDiagonal),
+        glm::vec2(-kDiagonal, kDiagonal),
+        glm::vec2(kDiagonal, -kDiagonal),
+        glm::vec2(-kDiagonal, -kDiagonal)
+    };
+
+    std::optional<float> maximumHeight;
+    for (const glm::vec2& direction : kProbeDirections) {
+        const std::optional<float> height = terrain.renderedHeightAtWorld(
+            position + direction * radius
+        );
+        if (height.has_value() &&
+            (!maximumHeight.has_value() || *height > *maximumHeight)) {
+            maximumHeight = height;
+        }
+    }
+    return maximumHeight;
+}
+
+std::optional<float> playerGroundHeight(
+    const TerrainScene& terrain,
+    const glm::vec2& position
+) {
+    std::optional<float> maximumHeight = terrain.renderedHeightAtWorld(position);
+    constexpr int kDirectionCount = 16;
+    constexpr int kRingCount = 2;
+    for (int ring = 1; ring <= kRingCount; ++ring) {
+        const float radius = PlayerController::kBotwLinkRadius *
+            static_cast<float>(ring) / static_cast<float>(kRingCount);
+        for (int directionIndex = 0;
+             directionIndex < kDirectionCount;
+             ++directionIndex) {
+            const float angle = 2.0f * kPi *
+                static_cast<float>(directionIndex) /
+                static_cast<float>(kDirectionCount);
+            const glm::vec2 probePosition = position + radius * glm::vec2(
+                std::cos(angle),
+                std::sin(angle)
+            );
+            const std::optional<float> height =
+                terrain.renderedHeightAtWorld(probePosition);
+            if (height.has_value() &&
+                (!maximumHeight.has_value() || *height > *maximumHeight)) {
+                maximumHeight = height;
+            }
+        }
+    }
+    if (maximumHeight.has_value()) {
+        *maximumHeight += kPlayerTerrainClearance;
+    }
+    return maximumHeight;
+}
 
 } // namespace
 
@@ -128,6 +203,9 @@ void PlayerController::clear() {
     spawnPosition_ = glm::vec3(0.0f);
     position_ = glm::vec3(0.0f);
     velocity_ = glm::vec3(0.0f);
+    cameraCollisionStateInitialized_ = false;
+    cameraDistanceFraction_ = 1.0f;
+    cameraHeightOffset_ = 0.0f;
 }
 
 void PlayerController::reset(
@@ -136,16 +214,15 @@ void PlayerController::reset(
 ) {
     spawnPosition_ = terrain.centerPosition();
     if (spawnPosition.has_value()) {
-        const std::optional<float> groundHeight = terrain.heightAtWorld(
-            glm::vec2(spawnPosition->x, spawnPosition->z)
-        );
-        if (groundHeight.has_value()) {
-            spawnPosition_ = glm::vec3(
-                spawnPosition->x,
-                *groundHeight,
-                spawnPosition->z
-            );
-        }
+        spawnPosition_.x = spawnPosition->x;
+        spawnPosition_.z = spawnPosition->z;
+    }
+    const std::optional<float> groundHeight = playerGroundHeight(
+        terrain,
+        glm::vec2(spawnPosition_.x, spawnPosition_.z)
+    );
+    if (groundHeight.has_value()) {
+        spawnPosition_.y = *groundHeight;
     }
     position_ = spawnPosition_;
     velocity_ = glm::vec3(0.0f);
@@ -154,6 +231,9 @@ void PlayerController::reset(
     lookDragging_ = false;
     yawRadians_ = 0.0f;
     pitchRadians_ = -0.28f;
+    cameraCollisionStateInitialized_ = false;
+    cameraDistanceFraction_ = 1.0f;
+    cameraHeightOffset_ = 0.0f;
     active_ = true;
 }
 
@@ -176,6 +256,7 @@ void PlayerController::update(
         return;
     }
     deltaSeconds = std::clamp(deltaSeconds, 0.0f, 0.1f);
+    const bool groundedAtFrameStart = grounded_;
 
     if (window != nullptr && !mouseCaptured &&
         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
@@ -220,15 +301,23 @@ void PlayerController::update(
 
     velocity_.y -= kGravity * deltaSeconds;
     position_.y += velocity_.y * deltaSeconds;
-    const auto groundHeight = terrain.heightAtWorld(glm::vec2(position_.x, position_.z));
+    const std::optional<float> groundHeight = playerGroundHeight(
+        terrain,
+        glm::vec2(position_.x, position_.z)
+    );
     if (groundHeight.has_value()) {
-        if (position_.y <= *groundHeight) {
+        const bool canSnapDownToGround = groundedAtFrameStart &&
+            velocity_.y <= 0.0f &&
+            position_.y - *groundHeight <= kPlayerGroundSnapDistance;
+        if (position_.y <= *groundHeight || canSnapDownToGround) {
             position_.y = *groundHeight;
             velocity_.y = 0.0f;
             grounded_ = true;
         } else {
             grounded_ = false;
         }
+    } else {
+        grounded_ = false;
     }
 }
 
@@ -236,12 +325,152 @@ glm::vec3 PlayerController::cameraTargetWorld() const {
     return position_ + glm::vec3(0.0f, kCameraTargetHeight, 0.0f);
 }
 
-glm::vec3 PlayerController::cameraPositionWorld() const {
+glm::vec3 PlayerController::cameraPositionWorld(
+    const TerrainScene& terrain,
+    float deltaSeconds
+) {
+    deltaSeconds = std::clamp(deltaSeconds, 0.0f, 0.1f);
+    const glm::vec3 cameraTarget = cameraTargetWorld();
     const glm::vec3 viewDirection = glm::normalize(
         horizontalForward() * std::cos(pitchRadians_) +
         glm::vec3(0.0f, std::sin(pitchRadians_), 0.0f)
     );
-    return cameraTargetWorld() - viewDirection * kCameraDistance;
+    const glm::vec3 orbitalCameraPosition =
+        cameraTarget - viewDirection * kCameraDistance;
+    glm::vec3 desiredCameraPosition = orbitalCameraPosition;
+
+    // Treat the camera as a volume rather than a point. The surrounding probes
+    // cover the near plane and conservatively bridge differences between the
+    // height samples and the rendered terrain triangles at sharp cliff edges.
+    const std::optional<float> endpointTerrainHeight = maximumTerrainHeightNear(
+        terrain,
+        glm::vec2(desiredCameraPosition.x, desiredCameraPosition.z),
+        kCameraTerrainProbeRadius
+    );
+    if (endpointTerrainHeight.has_value()) {
+        desiredCameraPosition.y = std::max(
+            desiredCameraPosition.y,
+            *endpointTerrainHeight + kCameraTerrainClearance
+        );
+    }
+
+    // Find the first obstruction along the camera arm. Retracting to the near
+    // side of a cliff prevents the camera from appearing beyond the wall even
+    // when the desired endpoint itself is over valid terrain.
+    float firstCollisionT = 1.0f;
+    for (int sampleIndex = 1;
+         sampleIndex <= kCameraTerrainCollisionSamples;
+         ++sampleIndex) {
+        const float t = static_cast<float>(sampleIndex) /
+            static_cast<float>(kCameraTerrainCollisionSamples);
+        const glm::vec3 samplePosition = glm::mix(
+            cameraTarget,
+            desiredCameraPosition,
+            t
+        );
+        const std::optional<float> terrainHeight = maximumTerrainHeightNear(
+            terrain,
+            glm::vec2(samplePosition.x, samplePosition.z),
+            kCameraTerrainProbeRadius * t
+        );
+        if (terrainHeight.has_value() &&
+            samplePosition.y < *terrainHeight + kCameraTerrainClearance) {
+            firstCollisionT = t;
+            break;
+        }
+    }
+
+    const float collisionDistanceFraction = firstCollisionT < 1.0f
+        ? std::clamp(
+            firstCollisionT - kCameraTerrainRetreat / kCameraDistance,
+            kMinimumCameraDistance / kCameraDistance,
+            1.0f
+        )
+        : 1.0f;
+    const bool initializeCameraState = !cameraCollisionStateInitialized_;
+    if (initializeCameraState ||
+        collisionDistanceFraction < cameraDistanceFraction_) {
+        // Retraction remains immediate so smoothing can never carry the camera
+        // through a newly encountered wall.
+        cameraDistanceFraction_ = collisionDistanceFraction;
+    } else {
+        // Recovery is deliberately slower and one-directional. This prevents
+        // neighboring cliff probes from alternating between a short and long
+        // camera arm while the player moves along an edge.
+        const float recoveryBlend = 1.0f - std::exp(
+            -kCameraDistanceRecoverySpeed * deltaSeconds
+        );
+        cameraDistanceFraction_ = glm::mix(
+            cameraDistanceFraction_,
+            collisionDistanceFraction,
+            recoveryBlend
+        );
+    }
+    const glm::vec3 retractedCameraPosition = glm::mix(
+        cameraTarget,
+        desiredCameraPosition,
+        cameraDistanceFraction_
+    );
+    glm::vec3 requiredCameraPosition = retractedCameraPosition;
+
+    // A very close obstruction can force the minimum camera distance to overlap
+    // a steep slope. Raise the retracted arm as a final guarantee that its full
+    // collision volume remains above the terrain.
+    for (int sampleIndex = 1;
+         sampleIndex <= kCameraTerrainCollisionSamples;
+         ++sampleIndex) {
+        const float t = static_cast<float>(sampleIndex) /
+            static_cast<float>(kCameraTerrainCollisionSamples);
+        const glm::vec3 samplePosition = glm::mix(
+            cameraTarget,
+            retractedCameraPosition,
+            t
+        );
+        const std::optional<float> terrainHeight = maximumTerrainHeightNear(
+            terrain,
+            glm::vec2(samplePosition.x, samplePosition.z),
+            kCameraTerrainProbeRadius * t
+        );
+        if (!terrainHeight.has_value()) {
+            continue;
+        }
+        const float requiredSampleHeight =
+            *terrainHeight + kCameraTerrainClearance;
+        if (samplePosition.y < requiredSampleHeight) {
+            requiredCameraPosition.y = std::max(
+                requiredCameraPosition.y,
+                retractedCameraPosition.y +
+                    (requiredSampleHeight - samplePosition.y) / t
+            );
+        }
+    }
+
+    const glm::vec3 orbitalCameraAtDistance = glm::mix(
+        cameraTarget,
+        orbitalCameraPosition,
+        cameraDistanceFraction_
+    );
+    const float requiredHeightOffset = std::max(
+        0.0f,
+        requiredCameraPosition.y - orbitalCameraAtDistance.y
+    );
+    if (initializeCameraState || requiredHeightOffset > cameraHeightOffset_) {
+        cameraHeightOffset_ = requiredHeightOffset;
+    } else {
+        const float recoveryBlend = 1.0f - std::exp(
+            -kCameraHeightRecoverySpeed * deltaSeconds
+        );
+        cameraHeightOffset_ = glm::mix(
+            cameraHeightOffset_,
+            requiredHeightOffset,
+            recoveryBlend
+        );
+    }
+    cameraCollisionStateInitialized_ = true;
+
+    glm::vec3 cameraPosition = orbitalCameraAtDistance;
+    cameraPosition.y += cameraHeightOffset_;
+    return cameraPosition;
 }
 
 } // namespace VulkCore

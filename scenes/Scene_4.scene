@@ -4,7 +4,7 @@ sun_present 0
 camera_position 0 0 5.80000019
 ambient_color 0.180000007 0.209999993 0.239999995
 ambient_intensity 1
-sun_light_direction 0.449999988 0.550000012 0.75
+sun_light_direction 0.435540497 0.532327294 0.725900829
 sun_light_color 0.819999993 0.860000014 0.899999976
 sun_light_intensity 1
 shader_demo 0 1 0.5 0.5 0

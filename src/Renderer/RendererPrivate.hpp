@@ -66,7 +66,7 @@ struct PostProcessDemo {
 // These modes mirror the screen-space chapters in 3D Game Shaders For
 // Beginners. They intentionally share one full-screen pipeline so switching
 // demos is immediate and does not rebuild Vulkan objects at run time.
-constexpr std::array<PostProcessDemo, 22> kPostProcessDemos = {{
+constexpr std::array<PostProcessDemo, 23> kPostProcessDemos = {{
     {"Render to Texture (original)", "Displays the off-screen color target without modification.", 1.0f, 0.5f},
     {"Fog", "Reconstructs view depth and blends distant pixels into atmospheric color.", 0.75f, 0.45f},
     {"Box Blur", "A square neighborhood blur with an adjustable sampling radius.", 1.0f, 0.35f},
@@ -79,7 +79,7 @@ constexpr std::array<PostProcessDemo, 22> kPostProcessDemos = {{
     {"Screen-space Reflection", "Reflects nearby screen color using a depth-aware vertical trace.", 0.75f, 0.5f},
     {"Screen-space Refraction", "Distorts the scene with an animated refractive field.", 0.65f, 0.45f},
     {"Outlining", "Detects color and depth discontinuities to draw contours.", 0.9f, 0.45f},
-    {"Depth of Field", "Blurs pixels away from the selected focus depth.", 0.9f, 0.5f},
+    {"Depth of Field", "Blurs pixels away from the selected focus depth.", 1.0f, 0.25f},
     {"Posterization", "Quantizes the color range into a small number of graphic bands.", 1.0f, 0.45f},
     {"Pixelization", "Samples the scene on an adjustable coarse pixel grid.", 1.0f, 0.45f},
     {"Sharpen", "Boosts local contrast with a five-tap sharpening kernel.", 0.85f, 0.45f},
@@ -89,6 +89,7 @@ constexpr std::array<PostProcessDemo, 22> kPostProcessDemos = {{
     {"Gamma Correction", "Applies an adjustable display gamma transfer function.", 1.0f, 0.45f},
     {"Deferred Depth Buffer", "Visualizes the sampled depth attachment used by later passes.", 1.0f, 0.5f},
     {"Deferred Edge Buffer", "Visualizes depth-derived geometry edges as a G-buffer diagnostic.", 1.0f, 0.5f},
+    {"Distant Blur", "Gradually blurs geometry as its reconstructed view distance increases.", 0.9f, 0.45f},
 }};
 
 struct SurfaceShaderDemo {

@@ -62,6 +62,7 @@ Renderer::~Renderer() {
     shutdownImGui();
     swapChain_->cleanupFramebuffers();
     destroySceneRenderResources();
+    screenshotBuffer_.reset();
     uniformBuffers_.clear();
     materialTextures_.clear();
     normalTextures_.clear();
