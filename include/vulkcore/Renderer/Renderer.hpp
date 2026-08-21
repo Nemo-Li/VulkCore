@@ -143,6 +143,7 @@ private:
     void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
+    void updateCameraBasis();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
     void drawResourceModelHierarchy(const ModelNode& node);
@@ -246,6 +247,10 @@ private:
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
     glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
+    glm::vec3 cameraForward_{0.0f, 0.0f, -1.0f};
+    glm::vec3 cameraRight_{1.0f, 0.0f, 0.0f};
+    glm::vec3 cameraUp_{0.0f, 1.0f, 0.0f};
+    bool cameraBasisInitialized_ = false;
     glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
     float ambientLightIntensity_ = 1.0f;
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};

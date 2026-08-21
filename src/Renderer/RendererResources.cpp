@@ -882,6 +882,55 @@ void Renderer::updateSceneTextureDescriptors() {
     }
 }
 
+void Renderer::updateCameraBasis() {
+    constexpr float kMinimumCameraDistance = 0.05f;
+    constexpr float kMinimumBasisLength = 0.0001f;
+    const glm::vec3 cameraTarget(0.0f);
+    glm::vec3 targetDelta = cameraTarget - cameraPosition_;
+    if (glm::length(targetDelta) < kMinimumCameraDistance) {
+        cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
+        targetDelta = cameraTarget - cameraPosition_;
+        cameraBasisInitialized_ = false;
+    }
+
+    cameraForward_ = glm::normalize(targetDelta);
+
+    if (!cameraBasisInitialized_) {
+        // Use the renderer's Z-up convention to initialize ordinary views.
+        // At the exact pole the position alone does not define camera roll,
+        // so retain the historical front-view orientation as the initial one.
+        glm::vec3 initialUp = glm::vec3(0.0f, 0.0f, 1.0f) -
+            cameraForward_ * glm::dot(glm::vec3(0.0f, 0.0f, 1.0f), cameraForward_);
+        if (glm::length(initialUp) < kMinimumBasisLength) {
+            initialUp = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+        cameraUp_ = glm::normalize(initialUp);
+        cameraBasisInitialized_ = true;
+    } else {
+        // Keep the previous roll and project the previous up direction onto
+        // the new view plane. This makes camera position edits continuous,
+        // including when the view crosses the old 0.99 threshold.
+        glm::vec3 continuousUp = cameraUp_ -
+            cameraForward_ * glm::dot(cameraUp_, cameraForward_);
+        if (glm::length(continuousUp) < kMinimumBasisLength) {
+            // If the previous up direction is parallel to the new forward
+            // direction, the previous right direction is still a valid
+            // continuous reference for the new camera roll.
+            continuousUp = cameraRight_ -
+                cameraForward_ * glm::dot(cameraRight_, cameraForward_);
+        }
+        if (glm::length(continuousUp) < kMinimumBasisLength) {
+            // Defensive fallback for a discontinuous external camera jump.
+            continuousUp = glm::vec3(0.0f, 1.0f, 0.0f) -
+                cameraForward_ * glm::dot(glm::vec3(0.0f, 1.0f, 0.0f), cameraForward_);
+        }
+        cameraUp_ = glm::normalize(continuousUp);
+    }
+
+    cameraRight_ = glm::normalize(glm::cross(cameraForward_, cameraUp_));
+    cameraUp_ = glm::normalize(glm::cross(cameraRight_, cameraForward_));
+}
+
 void Renderer::updateUniformBuffer() {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
@@ -900,11 +949,7 @@ void Renderer::updateUniformBuffer() {
     ubo.model = modelNormalization;
     ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
     const glm::vec3 cameraTarget(0.0f);
-    const glm::vec3 cameraForward = glm::normalize(cameraTarget - cameraPosition_);
-    const glm::vec3 worldUp = std::abs(glm::dot(cameraForward, glm::vec3(0.0f, 0.0f, 1.0f))) > 0.99f
-        ? glm::vec3(0.0f, 1.0f, 0.0f)
-        : glm::vec3(0.0f, 0.0f, 1.0f);
-    ubo.view = glm::lookAt(cameraPosition_, cameraTarget, worldUp);
+    ubo.view = glm::lookAt(cameraPosition_, cameraTarget, cameraUp_);
 
     const VkExtent2D extent = swapChain_->extent();
     if (extent.height == 0) {
