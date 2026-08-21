@@ -87,6 +87,10 @@ VkImage SwapChain::image(uint32_t imageIndex) const {
     return images_[imageIndex];
 }
 
+bool SwapChain::supportsTransferSource() const {
+    return transferSourceSupported_;
+}
+
 VkImage SwapChain::depthImage() const {
     return depthImage_;
 }
@@ -117,6 +121,11 @@ void SwapChain::createSwapChain() {
     createInfo.imageUsage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
         VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    transferSourceSupported_ = (support.capabilities.supportedUsageFlags &
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (transferSourceSupported_) {
+        createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
 
     const QueueFamilyIndices indices = context_.findQueueFamilies(context_.physicalDevice());
     const uint32_t queueFamilyIndices[] = {
@@ -266,6 +275,8 @@ void SwapChain::cleanup() {
         vkDestroyImageView(context_.device(), imageView, nullptr);
     }
     imageViews_.clear();
+
+    transferSourceSupported_ = false;
 
     if (swapChain_ != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(context_.device(), swapChain_, nullptr);

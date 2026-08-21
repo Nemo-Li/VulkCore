@@ -5,6 +5,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 layout(location = 4) in float fragTerrainHeight;
+layout(location = 5) in vec2 fragTerrainTileSize;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 model;
@@ -50,6 +51,30 @@ vec3 sampleDetailLandform(int index, vec2 uv) {
     return texture(terrainDetailTextures[index], fract(uv)).rgb;
 }
 
+vec3 sampleLandformTriplanar(
+    int index,
+    vec2 uvX,
+    vec2 uvY,
+    vec2 uvZ,
+    vec3 weights
+) {
+    return sampleLandform(index, uvX) * weights.x +
+        sampleLandform(index, uvY) * weights.y +
+        sampleLandform(index, uvZ) * weights.z;
+}
+
+vec3 sampleDetailLandformTriplanar(
+    int index,
+    vec2 uvX,
+    vec2 uvY,
+    vec2 uvZ,
+    vec3 weights
+) {
+    return sampleDetailLandform(index, uvX) * weights.x +
+        sampleDetailLandform(index, uvY) * weights.y +
+        sampleDetailLandform(index, uvZ) * weights.z;
+}
+
 float waveNoise(vec2 position) {
     float first = sin(position.x * 0.0017 + sin(position.y * 0.0021));
     float second = sin(position.y * 0.0031 + sin(position.x * 0.0013));
@@ -72,7 +97,36 @@ void main() {
     // tile/mesh extent and follows the TSCB scale in terrain world units.
     float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
     vec2 atlasUv = fragTexCoord * textureScale * 12.0;
-    vec2 detailUv = (fragWorldPosition.xz / sceneScale) * textureScale;
+    vec3 terrainPosition = fragWorldPosition / sceneScale;
+    vec2 detailUv = terrainPosition.xz * textureScale;
+
+    // A heightfield's XZ UV is degenerate on a vertical face: movement along
+    // Y changes the geometry but does not change the UV. Blend projections
+    // from all three axes so cliff faces get stable texel density as well.
+    vec3 projectionWeights = pow(abs(normal), vec3(4.0));
+    projectionWeights /= max(
+        dot(projectionWeights, vec3(1.0)),
+        0.0001
+    );
+    vec2 detailUvX = terrainPosition.zy * textureScale;
+    vec2 detailUvY = detailUv;
+    vec2 detailUvZ = terrainPosition.xy * textureScale;
+
+    // The atlas UV remains continuous with the existing top-down mapping.
+    // Its side projections use the actual tile size so the lower-resolution
+    // LOD does not stretch vertically or change density between tile sizes.
+    vec2 atlasWorldFrequency = 12.0 / max(fragTerrainTileSize, vec2(0.0001));
+    float atlasVerticalFrequency = sqrt(
+        max(atlasWorldFrequency.x * atlasWorldFrequency.y, 0.0001)
+    );
+    vec3 atlasProjectionPosition = terrainPosition * vec3(
+        atlasWorldFrequency.x,
+        atlasVerticalFrequency,
+        atlasWorldFrequency.y
+    );
+    vec2 atlasUvX = atlasProjectionPosition.zy * textureScale;
+    vec2 atlasUvY = atlasUv;
+    vec2 atlasUvZ = atlasProjectionPosition.xy * textureScale;
     float materialBias = clamp(fragVertexColor.z, 0.0, 1.0);
     float materialContrast = mix(0.7, 1.35, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
     float regionalNoise = waveNoise(fragWorldPosition.xz * (0.7 + materialContrast * 0.3));
@@ -108,14 +162,14 @@ void main() {
     dirt /= totalWeight;
 
     vec3 atlasAlbedo =
-        sampleLandform(0, atlasUv) * grass +
-        sampleLandform(1, atlasUv) * dirt +
-        sampleLandform(2, atlasUv) * rock +
-        sampleLandform(3, atlasUv) * sand +
-        sampleLandform(4, atlasUv) * snow +
-        sampleLandform(5, atlasUv) * mud +
-        sampleLandform(6, atlasUv) * gravel +
-        sampleLandform(7, atlasUv) * ash;
+        sampleLandformTriplanar(0, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * grass +
+        sampleLandformTriplanar(1, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * dirt +
+        sampleLandformTriplanar(2, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * rock +
+        sampleLandformTriplanar(3, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * sand +
+        sampleLandformTriplanar(4, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * snow +
+        sampleLandformTriplanar(5, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * mud +
+        sampleLandformTriplanar(6, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * gravel +
+        sampleLandformTriplanar(7, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * ash;
 
     vec3 albedo = atlasAlbedo;
     if ((material.textureFlags & 8u) != 0u) {
@@ -138,21 +192,25 @@ void main() {
         // representations to avoid a visible texture pop.
         if (detailBlend > 0.001) {
             vec3 detailAlbedo =
-                sampleDetailLandform(0, detailUv) * grass +
-                sampleDetailLandform(1, detailUv) * dirt +
-                sampleDetailLandform(2, detailUv) * rock +
-                sampleDetailLandform(3, detailUv) * sand +
-                sampleDetailLandform(4, detailUv) * snow +
-                sampleDetailLandform(5, detailUv) * mud +
-                sampleDetailLandform(6, detailUv) * gravel +
-                sampleDetailLandform(7, detailUv) * ash;
+                sampleDetailLandformTriplanar(0, detailUvX, detailUvY, detailUvZ, projectionWeights) * grass +
+                sampleDetailLandformTriplanar(1, detailUvX, detailUvY, detailUvZ, projectionWeights) * dirt +
+                sampleDetailLandformTriplanar(2, detailUvX, detailUvY, detailUvZ, projectionWeights) * rock +
+                sampleDetailLandformTriplanar(3, detailUvX, detailUvY, detailUvZ, projectionWeights) * sand +
+                sampleDetailLandformTriplanar(4, detailUvX, detailUvY, detailUvZ, projectionWeights) * snow +
+                sampleDetailLandformTriplanar(5, detailUvX, detailUvY, detailUvZ, projectionWeights) * mud +
+                sampleDetailLandformTriplanar(6, detailUvX, detailUvY, detailUvZ, projectionWeights) * gravel +
+                sampleDetailLandformTriplanar(7, detailUvX, detailUvY, detailUvZ, projectionWeights) * ash;
             albedo = mix(atlasAlbedo, detailAlbedo, detailBlend);
         }
     }
 
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float diffuseFactor = max(dot(normal, lightDirection), 0.0);
-    float lightBand = floor(diffuseFactor * 3.0) / 3.0;
+    // Quantizing diffuse light into three broad bands makes every geometric
+    // triangle read as a hard triangular patch, especially on distant hills.
+    // Keep the terrain lighting continuous so the remaining geometry is not
+    // visually amplified by the stylized light bands.
+    float lightBand = diffuseFactor;
     vec3 ambientLight = max(ubo.ambientLight.rgb, vec3(0.0)) *
         max(ubo.ambientLight.a, 0.0);
     vec3 diffuseLight = max(ubo.sunLightColor.rgb, vec3(0.0)) *

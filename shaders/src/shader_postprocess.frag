@@ -31,6 +31,15 @@ float sampleDepth(vec2 uv) {
     return texture(sceneDepthTexture, clamp(uv, vec2(0.001), vec2(0.999))).r;
 }
 
+float viewDistanceFromDepth(float depth) {
+    // For the perspective matrix used by the renderer, clip-space z is:
+    //   z_ndc = -projection[2][2] - projection[3][2] / viewZ
+    // Solving this avoids an inverse matrix per fragment and keeps the blur
+    // threshold in scene/view units instead of the non-linear depth range.
+    float denominator = -ubo.projection[2][2] - depth;
+    return abs(ubo.projection[3][2] / max(abs(denominator), 0.000001));
+}
+
 float luminance(vec3 color) {
     return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
@@ -107,6 +116,7 @@ void main() {
     const uint GAMMA = 19u;
     const uint DEPTH = 20u;
     const uint EDGE = 21u;
+    const uint DISTANT_BLUR = 22u;
 
     if (settings.effect == FOG) {
         float fog = smoothstep(0.18, mix(0.55, 0.98, parameter), depth) * strength;
@@ -166,9 +176,32 @@ void main() {
         float edge = max(depthEdge(uv), luminance(abs(original - neighborhoodAverage(uv, 1.0))));
         color = mix(original, vec3(0.015, 0.025, 0.04), smoothstep(0.12, 0.65, edge) * strength);
     } else if (settings.effect == DOF) {
-        float focus = mix(0.18, 0.92, parameter);
-        float blur = smoothstep(0.025, 0.28, abs(depth - focus)) * strength;
-        color = mix(original, blur5(uv, 1.0 + blur * 5.0), blur);
+        // Depth-buffer values are non-linear and become almost identical at
+        // the far end of this scene's very large view range. Use reconstructed
+        // view distance so a far object is actually treated as out of focus.
+        float viewDistance = viewDistanceFromDepth(depth);
+        float focusDistance = mix(0.3, 1.25, parameter);
+        float focusRange = mix(0.06, 0.22, parameter);
+        float defocus = smoothstep(
+            focusRange,
+            focusRange * 3.5,
+            abs(viewDistance - focusDistance)
+        );
+        float blur = clamp(defocus * strength, 0.0, 1.0);
+        // Use a wider footprint for distant terrain silhouettes. The blur is
+        // still zero inside the focus range, so this does not soften nearby
+        // gameplay geometry.
+        float blurRadius = mix(8.0, 18.0, parameter) * blur;
+        color = mix(original, neighborhoodAverage(uv, 1.0 + blurRadius), blur);
+    } else if (settings.effect == DISTANT_BLUR) {
+        float viewDistance = viewDistanceFromDepth(depth);
+        float blurStart = mix(0.45, 1.0, parameter);
+        float blurEnd = blurStart + mix(0.45, 0.9, parameter);
+        float blur = smoothstep(blurStart, blurEnd, viewDistance) * strength;
+        // Do not smear the clear color into the horizon. Rendered geometry
+        // can still reach the far plane, so only exclude an exact depth clear.
+        blur *= 1.0 - step(1.0, depth);
+        color = mix(original, blur5(uv, 1.0 + blur * 8.0), blur);
     } else if (settings.effect == POSTERIZE) {
         float levels = mix(2.0, 12.0, parameter);
         color = floor(original * levels + 0.5) / levels;

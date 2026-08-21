@@ -29,6 +29,7 @@ class TerrainScene;
 class PlayerController {
 public:
     static constexpr float kBotwLinkHeight = 1.58f;
+    static constexpr float kBotwLinkRadius = 0.27f;
 
     void clear();
     void reset(
@@ -47,7 +48,7 @@ public:
     const glm::vec3& position() const { return position_; }
     const glm::vec3& spawnPosition() const { return spawnPosition_; }
     glm::vec3 cameraTargetWorld() const;
-    glm::vec3 cameraPositionWorld() const;
+    glm::vec3 cameraPositionWorld(const TerrainScene& terrain, float deltaSeconds);
 
 private:
     glm::vec3 horizontalForward() const;
@@ -63,6 +64,9 @@ private:
     glm::vec3 velocity_{0.0f};
     float yawRadians_ = 0.0f;
     float pitchRadians_ = -0.28f;
+    bool cameraCollisionStateInitialized_ = false;
+    float cameraDistanceFraction_ = 1.0f;
+    float cameraHeightOffset_ = 0.0f;
 };
 
 } // namespace VulkCore

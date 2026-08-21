@@ -89,4 +89,24 @@ void Buffer::upload(const void* data, VkDeviceSize dataSize) {
     vkUnmapMemory(context_.device(), memory_);
 }
 
+void Buffer::download(void* data, VkDeviceSize dataSize) const {
+    if (data == nullptr && dataSize != 0) {
+        throw std::invalid_argument("buffer download requires a destination");
+    }
+    if (dataSize > size_) {
+        throw std::out_of_range("buffer download exceeds buffer size!");
+    }
+    if (dataSize == 0) {
+        return;
+    }
+
+    void* mappedData = nullptr;
+    if (vkMapMemory(context_.device(), memory_, 0, dataSize, 0, &mappedData) != VK_SUCCESS) {
+        throw std::runtime_error("failed to map buffer memory for reading!");
+    }
+
+    std::memcpy(data, mappedData, static_cast<size_t>(dataSize));
+    vkUnmapMemory(context_.device(), memory_);
+}
+
 } // namespace VulkCore

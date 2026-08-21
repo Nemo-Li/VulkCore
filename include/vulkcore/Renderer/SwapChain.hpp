@@ -25,6 +25,7 @@ public:
     VkFormat depthFormat() const;
     VkExtent2D extent() const;
     VkImage image(uint32_t imageIndex) const;
+    bool supportsTransferSource() const;
     VkImage depthImage() const;
     const std::vector<VkFramebuffer>& framebuffers() const;
 
@@ -44,6 +45,7 @@ private:
     VkSwapchainKHR swapChain_ = VK_NULL_HANDLE;
     std::vector<VkImage> images_;
     VkFormat imageFormat_ = VK_FORMAT_UNDEFINED;
+    bool transferSourceSupported_ = false;
     VkExtent2D extent_{};
     std::vector<VkImageView> imageViews_;
     std::vector<VkFramebuffer> framebuffers_;

@@ -192,6 +192,7 @@ add_executable(VulkCore
     src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
     src/Utils/ModelLoader.cpp
+    src/Utils/Screenshot.cpp
     src/Utils/StbImage.cpp
 )
 

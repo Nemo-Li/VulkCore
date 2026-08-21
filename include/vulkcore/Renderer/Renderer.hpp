@@ -80,7 +80,7 @@ private:
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
     void updatePlayerController(float deltaSeconds);
-    void updatePlayerCamera();
+    void updatePlayerCamera(float deltaSeconds);
     void clearSceneData();
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
@@ -191,7 +191,14 @@ private:
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
     void drawShaderDemoControls(bool& shouldSaveSettings);
     void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
-    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void recordCommandBuffer(
+        VkCommandBuffer commandBuffer,
+        uint32_t imageIndex,
+        bool captureScreenshot
+    );
+    void ensureScreenshotBuffer();
+    void recordScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void saveScreenshot();
     void recreateSwapChain();
 
     VkShaderModule createShaderModule(const std::vector<char>& code) const;
@@ -255,6 +262,11 @@ private:
     std::unique_ptr<Texture> fallbackTexture_;
     std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
+    std::unique_ptr<Buffer> screenshotBuffer_;
+    VkDeviceSize screenshotBufferSize_ = 0;
+    bool screenshotKeyDown_ = false;
+    std::uint64_t screenshotSequence_ = 0;
+    std::string screenshotStatus_ = "F12: Save the current frame";
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
     std::unordered_map<std::uint32_t, std::array<VkDescriptorSet, kMaxFramesInFlight>>
