@@ -98,6 +98,59 @@ std::filesystem::path findHeightmapPath(
     return {};
 }
 
+std::filesystem::path findWatermapPath(
+    const std::filesystem::path& waterRoot,
+    const std::string& fileBase
+) {
+    if (waterRoot.empty()) {
+        return {};
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    // Extracted water SARC directories use the first file in each group of
+    // four: 54000000DB.water.extm is stored below 54000000D8.water.extm.
+    if (fileBase.size() >= 2) {
+        const auto hexValue = [](char value) -> int {
+            if (value >= '0' && value <= '9') {
+                return value - '0';
+            }
+            if (value >= 'A' && value <= 'F') {
+                return value - 'A' + 10;
+            }
+            if (value >= 'a' && value <= 'f') {
+                return value - 'a' + 10;
+            }
+            return -1;
+        };
+        const int high = hexValue(fileBase[fileBase.size() - 2]);
+        const int low = hexValue(fileBase[fileBase.size() - 1]);
+        if (high >= 0 && low >= 0) {
+            const int groupedValue = ((high << 4) | low) & ~0x3;
+            std::string groupBase = fileBase;
+            constexpr char hexDigits[] = "0123456789ABCDEF";
+            groupBase[groupBase.size() - 2] = hexDigits[groupedValue >> 4];
+            groupBase[groupBase.size() - 1] = hexDigits[groupedValue & 0xF];
+            candidates.push_back(
+                waterRoot / (groupBase + ".water.extm") /
+                    (fileBase + ".water.extm")
+            );
+        }
+    }
+
+    candidates.push_back(
+        waterRoot / (fileBase + ".water.extm") /
+            (fileBase + ".water.extm")
+    );
+    candidates.push_back(waterRoot / (fileBase + ".water.extm"));
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(candidate, error)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
 std::vector<std::uint16_t> loadHeightSamples(const std::filesystem::path& path) {
     const std::vector<char> bytes = readBinaryFile(path);
     constexpr std::size_t expectedBytes =
@@ -118,6 +171,49 @@ std::vector<std::uint16_t> loadHeightSamples(const std::filesystem::path& path) 
         const std::uint32_t low = static_cast<unsigned char>(bytes[index * 2]);
         const std::uint32_t high = static_cast<unsigned char>(bytes[index * 2 + 1]);
         samples[index] = static_cast<std::uint16_t>(low | (high << 8));
+    }
+    return samples;
+}
+
+std::vector<WaterSample> loadWaterSamples(const std::filesystem::path& path) {
+    const std::vector<char> bytes = readBinaryFile(path);
+    constexpr std::size_t kBytesPerSample = 8;
+    constexpr std::size_t expectedBytes =
+        static_cast<std::size_t>(kTerrainWaterResolution) *
+        kTerrainWaterResolution * kBytesPerSample;
+    if (bytes.size() != expectedBytes) {
+        throw std::runtime_error(
+            "water map must contain exactly 64x64 8-byte samples: " + path.string()
+        );
+    }
+
+    auto readU16LE = [&bytes](std::size_t offset) -> std::uint16_t {
+        return static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(static_cast<unsigned char>(bytes[offset])) |
+            (static_cast<std::uint16_t>(static_cast<unsigned char>(bytes[offset + 1])) << 8)
+        );
+    };
+
+    std::vector<WaterSample> samples;
+    samples.reserve(
+        static_cast<std::size_t>(kTerrainWaterResolution) *
+        kTerrainWaterResolution
+    );
+    for (std::size_t offset = 0; offset < bytes.size(); offset += kBytesPerSample) {
+        const std::uint8_t material = static_cast<std::uint8_t>(
+            static_cast<unsigned char>(bytes[offset + 7])
+        );
+        if (material >= 8) {
+            throw std::runtime_error(
+                "water map contains an unsupported material index: " + path.string()
+            );
+        }
+        samples.push_back({
+            readU16LE(offset),
+            readU16LE(offset + 2),
+            readU16LE(offset + 4),
+            material
+        });
     }
     return samples;
 }
@@ -550,7 +646,8 @@ void TerrainChunk::appendMesh(
 
 std::unique_ptr<TerrainScene> TerrainScene::load(
     const std::filesystem::path& tscbPath,
-    const std::filesystem::path& terrainRoot
+    const std::filesystem::path& terrainRoot,
+    const std::filesystem::path& waterRoot
 ) {
     const std::vector<char> data = readBinaryFile(tscbPath);
     requireRange(data, 0, kTscbHeaderSize, "header");
@@ -589,6 +686,8 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
 
     std::vector<ParsedTile> parsedTiles;
     parsedTiles.reserve(scene->header_.areaCount);
+    std::vector<WaterTileData> parsedWaterTiles;
+    parsedWaterTiles.reserve(scene->header_.areaCount);
     for (std::uint32_t index = 0; index < scene->header_.areaCount; ++index) {
         const std::size_t lookupOffset =
             areaLookupOffset + static_cast<std::size_t>(index) * sizeof(std::uint32_t);
@@ -614,6 +713,36 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             readU32BE(data, entryOffset + 0x20)
         );
 
+        const std::filesystem::path watermapPath = findWatermapPath(
+            waterRoot,
+            metadata.fileBase
+        );
+        if (!watermapPath.empty()) {
+            try {
+                std::vector<WaterSample> waterSamples = loadWaterSamples(watermapPath);
+                const bool containsWater = std::any_of(
+                    waterSamples.begin(),
+                    waterSamples.end(),
+                    [](const WaterSample& sample) {
+                        // 0 and 1 are the BOTW no-surface sentinel values.
+                        return sample.height > 1;
+                    }
+                );
+                if (containsWater) {
+                    TerrainTileMetadata waterMetadata = metadata;
+                    waterMetadata.sourcePath = watermapPath;
+                    parsedWaterTiles.push_back({
+                        std::move(waterMetadata),
+                        std::move(waterSamples)
+                    });
+                }
+            } catch (const std::exception& error) {
+                throw std::runtime_error(
+                    "failed to load water tile " + metadata.fileBase + ": " + error.what()
+                );
+            }
+        }
+
         const std::filesystem::path heightmapPath = findHeightmapPath(
             terrainRoot,
             metadata.fileBase
@@ -633,6 +762,18 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             );
         }
     }
+
+    std::sort(
+        parsedWaterTiles.begin(),
+        parsedWaterTiles.end(),
+        [](const WaterTileData& left, const WaterTileData& right) {
+            if (left.metadata.gridPosition.y != right.metadata.gridPosition.y) {
+                return left.metadata.gridPosition.y < right.metadata.gridPosition.y;
+            }
+            return left.metadata.gridPosition.x < right.metadata.gridPosition.x;
+        }
+    );
+    scene->waterTiles_ = std::move(parsedWaterTiles);
 
     if (parsedTiles.empty()) {
         throw std::runtime_error(
@@ -725,6 +866,10 @@ std::size_t TerrainScene::tileCount() const {
     return count;
 }
 
+std::size_t TerrainScene::waterTileCount() const {
+    return waterTiles_.size();
+}
+
 std::optional<float> TerrainScene::heightAtWorld(const glm::vec2& worldPosition) const {
     const TerrainTile* selectedTile = nullptr;
     for (const TerrainChunk& chunk : chunks_) {
@@ -807,6 +952,164 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
         );
     }
     stitchTerrainMesh(mesh);
+    return mesh;
+}
+
+TerrainMeshData TerrainScene::buildWaterMesh(const WaterMeshOptions& options) const {
+    TerrainMeshData mesh;
+    const std::uint32_t sampleStride = std::clamp(
+        options.sampleStride,
+        1u,
+        kTerrainWaterResolution - 1
+    );
+    std::vector<std::uint32_t> sampleCoordinates;
+    for (std::uint32_t sampleCoordinate = 0;
+         sampleCoordinate < kTerrainWaterResolution - 1;
+         sampleCoordinate += sampleStride) {
+        sampleCoordinates.push_back(sampleCoordinate);
+    }
+    if (sampleCoordinates.empty() ||
+        sampleCoordinates.back() != kTerrainWaterResolution - 1) {
+        sampleCoordinates.push_back(kTerrainWaterResolution - 1);
+    }
+
+    const auto sampleAt = [](const WaterTileData& tile, std::uint32_t x, std::uint32_t z) {
+        return tile.samples[
+            static_cast<std::size_t>(z) * kTerrainWaterResolution + x
+        ];
+    };
+    const auto validSample = [](WaterSample sample) {
+        // BOTW stores 0/1 for cells without a water surface.
+        return sample.height > 1;
+    };
+    const auto worldPosition = [this, &sampleAt](
+        const WaterTileData& tile,
+        std::uint32_t x,
+        std::uint32_t z
+    ) {
+        const float worldExtent = header_.worldScale * kTerrainWorldExtentMultiplier;
+        const glm::vec2 worldCenter =
+            tile.metadata.gridPosition / kTerrainGridSize * worldExtent;
+        const float worldSize =
+            tile.metadata.areaSize / kTerrainGridSize * worldExtent;
+        const float normalizedX = static_cast<float>(x) /
+            static_cast<float>(kTerrainWaterResolution - 1);
+        const float normalizedZ = static_cast<float>(z) /
+            static_cast<float>(kTerrainWaterResolution - 1);
+        const WaterSample sample = sampleAt(tile, x, z);
+        return glm::vec3(
+            worldCenter.x + (normalizedX - 0.5f) * worldSize,
+            static_cast<float>(sample.height) / 65535.0f * header_.maximumHeight,
+            worldCenter.y + (normalizedZ - 0.5f) * worldSize
+        );
+    };
+
+    for (const WaterTileData& tile : waterTiles_) {
+        const std::uint32_t rowSize = static_cast<std::uint32_t>(
+            sampleCoordinates.size()
+        );
+        std::vector<std::int32_t> vertexMap(
+            static_cast<std::size_t>(kTerrainWaterResolution) *
+                kTerrainWaterResolution,
+            -1
+        );
+        TerrainChunkMesh chunk;
+        chunk.lod = tile.metadata.lod;
+        chunk.coordinate = glm::ivec2(
+            static_cast<int>(std::lround(tile.metadata.gridPosition.x)),
+            static_cast<int>(std::lround(tile.metadata.gridPosition.y))
+        );
+        chunk.tileCount = 1;
+        chunk.indexOffset = mesh.indices.size();
+        chunk.boundsMinimum = glm::vec3(std::numeric_limits<float>::max());
+        chunk.boundsMaximum = glm::vec3(std::numeric_limits<float>::lowest());
+
+        const auto ensureVertex = [&](std::uint32_t x, std::uint32_t z) {
+            const std::size_t mapIndex =
+                static_cast<std::size_t>(z) * kTerrainWaterResolution + x;
+            if (vertexMap[mapIndex] >= 0) {
+                return static_cast<std::uint32_t>(vertexMap[mapIndex]);
+            }
+
+            const glm::vec3 current = worldPosition(tile, x, z);
+            const std::uint32_t leftX = x == 0 ? 0 : x - 1;
+            const std::uint32_t rightX = x + 1 >= kTerrainWaterResolution
+                ? kTerrainWaterResolution - 1
+                : x + 1;
+            const std::uint32_t downZ = z == 0 ? 0 : z - 1;
+            const std::uint32_t upZ = z + 1 >= kTerrainWaterResolution
+                ? kTerrainWaterResolution - 1
+                : z + 1;
+            glm::vec3 normal = glm::cross(
+                worldPosition(tile, x, upZ) - worldPosition(tile, x, downZ),
+                worldPosition(tile, rightX, z) - worldPosition(tile, leftX, z)
+            );
+            if (glm::length(normal) <= std::numeric_limits<float>::epsilon()) {
+                normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            } else {
+                normal = glm::normalize(normal);
+            }
+
+            const WaterSample sample = sampleAt(tile, x, z);
+            const glm::vec2 flow(
+                (static_cast<float>(sample.flowX) - 32768.0f) / 32768.0f,
+                (static_cast<float>(sample.flowZ) - 32768.0f) / 32768.0f
+            );
+            const glm::vec4 vertexData(
+                glm::clamp(flow.x * 0.5f + 0.5f, 0.0f, 1.0f),
+                glm::clamp(flow.y * 0.5f + 0.5f, 0.0f, 1.0f),
+                static_cast<float>(sample.material) / 7.0f,
+                0.5f
+            );
+            vertexMap[mapIndex] = static_cast<std::int32_t>(mesh.vertices.size());
+            mesh.vertices.push_back({
+                current,
+                normal,
+                glm::vec2(
+                    static_cast<float>(x) /
+                        static_cast<float>(kTerrainWaterResolution - 1),
+                    static_cast<float>(z) /
+                        static_cast<float>(kTerrainWaterResolution - 1)
+                ),
+                vertexData
+            });
+            chunk.boundsMinimum = glm::min(chunk.boundsMinimum, current);
+            chunk.boundsMaximum = glm::max(chunk.boundsMaximum, current);
+            return static_cast<std::uint32_t>(vertexMap[mapIndex]);
+        };
+
+        for (std::uint32_t z = 0; z + 1 < rowSize; ++z) {
+            for (std::uint32_t x = 0; x + 1 < rowSize; ++x) {
+                const std::uint32_t x0 = sampleCoordinates[x];
+                const std::uint32_t x1 = sampleCoordinates[x + 1];
+                const std::uint32_t z0 = sampleCoordinates[z];
+                const std::uint32_t z1 = sampleCoordinates[z + 1];
+                if (!validSample(sampleAt(tile, x0, z0)) ||
+                    !validSample(sampleAt(tile, x1, z0)) ||
+                    !validSample(sampleAt(tile, x0, z1)) ||
+                    !validSample(sampleAt(tile, x1, z1))) {
+                    continue;
+                }
+                const std::uint32_t first = ensureVertex(x0, z0);
+                const std::uint32_t second = ensureVertex(x0, z1);
+                const std::uint32_t third = ensureVertex(x1, z0);
+                const std::uint32_t fourth = ensureVertex(x1, z1);
+                mesh.indices.insert(mesh.indices.end(), {
+                    first, second, third,
+                    second, fourth, third
+                });
+            }
+        }
+
+        chunk.indexCount = mesh.indices.size() - chunk.indexOffset;
+        if (chunk.indexCount > 0) {
+            mesh.chunks.push_back(chunk);
+        }
+    }
+
+    if (!mesh.indices.empty()) {
+        stitchTerrainMesh(mesh);
+    }
     return mesh;
 }
 

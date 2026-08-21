@@ -87,6 +87,17 @@ void main() {
     float flowTurbulence = clamp(material.waterSurface.x, 0.0, 1.0);
     float waveScale = max(material.waterSurface.y, 0.1);
     vec2 flowOffset = flowDirection * flowSpeed * time * 0.12;
+
+    // terrain_water stores a signed flow vector per sample. The generated
+    // water mesh carries it in vertex color RG, while material settings stay
+    // as a stable fallback for cells with no meaningful local flow.
+    vec2 extmFlow = fragVertexColor.rg * 2.0 - 1.0;
+    float extmFlowLength = length(extmFlow);
+    if (fragVertexColor.a < 0.75 && extmFlowLength > 0.025) {
+        flowDirection = normalize(extmFlow);
+        flowSpeed = max(flowSpeed, min(extmFlowLength, 1.0) * 0.55);
+        flowOffset = flowDirection * flowSpeed * time * 0.12;
+    }
     float height = waveHeight(
         fragTexCoord,
         time,
@@ -113,8 +124,8 @@ void main() {
     }
     normal = normalize(normal + vec3(
         -slopeX * (0.75 + flowTurbulence * 0.7) * flowStrength,
-        -slopeY * (0.75 + flowTurbulence * 0.7) * flowStrength,
-        0.0
+        0.0,
+        -slopeY * (0.75 + flowTurbulence * 0.7) * flowStrength
     ));
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     vec3 viewDirection = normalize(vec3(0.42, 0.48, 0.77));
@@ -144,12 +155,31 @@ void main() {
         vec3 materialColor = texture(textureSampler, fragTexCoord + flowOffset).rgb;
         waterColor *= mix(vec3(0.72), materialColor, 0.22);
     }
-    waterColor *= material.baseColor.rgb * fragVertexColor.rgb;
+    float waterMaterial = clamp(floor(fragVertexColor.b * 7.0 + 0.5), 0.0, 7.0);
+    vec3 materialTint = vec3(1.0);
+    if (waterMaterial == 1.0) {
+        materialTint = vec3(0.8, 0.96, 1.08);
+    } else if (waterMaterial == 2.0) {
+        materialTint = vec3(0.78, 0.9, 1.02);
+    } else if (waterMaterial == 3.0) {
+        materialTint = vec3(0.92, 1.02, 0.9);
+    } else if (waterMaterial == 4.0) {
+        materialTint = vec3(0.72, 0.9, 0.98);
+    } else if (waterMaterial == 5.0) {
+        materialTint = vec3(0.68, 0.84, 0.94);
+    } else if (waterMaterial >= 6.0) {
+        materialTint = vec3(0.88, 0.96, 0.78);
+    }
+    waterColor *= material.baseColor.rgb * materialTint;
 
     vec2 screenUv = gl_FragCoord.xy * ubo.viewport.zw;
-    vec2 refractionUv = clamp(screenUv + normal.xy * 0.035, vec2(0.001), vec2(0.999));
+    vec2 refractionUv = clamp(
+        screenUv + vec2(normal.x, normal.z) * 0.035,
+        vec2(0.001),
+        vec2(0.999)
+    );
     vec2 reflectionUv = clamp(
-        vec2(screenUv.x + normal.x * 0.025, 1.0 - screenUv.y + normal.y * 0.025),
+        vec2(screenUv.x + normal.x * 0.025, 1.0 - screenUv.y + normal.z * 0.025),
         vec2(0.001),
         vec2(0.999)
     );

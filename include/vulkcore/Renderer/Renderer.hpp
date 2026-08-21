@@ -74,6 +74,7 @@ private:
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void appendTerrainToScene(const TerrainScene& terrain);
+    void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
     void updatePlayerController(float deltaSeconds);
     void updatePlayerCamera();
@@ -218,6 +219,7 @@ private:
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
     std::filesystem::path terrainResourcePath_;
+    std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
     static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
