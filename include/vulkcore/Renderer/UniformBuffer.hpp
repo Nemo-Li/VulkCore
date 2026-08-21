@@ -15,6 +15,9 @@ struct UniformBufferObject {
     glm::vec4 ambientLight{0.18f, 0.21f, 0.24f, 1.0f}; // rgb color, intensity
     glm::vec4 sunLightDirection{0.45f, 0.55f, 0.75f, 1.0f}; // xyz direction, intensity
     glm::vec4 sunLightColor{0.82f, 0.86f, 0.9f, 1.0f}; // rgb color, reserved alpha
+    // xyz is the camera position in normalized scene space; w is the scene
+    // normalization scale used to convert terrain LOD distances to world units.
+    glm::vec4 cameraPosition{0.0f};
 };
 
 } // namespace VulkCore

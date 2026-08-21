@@ -35,6 +35,7 @@ private:
     void createSampler();
     void transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout);
     void copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height);
+    void generateMipmaps(uint32_t width, uint32_t height);
     void cleanup();
 
     VulkanContext& context_;
@@ -42,6 +43,7 @@ private:
     VkDeviceMemory imageMemory_ = VK_NULL_HANDLE;
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    std::uint32_t mipLevels_ = 1;
 };
 
 } // namespace VulkCore

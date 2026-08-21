@@ -62,7 +62,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         materialPushConstants.textureFlags =
             (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
             (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
-            (specularTextures_[materialIndex] != nullptr ? 4u : 0u);
+            (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
+            ((terrainDetailTexturesReady_ &&
+              material.shaderConfiguration.shader(ShaderStage::Fragment) ==
+                  "shader_terrain.frag") ? 8u : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.opacity;

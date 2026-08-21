@@ -15,9 +15,11 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     vec4 ambientLight;
     vec4 sunLightDirection;
     vec4 sunLightColor;
+    vec4 cameraPosition;
 } ubo;
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
+layout(set = 0, binding = 6) uniform sampler2D terrainDetailTextures[8];
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -44,6 +46,10 @@ vec3 sampleLandform(int index, vec2 uv) {
     return texture(textureSampler, cellUv).rgb;
 }
 
+vec3 sampleDetailLandform(int index, vec2 uv) {
+    return texture(terrainDetailTextures[index], fract(uv)).rgb;
+}
+
 float waveNoise(vec2 position) {
     float first = sin(position.x * 0.0017 + sin(position.y * 0.0021));
     float second = sin(position.y * 0.0031 + sin(position.x * 0.0013));
@@ -58,7 +64,15 @@ void main() {
     // The first two vertex-color channels are the TSCB per-material U/V
     // scales. The last two carry the preserved, currently unnamed material
     // tuning values from the TSCB record.
-    vec2 scaledUv = fragTexCoord * clamp(fragVertexColor.xy, vec2(0.05), vec2(2.0)) * 12.0;
+    vec2 textureScale = clamp(fragVertexColor.xy, vec2(0.05), vec2(2.0));
+    // The mesh UV is local to one terrain tile. It is intentionally kept for
+    // the broad Atlas LOD, but using it for close detail makes a large tile
+    // stretch one grass sample over too much world space. Build the close
+    // UV from world position instead, so texture density is independent of
+    // tile/mesh extent and follows the TSCB scale in terrain world units.
+    float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
+    vec2 atlasUv = fragTexCoord * textureScale * 12.0;
+    vec2 detailUv = (fragWorldPosition.xz / sceneScale) * textureScale;
     float materialBias = clamp(fragVertexColor.z, 0.0, 1.0);
     float materialContrast = mix(0.7, 1.35, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
     float regionalNoise = waveNoise(fragWorldPosition.xz * (0.7 + materialContrast * 0.3));
@@ -93,15 +107,48 @@ void main() {
     ash /= totalWeight;
     dirt /= totalWeight;
 
-    vec3 albedo =
-        sampleLandform(0, scaledUv) * grass +
-        sampleLandform(1, scaledUv) * dirt +
-        sampleLandform(2, scaledUv) * rock +
-        sampleLandform(3, scaledUv) * sand +
-        sampleLandform(4, scaledUv) * snow +
-        sampleLandform(5, scaledUv) * mud +
-        sampleLandform(6, scaledUv) * gravel +
-        sampleLandform(7, scaledUv) * ash;
+    vec3 atlasAlbedo =
+        sampleLandform(0, atlasUv) * grass +
+        sampleLandform(1, atlasUv) * dirt +
+        sampleLandform(2, atlasUv) * rock +
+        sampleLandform(3, atlasUv) * sand +
+        sampleLandform(4, atlasUv) * snow +
+        sampleLandform(5, atlasUv) * mud +
+        sampleLandform(6, atlasUv) * gravel +
+        sampleLandform(7, atlasUv) * ash;
+
+    vec3 albedo = atlasAlbedo;
+    if ((material.textureFlags & 8u) != 0u) {
+        // The camera position is normalized together with the scene. Divide
+        // by the same scale to make these thresholds meaningful in terrain
+        // world units for both player and editor cameras.
+        float distanceWorld = distance(
+            ubo.cameraPosition.xyz,
+            fragWorldPosition
+        ) / sceneScale;
+        const float kDetailStartDistance = 10.0;
+        const float kDetailEndDistance = 36.0;
+        float detailBlend = 1.0 - smoothstep(
+            kDetailStartDistance,
+            kDetailEndDistance,
+            distanceWorld
+        );
+        // Avoid fetching the eight high-resolution layers once the fragment
+        // is fully in the broad-distance LOD. The transition band blends both
+        // representations to avoid a visible texture pop.
+        if (detailBlend > 0.001) {
+            vec3 detailAlbedo =
+                sampleDetailLandform(0, detailUv) * grass +
+                sampleDetailLandform(1, detailUv) * dirt +
+                sampleDetailLandform(2, detailUv) * rock +
+                sampleDetailLandform(3, detailUv) * sand +
+                sampleDetailLandform(4, detailUv) * snow +
+                sampleDetailLandform(5, detailUv) * mud +
+                sampleDetailLandform(6, detailUv) * gravel +
+                sampleDetailLandform(7, detailUv) * ash;
+            albedo = mix(atlasAlbedo, detailAlbedo, detailBlend);
+        }
+    }
 
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float diffuseFactor = max(dot(normal, lightDirection), 0.0);
