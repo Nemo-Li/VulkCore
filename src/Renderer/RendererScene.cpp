@@ -1,5 +1,6 @@
 #include "RendererImplementation.hpp"
 
+#include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 namespace VulkCore {
@@ -221,6 +222,9 @@ void Renderer::selectModelResource(const std::filesystem::path& path) {
 
 void Renderer::initializeEmptyScene() {
     meshData_ = MeshData{};
+    if (physicsWorld_) {
+        physicsWorld_->clear();
+    }
     terrainScene_.reset();
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
@@ -258,6 +262,10 @@ void Renderer::appendTerrainToScene(
             terrainMesh.indices.size()) {
         throw std::runtime_error("BOTW terrain exceeds the renderer's 32-bit mesh limits");
     }
+    if (!physicsWorld_) {
+        throw std::runtime_error("physics world is not initialized");
+    }
+    physicsWorld_->setTerrain(terrainMesh);
 
     MaterialData terrainMaterial;
     terrainMaterial.name = "BOTW Terrain (TSCB landform atlas)";
@@ -556,14 +564,14 @@ void Renderer::updatePlayerController(float deltaSeconds) {
     playerController_.update(
         window_,
         deltaSeconds,
-        *terrainScene_,
+        *physicsWorld_,
         io.WantCaptureKeyboard && editingUiItem,
         io.WantCaptureMouse && (editingUiItem || hoveringUiItem)
     );
-    updatePlayerCamera(deltaSeconds);
+    updatePlayerCamera();
 }
 
-void Renderer::updatePlayerCamera(float deltaSeconds) {
+void Renderer::updatePlayerCamera() {
     if (!terrainScene_ || !playerController_.active()) {
         cameraTarget_ = glm::vec3(0.0f);
         return;
@@ -573,7 +581,7 @@ void Renderer::updatePlayerCamera(float deltaSeconds) {
         playerController_.cameraTargetWorld() - modelCenter_
     );
     cameraPosition_ = safeScale * (
-        playerController_.cameraPositionWorld(*terrainScene_, deltaSeconds) - modelCenter_
+        playerController_.cameraPositionWorld() - modelCenter_
     );
     cameraBasisInitialized_ = false;
 }
@@ -1141,7 +1149,11 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
-                playerController_.reset(*terrainScene_, playerSpawnPosition_);
+                playerController_.reset(
+                    *terrainScene_,
+                    *physicsWorld_,
+                    playerSpawnPosition_
+                );
                 appendPlayerToScene();
             }
             generatedGeometryChanged = true;
@@ -2129,6 +2141,9 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
             removedNodeIds.end(),
             kPlayerSceneNodeId
         ) != removedNodeIds.end()) {
+        if (physicsWorld_) {
+            physicsWorld_->removePlayer();
+        }
         playerController_.clear();
     }
     if (std::find(

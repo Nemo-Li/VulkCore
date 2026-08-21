@@ -1,6 +1,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
@@ -22,6 +23,7 @@ Renderer::Renderer(GLFWwindow* window)
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
+    physicsWorld_ = std::make_unique<PhysicsWorld>();
     context_ = std::make_unique<VulkanContext>(window);
     swapChain_ = std::make_unique<SwapChain>(*context_);
 
@@ -136,6 +138,7 @@ Renderer::~Renderer() {
 
     swapChain_.reset();
     context_.reset();
+    physicsWorld_.reset();
 }
 
 void Renderer::framebufferResizeCallback(GLFWwindow* window, int width, int height) {

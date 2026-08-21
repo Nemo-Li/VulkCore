@@ -25,6 +25,7 @@ struct GLFWwindow;
 namespace VulkCore {
 
 class Buffer;
+class PhysicsWorld;
 class SwapChain;
 class Texture;
 class VulkanContext;
@@ -80,7 +81,7 @@ private:
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
     void updatePlayerController(float deltaSeconds);
-    void updatePlayerCamera(float deltaSeconds);
+    void updatePlayerCamera();
     void clearSceneData();
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
@@ -231,6 +232,7 @@ private:
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
+    std::unique_ptr<PhysicsWorld> physicsWorld_;
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
