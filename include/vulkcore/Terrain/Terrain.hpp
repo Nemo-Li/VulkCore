@@ -17,6 +17,15 @@ namespace VulkCore {
 inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
 inline constexpr std::uint32_t kTerrainWaterResolution = 64;
 
+struct TerrainMaterialInfo {
+    std::uint32_t index = 0;
+    glm::vec2 textureScale{1.0f};
+    // The exact names of these two source fields are unknown. Preserve their
+    // values so the generated terrain shader can still use TSCB tuning data.
+    float paletteBias = 0.0f;
+    float paletteContrast = 1.0f;
+};
+
 struct TerrainTileMetadata {
     std::string fileBase;
     glm::vec2 gridPosition{0.0f};
@@ -26,6 +35,9 @@ struct TerrainTileMetadata {
     float minimumWaterHeight = 0.0f;
     float maximumWaterHeight = 0.0f;
     std::uint32_t lod = 0;
+    std::uint32_t areaFlags = 0;
+    std::uint32_t materialIndex = 0;
+    TerrainMaterialInfo materialInfo;
     std::filesystem::path sourcePath;
 };
 
@@ -160,6 +172,7 @@ public:
     );
 
     const TerrainSceneHeader& header() const { return header_; }
+    const std::vector<TerrainMaterialInfo>& materialInfos() const { return materialInfos_; }
     const std::vector<TerrainChunk>& chunks() const { return chunks_; }
     const glm::vec3& boundsMinimum() const { return boundsMinimum_; }
     const glm::vec3& boundsMaximum() const { return boundsMaximum_; }
@@ -176,6 +189,7 @@ private:
     TerrainScene() = default;
 
     TerrainSceneHeader header_;
+    std::vector<TerrainMaterialInfo> materialInfos_;
     std::vector<TerrainChunk> chunks_;
     std::vector<WaterTileData> waterTiles_;
     glm::vec3 boundsMinimum_{0.0f};

@@ -225,6 +225,7 @@ void Renderer::initializeEmptyScene() {
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
     playerController_.clear();
+    playerSpawnPosition_.reset();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
@@ -241,7 +242,10 @@ void Renderer::initializeEmptyScene() {
     sunPresent_ = false;
 }
 
-void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
+void Renderer::appendTerrainToScene(
+    const TerrainScene& terrain,
+    const std::filesystem::path& terrainRoot
+) {
     TerrainMeshOptions meshOptions;
     const TerrainMeshData terrainMesh = terrain.buildMesh(meshOptions);
     if (terrainMesh.vertices.empty() || terrainMesh.indices.empty() ||
@@ -256,10 +260,15 @@ void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
     }
 
     MaterialData terrainMaterial;
-    terrainMaterial.name = "BOTW Terrain (height only)";
-    terrainMaterial.baseColor = glm::vec4(0.76f, 0.82f, 0.70f, 1.0f);
+    terrainMaterial.name = "BOTW Terrain (TSCB landform atlas)";
+    terrainMaterial.baseColor = glm::vec4(1.0f);
     terrainMaterial.roughness = 0.95f;
     terrainMaterial.doubleSided = true;
+    terrainMaterial.texturePath = terrainRoot / "textures" / "terrain_atlas.png";
+    terrainMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
+        "shader_terrain.vert";
+    terrainMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
+        "shader_terrain.frag";
     const std::uint32_t terrainMaterialIndex = static_cast<std::uint32_t>(
         meshData_.materials.size()
     );
@@ -956,6 +965,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     std::vector<ModelResourceReference> modelReferences;
     std::filesystem::path terrainPath;
     std::filesystem::path waterPath;
+    std::optional<glm::vec3> playerSpawnPosition;
     bool sceneHasSun = false;
     bool sceneHasPlayer = true;
     std::ifstream sceneFile(resolvedScenePath);
@@ -1012,6 +1022,17 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             sceneHasPlayer = present != 0;
+        } else if (key == "player_spawn_position") {
+            glm::vec3 configuredPosition(0.0f);
+            if (!(sceneFile >> configuredPosition.x >> configuredPosition.y >> configuredPosition.z) ||
+                !std::isfinite(configuredPosition.x) ||
+                !std::isfinite(configuredPosition.y) ||
+                !std::isfinite(configuredPosition.z)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player spawn position.";
+                return false;
+            }
+            playerSpawnPosition = configuredPosition;
         } else if (key == "sun_present") {
             int present = 0;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -1093,6 +1114,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     }
 
     clearSceneData();
+    playerSpawnPosition_ = playerSpawnPosition;
     for (const ModelResourceReference& modelReference : modelReferences) {
         if (!importModelResource(modelReference.path, modelReference.rootNodeId)) {
             sceneStatusFailed_ = true;
@@ -1109,13 +1131,13 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 terrainPath,
                 waterPath
             );
-            appendTerrainToScene(*terrain);
+            appendTerrainToScene(*terrain, terrainPath);
             appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
-                playerController_.reset(*terrainScene_);
+                playerController_.reset(*terrainScene_, playerSpawnPosition_);
                 appendPlayerToScene();
             }
             generatedGeometryChanged = true;
@@ -1910,6 +1932,10 @@ bool Renderer::saveTransformSettings() const {
         }
         file << "terrain_resource " << std::quoted(terrainReference.generic_string()) << "\n"
              << "player_present " << (playerController_.active() ? 1 : 0) << "\n";
+        if (playerSpawnPosition_.has_value()) {
+            file << "player_spawn_position " << playerSpawnPosition_->x << ' '
+                 << playerSpawnPosition_->y << ' ' << playerSpawnPosition_->z << "\n";
+        }
         if (!waterResourcePath_.empty()) {
             relativeError.clear();
             std::filesystem::path waterReference = std::filesystem::relative(
