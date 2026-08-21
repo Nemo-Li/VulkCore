@@ -962,13 +962,53 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                     saveTransformSettings();
                 }
             }
+            const bool canReplacePlayer = terrainScene_ != nullptr &&
+                playerController_.active() && !currentScenePath_.empty();
+            if (!canReplacePlayer) {
+                ImGui::BeginDisabled();
+            }
+            const bool selectedAsPlayer = !playerModelResourcePath_.empty() &&
+                pathsEqual(playerModelResourcePath_, selectedModelResourcePath_);
+            if (ImGui::Button(
+                    selectedAsPlayer ? "Current Player Model" : "Set as Player Model"
+                ) && !selectedAsPlayer) {
+                playerModelResourcePath_ = normalizedPath(selectedModelResourcePath_);
+                if (saveTransformSettings()) {
+                    loadSceneResource(currentScenePath_);
+                }
+            }
+            if (!playerModelResourcePath_.empty()) {
+                ImGui::SameLine();
+                if (ImGui::Button("Use Player Capsule")) {
+                    playerModelResourcePath_.clear();
+                    if (saveTransformSettings()) {
+                        loadSceneResource(currentScenePath_);
+                    }
+                }
+            }
+            if (!canReplacePlayer) {
+                ImGui::EndDisabled();
+                ImGui::TextWrapped(
+                    "Load a saved terrain scene with an active Player to replace its model."
+                );
+            } else {
+                ImGui::TextWrapped(
+                    "Player models are height-fitted to the existing capsule collider."
+                );
+            }
             if (selectedModelNode_ == nullptr) {
             ImGui::TextWrapped("Select a hierarchy node to inspect its material bindings.");
             } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
             ImGui::TextWrapped("The selected object is a Particle System, not a model node.");
             } else if (selectedModelNode_->objectType == SceneObjectType::Player) {
             ImGui::SeparatorText("Player Controller");
-            ImGui::TextWrapped("BOTW Link capsule height: %.2f m", PlayerController::kBotwLinkHeight);
+            ImGui::TextWrapped("Collider height: %.2f m", PlayerController::kBotwLinkHeight);
+            ImGui::TextWrapped(
+                "Visual: %s",
+                playerModelResourcePath_.empty()
+                    ? "procedural capsule"
+                    : playerModelResourcePath_.filename().string().c_str()
+            );
             ImGui::TextWrapped("Physics: NVIDIA PhysX 5.6.1 (60 Hz fixed step, CCD)");
             ImGui::Text("Grounded: %s", playerController_.grounded() ? "yes" : "no");
             const glm::vec3& playerVelocity = playerController_.velocity();
@@ -978,7 +1018,9 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 playerVelocity.y,
                 playerVelocity.z
             );
-            ImGui::TextWrapped("WASD move, Space jump, hold RMB to orbit the camera.");
+            ImGui::TextWrapped(
+                "WASD / Arrow keys move and turn, Space jumps, hold RMB to orbit the camera."
+            );
             } else {
             ImGui::SeparatorText("Selected Model Node");
             ImGui::TextWrapped("%s  (ID %u)",

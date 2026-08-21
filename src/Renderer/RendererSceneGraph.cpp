@@ -1,5 +1,7 @@
 #include "RendererImplementation.hpp"
 
+#include <cctype>
+
 namespace VulkCore {
 
 namespace {
@@ -201,7 +203,337 @@ glm::mat4 animatedLocalTransform(
         glm::scale(glm::mat4(1.0f), scale);
 }
 
+std::string normalizedAnimationName(const std::string& name) {
+    std::string normalized;
+    normalized.reserve(name.size());
+    for (const unsigned char character : name) {
+        if (std::isalnum(character)) {
+            normalized.push_back(static_cast<char>(std::tolower(character)));
+        }
+    }
+    return normalized;
+}
+
+int playerRunClipScore(const SkeletalAnimationClip& clip) {
+    const std::string name = normalizedAnimationName(clip.name);
+    if (name == "yasuorun1anm") {
+        return 1000;
+    }
+    if (name.find("run1") != std::string::npos) {
+        return 800;
+    }
+    if (name == "run" || name == "runanm") {
+        return 600;
+    }
+    if (name.find("run") != std::string::npos) {
+        return 400;
+    }
+    return -1;
+}
+
+int footBoneScore(const std::string& sourceName, bool leftFoot) {
+    const std::string name = normalizedAnimationName(sourceName);
+    const std::string side = leftFoot ? "l" : "r";
+    const std::string longSide = leftFoot ? "left" : "right";
+    if (name == side + "foot" || name == longSide + "foot") {
+        return 1000;
+    }
+    if (name.find(longSide + "foot") != std::string::npos) {
+        return 900;
+    }
+    if (name.starts_with(side) && name.find("foot") != std::string::npos) {
+        return name.find("buff") == std::string::npos ? 800 : 300;
+    }
+    if (name.ends_with("foot" + side)) {
+        return 700;
+    }
+    return -1;
+}
+
+float smoothFootContact(float height, float minimum, float maximum) {
+    const float heightRange = maximum - minimum;
+    if (heightRange <= std::numeric_limits<float>::epsilon()) {
+        return 1.0f;
+    }
+    const float normalizedHeight = (height - minimum) / heightRange;
+    const float transition = std::clamp(
+        (normalizedHeight - 0.05f) / 0.3f,
+        0.0f,
+        1.0f
+    );
+    const float smoothTransition = transition * transition *
+        (3.0f - 2.0f * transition);
+    return 1.0f - smoothTransition;
+}
+
+struct EstimatedPlayerRunGait {
+    float cycleDurationSeconds = 0.0f;
+    float groundSpeed = 0.0f;
+    std::vector<float> footTractionSamples;
+};
+
+EstimatedPlayerRunGait estimatePlayerRunGait(
+    const MeshData& mesh,
+    const ModelNode& root,
+    const SkeletalAnimationInstance& instance,
+    const SkeletalAnimationClip& clip,
+    float modelAutoScale
+) {
+    EstimatedPlayerRunGait gait;
+    const double ticksPerSecond = clip.ticksPerSecond > 0.0
+        ? clip.ticksPerSecond
+        : 25.0;
+    gait.cycleDurationSeconds = clip.durationTicks > 0.0
+        ? static_cast<float>(clip.durationTicks / ticksPerSecond)
+        : 0.0f;
+    if (!std::isfinite(gait.cycleDurationSeconds) ||
+        gait.cycleDurationSeconds <= 0.0f) {
+        return gait;
+    }
+
+    std::array<std::uint32_t, 2> footNodeIds{
+        std::numeric_limits<std::uint32_t>::max(),
+        std::numeric_limits<std::uint32_t>::max()
+    };
+    std::array<int, 2> footScores{-1, -1};
+    const std::size_t boneStart = instance.boneStart;
+    const std::size_t boneEnd = std::min<std::size_t>(
+        mesh.skeletonBones.size(),
+        boneStart + instance.boneCount
+    );
+    for (std::size_t boneIndex = boneStart; boneIndex < boneEnd; ++boneIndex) {
+        const SkeletonBone& bone = mesh.skeletonBones[boneIndex];
+        if (bone.nodeId == std::numeric_limits<std::uint32_t>::max()) {
+            continue;
+        }
+        for (std::size_t sideIndex = 0; sideIndex < footNodeIds.size(); ++sideIndex) {
+            const int score = footBoneScore(bone.name, sideIndex == 0);
+            if (score > footScores[sideIndex]) {
+                footScores[sideIndex] = score;
+                footNodeIds[sideIndex] = bone.nodeId;
+            }
+        }
+    }
+
+    constexpr std::size_t kGaitSampleCount = 90;
+    std::array<std::vector<glm::vec3>, 2> footTracks;
+    for (std::vector<glm::vec3>& track : footTracks) {
+        track.reserve(kGaitSampleCount);
+    }
+    std::unordered_map<std::uint32_t, const SkeletalAnimationChannel*> channels;
+    channels.reserve(clip.channels.size());
+    for (const SkeletalAnimationChannel& channel : clip.channels) {
+        if (channel.nodeId != std::numeric_limits<std::uint32_t>::max()) {
+            channels[channel.nodeId] = &channel;
+        }
+    }
+    for (std::size_t sampleIndex = 0;
+         sampleIndex < kGaitSampleCount;
+         ++sampleIndex) {
+        const double timeTicks = clip.durationTicks *
+            static_cast<double>(sampleIndex) /
+            static_cast<double>(kGaitSampleCount);
+        std::unordered_map<std::uint32_t, glm::mat4> animatedGlobals;
+        animatedGlobals.reserve(channels.size());
+        const auto evaluateNode = [&channels, timeTicks, &animatedGlobals](
+                                      const auto& self,
+                                      const ModelNode& node,
+                                      const glm::mat4& parentTransform
+                                  ) -> void {
+            const auto channelIt = channels.find(node.nodeId);
+            const SkeletalAnimationChannel* channel = channelIt == channels.end()
+                ? nullptr
+                : channelIt->second;
+            const glm::mat4 globalTransform = parentTransform * animatedLocalTransform(
+                node,
+                channel,
+                timeTicks
+            );
+            animatedGlobals[node.nodeId] = globalTransform;
+            for (const ModelNode& child : node.children) {
+                self(self, child, globalTransform);
+            }
+        };
+        evaluateNode(evaluateNode, root, glm::mat4(1.0f));
+        for (std::size_t sideIndex = 0; sideIndex < footNodeIds.size(); ++sideIndex) {
+            const auto footIt = animatedGlobals.find(footNodeIds[sideIndex]);
+            if (footIt != animatedGlobals.end()) {
+                footTracks[sideIndex].push_back(glm::vec3(
+                    footIt->second[3]
+                ));
+            }
+        }
+    }
+
+    std::vector<float> stanceSpeeds;
+    std::array<float, 2> minimumFootHeights{0.0f, 0.0f};
+    std::array<float, 2> maximumFootHeights{0.0f, 0.0f};
+    for (std::size_t sideIndex = 0; sideIndex < footTracks.size(); ++sideIndex) {
+        const std::vector<glm::vec3>& track = footTracks[sideIndex];
+        if (track.size() != kGaitSampleCount) {
+            continue;
+        }
+        const auto [minimumIt, maximumIt] = std::minmax_element(
+            track.begin(),
+            track.end(),
+            [](const glm::vec3& left, const glm::vec3& right) {
+                return left.y < right.y;
+            }
+        );
+        minimumFootHeights[sideIndex] = minimumIt->y;
+        maximumFootHeights[sideIndex] = maximumIt->y;
+        const float contactHeight = glm::mix(
+            minimumIt->y,
+            maximumIt->y,
+            0.2f
+        );
+        const float sampleDuration = gait.cycleDurationSeconds /
+            static_cast<float>(track.size());
+        for (std::size_t sampleIndex = 0; sampleIndex < track.size(); ++sampleIndex) {
+            if (track[sampleIndex].y > contactHeight) {
+                continue;
+            }
+            const std::size_t previousIndex =
+                (sampleIndex + track.size() - 1) % track.size();
+            const std::size_t nextIndex = (sampleIndex + 1) % track.size();
+            // Player models use local +Z as forward. A planted foot moves
+            // backward relative to an in-place body, revealing ground speed.
+            const float groundSpeed = -(
+                track[nextIndex].z - track[previousIndex].z
+            ) * modelAutoScale / (2.0f * sampleDuration);
+            if (std::isfinite(groundSpeed) && groundSpeed > 0.0f) {
+                stanceSpeeds.push_back(groundSpeed);
+            }
+        }
+    }
+
+    if (!stanceSpeeds.empty()) {
+        std::sort(stanceSpeeds.begin(), stanceSpeeds.end());
+        const std::size_t middle = stanceSpeeds.size() / 2;
+        gait.groundSpeed = stanceSpeeds.size() % 2 == 0
+            ? 0.5f * (stanceSpeeds[middle - 1] + stanceSpeeds[middle])
+            : stanceSpeeds[middle];
+    }
+    const float playerHeight = PlayerController::kBotwLinkHeight;
+    if (!std::isfinite(gait.groundSpeed) || gait.groundSpeed <= 0.0f) {
+        constexpr float kFallbackStrideHeightRatio = 1.3f;
+        gait.groundSpeed = playerHeight * kFallbackStrideHeightRatio /
+            gait.cycleDurationSeconds;
+    }
+    gait.groundSpeed = std::clamp(
+        gait.groundSpeed,
+        playerHeight * 0.5f,
+        playerHeight * 4.0f
+    );
+
+    const bool hasLeftTrack = footTracks[0].size() == kGaitSampleCount;
+    const bool hasRightTrack = footTracks[1].size() == kGaitSampleCount;
+    if (hasLeftTrack || hasRightTrack) {
+        gait.footTractionSamples.reserve(kGaitSampleCount);
+        for (std::size_t sampleIndex = 0;
+             sampleIndex < kGaitSampleCount;
+             ++sampleIndex) {
+            float traction = 0.0f;
+            for (std::size_t sideIndex = 0; sideIndex < footTracks.size(); ++sideIndex) {
+                if (footTracks[sideIndex].size() != kGaitSampleCount) {
+                    continue;
+                }
+                traction = std::max(
+                    traction,
+                    smoothFootContact(
+                        footTracks[sideIndex][sampleIndex].y,
+                        minimumFootHeights[sideIndex],
+                        maximumFootHeights[sideIndex]
+                    )
+                );
+            }
+            gait.footTractionSamples.push_back(std::clamp(traction, 0.2f, 1.0f));
+        }
+    } else {
+        gait.footTractionSamples.assign(1, 1.0f);
+    }
+    return gait;
+}
+
 } // namespace
+
+void Renderer::configurePlayerRunAnimation() {
+    playerRunAnimationClipIndex_.reset();
+    SkeletalAnimationInstance* playerInstance = nullptr;
+    for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
+        if (instance.rootNodeId == kPlayerSceneNodeId) {
+            playerInstance = &instance;
+            break;
+        }
+    }
+    if (playerInstance == nullptr) {
+        return;
+    }
+
+    // A Player never starts an imported animation automatically. Keyboard
+    // movement below is the sole owner of its Run clip playback state.
+    playerInstance->enabled = false;
+    playerInstance->playing = false;
+    playerInstance->looping = true;
+    playerInstance->timeSeconds = 0.0f;
+    playerInstance->bindPoseApplied = true;
+    playerInstance->bindPoseUploadFramesRemaining = 0;
+
+    const std::size_t animationStart = playerInstance->animationStart;
+    const std::size_t animationEnd = animationStart + playerInstance->animationCount;
+    if (playerInstance->animationCount == 0 ||
+        animationStart >= meshData_.skeletalAnimations.size() ||
+        animationEnd > meshData_.skeletalAnimations.size()) {
+        return;
+    }
+    int bestScore = -1;
+    std::uint32_t bestClipIndex = 0;
+    for (std::uint32_t clipIndex = 0;
+         clipIndex < playerInstance->animationCount;
+         ++clipIndex) {
+        const int score = playerRunClipScore(
+            meshData_.skeletalAnimations[animationStart + clipIndex]
+        );
+        if (score > bestScore) {
+            bestScore = score;
+            bestClipIndex = clipIndex;
+        }
+    }
+    if (bestScore < 0) {
+        return;
+    }
+
+    const ModelNode* root = nullptr;
+    for (ModelNode& node : meshData_.additionalNodes) {
+        root = findModelNodeById(node, playerInstance->rootNodeId);
+        if (root != nullptr) {
+            break;
+        }
+    }
+    if (root == nullptr) {
+        return;
+    }
+    playerRunAnimationClipIndex_ = bestClipIndex;
+    playerInstance->activeClip = bestClipIndex;
+    const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
+        animationStart + bestClipIndex
+    ];
+    const EstimatedPlayerRunGait gait = estimatePlayerRunGait(
+        meshData_,
+        *root,
+        *playerInstance,
+        clip,
+        playerModelAutoScale_
+    );
+    playerController_.configureRunGait(
+        gait.cycleDurationSeconds,
+        gait.groundSpeed,
+        gait.footTractionSamples
+    );
+    std::cerr << "Configured Player run gait from " << clip.name
+              << ": " << gait.cycleDurationSeconds << " s cycle, "
+              << gait.groundSpeed << " m/s planted-foot speed\n";
+}
 
 void Renderer::selectModelNode(ModelNode& node) {
     selectedModelNode_ = &node;
@@ -231,6 +563,17 @@ void Renderer::drawSkeletalAnimationControls(
     ImGui::TextWrapped(
         "CPU skinning is active for this imported model. Changes apply to the whole model instance."
     );
+    if (instance->rootNodeId == kPlayerSceneNodeId) {
+        ImGui::TextWrapped(
+            "Player animation is input-driven: idle keeps the bind pose and movement keys play Run1."
+        );
+        ImGui::Text(
+            "State: %s / %.3f s",
+            playerController_.moving() ? "Run1" : "Bind pose",
+            playerController_.runAnimationTimeSeconds()
+        );
+        return;
+    }
     ImGui::Checkbox("Animation Enabled", &instance->enabled);
     ImGui::Checkbox("Loop", &instance->looping);
     ImGui::DragFloat(
@@ -389,6 +732,30 @@ glm::mat4 Renderer::particleObjectTransform(const ModelNode& node) const {
         );
 }
 
+glm::mat4 Renderer::playerVisualTransform() const {
+    if (!playerController_.active()) {
+        return glm::mat4(1.0f);
+    }
+    const float safeAutoScale = std::max(
+        playerModelAutoScale_,
+        std::numeric_limits<float>::epsilon()
+    );
+    return glm::translate(
+               glm::mat4(1.0f),
+               playerController_.position()
+           ) *
+        glm::rotate(
+            glm::mat4(1.0f),
+            playerController_.facingYawRadians(),
+            glm::vec3(0.0f, 1.0f, 0.0f)
+        ) *
+        glm::scale(glm::mat4(1.0f), glm::vec3(safeAutoScale)) *
+        glm::translate(
+            glm::mat4(1.0f),
+            glm::vec3(0.0f, playerModelGroundOffset_, 0.0f)
+        );
+}
+
 glm::mat4 Renderer::nodeAnimationTransform(
     const ModelNode& node,
     float elapsedSeconds
@@ -417,10 +784,57 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         return;
     }
 
-    meshData_.vertices = meshData_.bindPoseVertices;
-    bool hasAnimatedInstance = false;
+    struct UpdatedVertexRange {
+        std::size_t start = 0;
+        std::size_t count = 0;
+    };
+    std::vector<UpdatedVertexRange> updatedVertexRanges;
+    updatedVertexRanges.reserve(meshData_.skeletalAnimationInstances.size());
     for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
-        if (instance.animationCount == 0 || instance.boneCount == 0 || !instance.enabled) {
+        if (instance.rootNodeId == kPlayerSceneNodeId) {
+            const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
+                *playerRunAnimationClipIndex_ < instance.animationCount;
+            instance.enabled = hasRunClip && playerController_.moving();
+            instance.playing = false;
+            instance.looping = true;
+            instance.timeSeconds = playerController_.runAnimationTimeSeconds();
+            if (hasRunClip) {
+                instance.activeClip = *playerRunAnimationClipIndex_;
+            }
+        }
+        const std::size_t vertexStart = instance.vertexStart;
+        const std::size_t vertexCount = instance.vertexCount;
+        if (vertexCount == 0 || vertexStart >= meshData_.vertices.size() ||
+            vertexCount > meshData_.vertices.size() - vertexStart) {
+            continue;
+        }
+        const std::size_t vertexEnd = vertexStart + vertexCount;
+        if (!instance.enabled) {
+            if (!instance.bindPoseApplied) {
+                std::copy_n(
+                    meshData_.bindPoseVertices.begin() + vertexStart,
+                    vertexCount,
+                    meshData_.vertices.begin() + vertexStart
+                );
+                instance.bindPoseApplied = true;
+                instance.bindPoseUploadFramesRemaining =
+                    static_cast<std::uint32_t>(vertexBuffers_.size());
+            }
+            if (instance.bindPoseUploadFramesRemaining > 0) {
+                updatedVertexRanges.push_back({vertexStart, vertexCount});
+                --instance.bindPoseUploadFramesRemaining;
+            }
+            continue;
+        }
+        std::copy_n(
+            meshData_.bindPoseVertices.begin() + vertexStart,
+            vertexCount,
+            meshData_.vertices.begin() + vertexStart
+        );
+        updatedVertexRanges.push_back({vertexStart, vertexCount});
+        instance.bindPoseApplied = true;
+
+        if (instance.animationCount == 0 || instance.boneCount == 0) {
             continue;
         }
         const std::size_t animationStart = instance.animationStart;
@@ -469,6 +883,14 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
 
         const ModelNode* root = findModelNodeById(meshData_.hierarchy, instance.rootNodeId);
         if (root == nullptr) {
+            for (ModelNode& additionalNode : meshData_.additionalNodes) {
+                root = findModelNodeById(additionalNode, instance.rootNodeId);
+                if (root != nullptr) {
+                    break;
+                }
+            }
+        }
+        if (root == nullptr) {
             continue;
         }
         std::unordered_map<std::uint32_t, const SkeletalAnimationChannel*> channels;
@@ -500,66 +922,80 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         };
         evaluateNode(evaluateNode, *root, glm::mat4(1.0f));
 
-        std::unordered_map<std::uint32_t, glm::mat4> boneMatrices;
         const std::size_t boneStart = instance.boneStart;
-        const std::size_t boneEnd = boneStart + instance.boneCount;
+        if (boneStart >= meshData_.skeletonBones.size()) {
+            continue;
+        }
+        const std::size_t boneEnd = std::min<std::size_t>(
+            meshData_.skeletonBones.size(),
+            boneStart + instance.boneCount
+        );
+        const std::size_t boneMatrixCount = boneEnd - boneStart;
+        std::vector<glm::mat4> boneMatrices(boneMatrixCount, glm::mat4(1.0f));
+        std::vector<glm::mat3> boneNormalMatrices(boneMatrixCount, glm::mat3(1.0f));
+        std::vector<bool> validBoneMatrices(boneMatrixCount, false);
         for (std::size_t boneIndex = boneStart; boneIndex < boneEnd; ++boneIndex) {
-            if (boneIndex >= meshData_.skeletonBones.size()) {
-                break;
-            }
             const SkeletonBone& bone = meshData_.skeletonBones[boneIndex];
             const auto globalIt = animatedGlobals.find(bone.nodeId);
             const glm::mat4 animatedGlobal = globalIt == animatedGlobals.end()
                 ? bone.bindPoseGlobalTransform
                 : globalIt->second;
-            boneMatrices.emplace(
-                static_cast<std::uint32_t>(boneIndex),
-                instance.globalInverseTransform * animatedGlobal * bone.offsetMatrix
+            const std::size_t localBoneIndex = boneIndex - boneStart;
+            boneMatrices[localBoneIndex] =
+                instance.globalInverseTransform * animatedGlobal * bone.offsetMatrix;
+            boneNormalMatrices[localBoneIndex] = glm::transpose(
+                glm::inverse(glm::mat3(boneMatrices[localBoneIndex]))
             );
+            validBoneMatrices[localBoneIndex] = true;
         }
 
-        for (Vertex& vertex : meshData_.vertices) {
+        for (std::size_t vertexIndex = vertexStart;
+             vertexIndex < vertexEnd;
+             ++vertexIndex) {
+            Vertex& vertex = meshData_.vertices[vertexIndex];
+            const Vertex& sourceVertex = meshData_.skinSourceVertices[vertexIndex];
             glm::vec4 skinnedPosition(0.0f);
             glm::vec3 skinnedNormal(0.0f);
             float totalWeight = 0.0f;
             for (int influenceIndex = 0; influenceIndex < 4; ++influenceIndex) {
                 const float weight = vertex.boneWeights[influenceIndex];
-                const std::uint32_t boneIndex = static_cast<std::uint32_t>(
-                    std::max(vertex.boneIndices[influenceIndex], 0)
-                );
-                if (weight <= 0.0f || boneIndex < boneStart || boneIndex >= boneEnd) {
+                const int signedBoneIndex = vertex.boneIndices[influenceIndex];
+                if (weight <= 0.0f || signedBoneIndex < 0) {
                     continue;
                 }
-                const auto matrixIt = boneMatrices.find(boneIndex);
-                if (matrixIt == boneMatrices.end()) {
+                const std::size_t boneIndex = static_cast<std::size_t>(signedBoneIndex);
+                if (boneIndex < boneStart || boneIndex >= boneEnd) {
                     continue;
                 }
-                const glm::mat4& boneMatrix = matrixIt->second;
-                const std::size_t vertexIndex = static_cast<std::size_t>(
-                    &vertex - meshData_.vertices.data()
-                );
-                skinnedPosition += boneMatrix * glm::vec4(
-                    meshData_.skinSourceVertices[vertexIndex].position,
+                const std::size_t localBoneIndex = boneIndex - boneStart;
+                if (!validBoneMatrices[localBoneIndex]) {
+                    continue;
+                }
+                skinnedPosition += boneMatrices[localBoneIndex] * glm::vec4(
+                    sourceVertex.position,
                     1.0f
                 ) * weight;
-                const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(boneMatrix)));
-                skinnedNormal += normalMatrix * meshData_.skinSourceVertices[vertexIndex].normal * weight;
+                skinnedNormal += boneNormalMatrices[localBoneIndex] *
+                    sourceVertex.normal * weight;
                 totalWeight += weight;
             }
             if (totalWeight > std::numeric_limits<float>::epsilon()) {
                 vertex.position = glm::vec3(skinnedPosition) / totalWeight;
                 vertex.normal = glm::normalize(skinnedNormal / totalWeight);
-                hasAnimatedInstance = true;
             }
         }
+        instance.bindPoseApplied = false;
+        instance.bindPoseUploadFramesRemaining = 0;
     }
 
-    if ((!meshData_.skeletalAnimationInstances.empty() || hasAnimatedInstance) &&
-        currentFrame_ < vertexBuffers_.size()) {
-        vertexBuffers_[currentFrame_]->upload(
-            meshData_.vertices.data(),
-            sizeof(Vertex) * meshData_.vertices.size()
-        );
+    if (currentFrame_ < vertexBuffers_.size()) {
+        for (const UpdatedVertexRange& range : updatedVertexRanges) {
+            vertexBuffers_[currentFrame_]->upload(
+                meshData_.vertices.data() + range.start,
+                sizeof(Vertex) * range.count,
+                sizeof(Vertex) * range.start
+            );
+        }
     }
 }
 
@@ -574,7 +1010,11 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
                                 const glm::mat4& parentTransform,
                                 bool parentRenderEnabled
                             ) -> void {
-        glm::mat4 transform = parentTransform * nodeManualTransform(node);
+        glm::mat4 objectTransform = parentTransform;
+        if (node.objectType == SceneObjectType::Player) {
+            objectTransform *= playerVisualTransform();
+        }
+        glm::mat4 transform = objectTransform * nodeManualTransform(node);
         if (node.rotationAnimationEnabled) {
             // Parent animation is applied after child-local animation, so
             // transforms are accumulated in hierarchy order from root to leaf.
@@ -592,12 +1032,6 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
     updateNode(updateNode, meshData_.hierarchy, glm::mat4(1.0f), true);
     for (const ModelNode& node : meshData_.additionalNodes) {
         updateNode(updateNode, node, glm::mat4(1.0f), true);
-    }
-    if (playerController_.active()) {
-        sceneNodeTransforms_[kPlayerSceneNodeId] = glm::translate(
-            glm::mat4(1.0f),
-            playerController_.position() - playerController_.spawnPosition()
-        );
     }
 }
 

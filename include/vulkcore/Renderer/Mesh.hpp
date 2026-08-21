@@ -73,10 +73,13 @@ struct SkeletalAnimationClip {
 };
 
 // Runtime playback state for one imported model instance. The ranges point
-// into MeshData::skeletonBones and MeshData::skeletalAnimations after scene
-// instances have been appended into the renderer's flattened scene data.
+// into MeshData's flattened vertex, skeleton, and animation arrays after
+// scene instances have been appended. Keeping the vertex range here lets CPU
+// skinning update only this model instead of copying the entire scene.
 struct SkeletalAnimationInstance {
     std::uint32_t rootNodeId = 0;
+    std::uint32_t vertexStart = 0;
+    std::uint32_t vertexCount = 0;
     std::uint32_t boneStart = 0;
     std::uint32_t boneCount = 0;
     std::uint32_t animationStart = 0;
@@ -88,6 +91,9 @@ struct SkeletalAnimationInstance {
     bool enabled = true;
     bool playing = true;
     bool looping = true;
+    // Avoid restoring and uploading an already-idle instance every frame.
+    bool bindPoseApplied = true;
+    std::uint32_t bindPoseUploadFramesRemaining = 0;
 };
 
 // Shader selections belong to a Material. Empty entries mean "use the

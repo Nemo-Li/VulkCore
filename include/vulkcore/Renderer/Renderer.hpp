@@ -63,6 +63,7 @@ private:
         std::filesystem::path path;
         std::uint32_t materialStart = 0;
         std::uint32_t materialCount = 0;
+        bool playerModel = false;
     };
 
     struct ModelResourceCacheEntry {
@@ -93,7 +94,8 @@ private:
     void appendImportedModel(
         MeshData importedMesh,
         const std::filesystem::path& path,
-        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt
+        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt,
+        bool playerModel = false
     );
     void synchronizeModelResourceMaterial(
         const std::filesystem::path& path,
@@ -132,11 +134,13 @@ private:
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds);
+    void configurePlayerRunAnimation();
     void updateSkeletalAnimations(float deltaSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
     bool isSceneNodeRenderEnabled(std::uint32_t nodeId) const;
     glm::mat4 nodeManualTransform(const ModelNode& node) const;
     glm::mat4 particleObjectTransform(const ModelNode& node) const;
+    glm::mat4 playerVisualTransform() const;
     glm::mat4 nodeAnimationTransform(const ModelNode& node, float elapsedSeconds) const;
     void createRenderPass();
     void createSceneRenderResources();
@@ -174,7 +178,8 @@ private:
     );
     bool importModelResource(
         const std::filesystem::path& path,
-        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt
+        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt,
+        bool playerModel = false
     );
     void discoverModelResources();
     void selectModelResource(const std::filesystem::path& path);
@@ -242,6 +247,10 @@ private:
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
     std::optional<glm::vec3> playerSpawnPosition_;
+    std::filesystem::path playerModelResourcePath_;
+    float playerModelAutoScale_ = 1.0f;
+    float playerModelGroundOffset_ = 0.0f;
+    std::optional<std::uint32_t> playerRunAnimationClipIndex_;
     static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;

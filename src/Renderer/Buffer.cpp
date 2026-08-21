@@ -1,5 +1,6 @@
 #include "vulkcore/Renderer/Buffer.hpp"
 
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 
@@ -72,8 +73,12 @@ VkDeviceSize Buffer::size() const {
     return size_;
 }
 
-void Buffer::upload(const void* data, VkDeviceSize dataSize) {
-    if (dataSize > size_) {
+void Buffer::upload(
+    const void* data,
+    VkDeviceSize dataSize,
+    VkDeviceSize destinationOffset
+) {
+    if (destinationOffset > size_ || dataSize > size_ - destinationOffset) {
         throw std::out_of_range("buffer upload exceeds buffer size!");
     }
     if (dataSize == 0) {
@@ -81,11 +86,22 @@ void Buffer::upload(const void* data, VkDeviceSize dataSize) {
     }
 
     void* mappedData = nullptr;
-    if (vkMapMemory(context_.device(), memory_, 0, dataSize, 0, &mappedData) != VK_SUCCESS) {
+    if (vkMapMemory(
+            context_.device(),
+            memory_,
+            0,
+            VK_WHOLE_SIZE,
+            0,
+            &mappedData
+        ) != VK_SUCCESS) {
         throw std::runtime_error("failed to map buffer memory!");
     }
 
-    std::memcpy(mappedData, data, static_cast<size_t>(dataSize));
+    std::memcpy(
+        static_cast<char*>(mappedData) + static_cast<std::size_t>(destinationOffset),
+        data,
+        static_cast<std::size_t>(dataSize)
+    );
     vkUnmapMemory(context_.device(), memory_);
 }
 

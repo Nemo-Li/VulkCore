@@ -233,6 +233,10 @@ void Renderer::initializeEmptyScene() {
     waterResourcePath_.clear();
     playerController_.clear();
     playerSpawnPosition_.reset();
+    playerModelResourcePath_.clear();
+    playerModelAutoScale_ = 1.0f;
+    playerModelGroundOffset_ = 0.0f;
+    playerRunAnimationClipIndex_.reset();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
@@ -515,11 +519,9 @@ void Renderer::appendPlayerToScene() {
     );
     meshData_.materials.push_back(std::move(playerMaterial));
 
-    const glm::vec3 spawnPosition = playerController_.spawnPosition();
     const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
     const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
-    for (Vertex vertex : capsule.vertices) {
-        vertex.position += spawnPosition;
+    for (const Vertex& vertex : capsule.vertices) {
         meshData_.vertices.push_back(vertex);
         meshData_.bindPoseVertices.push_back(vertex);
         meshData_.skinSourceVertices.push_back(vertex);
@@ -536,12 +538,12 @@ void Renderer::appendPlayerToScene() {
     playerNode.globalTransform = glm::mat4(1.0f);
     playerNode.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
     playerNode.hasBounds = true;
-    playerNode.boundsMinimum = spawnPosition + glm::vec3(
+    playerNode.boundsMinimum = glm::vec3(
         -PlayerController::kBotwLinkRadius,
         0.0f,
         -PlayerController::kBotwLinkRadius
     );
-    playerNode.boundsMaximum = spawnPosition + glm::vec3(
+    playerNode.boundsMaximum = glm::vec3(
         PlayerController::kBotwLinkRadius,
         PlayerController::kBotwLinkHeight,
         PlayerController::kBotwLinkRadius
@@ -813,11 +815,44 @@ void Renderer::recalculateSceneBounds() {
 void Renderer::appendImportedModel(
     MeshData importedMesh,
     const std::filesystem::path& path,
-    std::optional<std::uint32_t> preferredRootNodeId
+    std::optional<std::uint32_t> preferredRootNodeId,
+    bool playerModel
 ) {
+    float playerAutoScale = 1.0f;
+    float playerGroundOffset = 0.0f;
+    if (playerModel) {
+        if (!importedMesh.hierarchy.hasBounds) {
+            throw std::runtime_error("player model has no measurable bounds");
+        }
+        const float modelHeight = importedMesh.hierarchy.boundsMaximum.y -
+            importedMesh.hierarchy.boundsMinimum.y;
+        if (!std::isfinite(modelHeight) ||
+            modelHeight <= std::numeric_limits<float>::epsilon()) {
+            throw std::runtime_error("player model has an invalid height");
+        }
+        playerAutoScale = PlayerController::kBotwLinkHeight / modelHeight;
+        playerGroundOffset = -importedMesh.hierarchy.boundsMinimum.y;
+    }
+
     std::uint32_t modelIndex = nextSceneModelInstanceIndex_;
     std::uint32_t nodeOffset = 0;
-    if (preferredRootNodeId.has_value()) {
+    if (playerModel) {
+        if (preferredRootNodeId.has_value()) {
+            throw std::runtime_error("a player model cannot use a scene model root node ID");
+        }
+        const bool duplicatePlayerModel = std::any_of(
+            sceneModelResources_.begin(),
+            sceneModelResources_.end(),
+            [](const SceneModelResource& model) {
+                return model.playerModel;
+            }
+        );
+        if (duplicatePlayerModel ||
+            findSceneNodeById(meshData_, kPlayerSceneNodeId) != nullptr) {
+            throw std::runtime_error("scene already contains a player model");
+        }
+        nodeOffset = kPlayerSceneNodeId;
+    } else if (preferredRootNodeId.has_value()) {
         const std::uint32_t rootNodeId = *preferredRootNodeId;
         if (rootNodeId == 0 ||
             (rootNodeId - 1u) % kSceneModelNodeStride != 0) {
@@ -850,7 +885,7 @@ void Renderer::appendImportedModel(
             static_cast<std::uint32_t>(importedNodeCount - 1)) {
         throw std::runtime_error("scene model node IDs overflow 32-bit storage");
     }
-    if (preferredRootNodeId.has_value()) {
+    if (!playerModel && preferredRootNodeId.has_value()) {
         nextSceneModelInstanceIndex_ = std::max(
             nextSceneModelInstanceIndex_,
             modelIndex + 1u
@@ -947,6 +982,7 @@ void Renderer::appendImportedModel(
 
     for (SkeletalAnimationInstance instance : importedMesh.skeletalAnimationInstances) {
         instance.rootNodeId += nodeOffset;
+        instance.vertexStart += vertexOffset;
         instance.boneStart += boneOffset;
         instance.animationStart += animationOffset;
         meshData_.skeletalAnimationInstances.push_back(std::move(instance));
@@ -956,13 +992,26 @@ void Renderer::appendImportedModel(
         meshData_.hierarchy.name = "Scene";
     }
     const std::uint32_t rootNodeId = importedMesh.hierarchy.nodeId;
-    meshData_.hierarchy.children.push_back(std::move(importedMesh.hierarchy));
+    if (playerModel) {
+        playerModelResourcePath_ = normalizedPath(path);
+        playerModelAutoScale_ = playerAutoScale;
+        playerModelGroundOffset_ = playerGroundOffset;
+        importedMesh.hierarchy.name = "Player (" + path.filename().string() + ")";
+        importedMesh.hierarchy.objectType = SceneObjectType::Player;
+        meshData_.additionalNodes.push_back(std::move(importedMesh.hierarchy));
+    } else {
+        meshData_.hierarchy.children.push_back(std::move(importedMesh.hierarchy));
+    }
     sceneModelResources_.push_back({
         rootNodeId,
         normalizedPath(path),
         materialOffset,
         importedMaterialCount,
+        playerModel,
     });
+    if (playerModel) {
+        configurePlayerRunAnimation();
+    }
     recalculateSceneBounds();
 }
 
@@ -1111,6 +1160,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     std::vector<ModelResourceReference> modelReferences;
     std::filesystem::path terrainPath;
     std::filesystem::path waterPath;
+    std::filesystem::path playerModelPath;
     std::optional<glm::vec3> playerSpawnPosition;
     bool sceneHasSun = false;
     bool sceneHasPlayer = true;
@@ -1160,6 +1210,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             waterPath = std::move(configuredPath);
+        } else if (key == "player_model_resource") {
+            std::string configuredPath;
+            if (!(sceneFile >> std::quoted(configuredPath)) || configuredPath.empty()) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player model path.";
+                return false;
+            }
+            playerModelPath = std::move(configuredPath);
         } else if (key == "player_present") {
             int present = 1;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -1258,6 +1316,25 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             return false;
         }
     }
+    if (!playerModelPath.empty()) {
+        if (playerModelPath.is_relative()) {
+            const std::filesystem::path sceneRelativePath =
+                resolvedScenePath.parent_path() / playerModelPath;
+            if (std::filesystem::is_regular_file(sceneRelativePath, error)) {
+                playerModelPath = sceneRelativePath;
+            } else {
+                error.clear();
+                playerModelPath = std::filesystem::absolute(playerModelPath, error);
+            }
+        }
+        if (!std::filesystem::is_regular_file(playerModelPath, error)) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Player model referenced by scene was not found: " +
+                playerModelPath.string();
+            return false;
+        }
+        playerModelPath = normalizedPath(playerModelPath);
+    }
 
     clearSceneData();
     playerSpawnPosition_ = playerSpawnPosition;
@@ -1288,7 +1365,18 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                     *physicsWorld_,
                     playerSpawnPosition_
                 );
-                appendPlayerToScene();
+                if (playerModelPath.empty()) {
+                    appendPlayerToScene();
+                } else if (!importModelResource(
+                               playerModelPath,
+                               std::nullopt,
+                               true
+                           )) {
+                    sceneStatusFailed_ = true;
+                    sceneStatus_ = "Failed to load player model: " +
+                        resourceImportStatus_;
+                    return false;
+                }
                 appendGrassToScene(*terrainScene_, playerController_.spawnPosition());
             }
             generatedGeometryChanged = true;
@@ -2087,6 +2175,19 @@ bool Renderer::saveTransformSettings() const {
             file << "player_spawn_position " << playerSpawnPosition_->x << ' '
                  << playerSpawnPosition_->y << ' ' << playerSpawnPosition_->z << "\n";
         }
+        if (playerController_.active() && !playerModelResourcePath_.empty()) {
+            relativeError.clear();
+            std::filesystem::path playerModelReference = std::filesystem::relative(
+                playerModelResourcePath_,
+                configPath.parent_path(),
+                relativeError
+            );
+            if (relativeError || playerModelReference.empty()) {
+                playerModelReference = playerModelResourcePath_;
+            }
+            file << "player_model_resource "
+                 << std::quoted(playerModelReference.generic_string()) << "\n";
+        }
         if (!waterResourcePath_.empty()) {
             relativeError.clear();
             std::filesystem::path waterReference = std::filesystem::relative(
@@ -2102,6 +2203,9 @@ bool Renderer::saveTransformSettings() const {
         }
     }
     for (const SceneModelResource& model : sceneModelResources_) {
+        if (model.playerModel) {
+            continue;
+        }
         file << "model_resource_path " << std::quoted(model.path.string()) << ' '
              << model.rootNodeId << "\n";
     }

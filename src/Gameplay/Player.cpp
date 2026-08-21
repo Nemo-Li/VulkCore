@@ -8,13 +8,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace VulkCore {
 
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kMovementSpeed = 4.5f;
+constexpr float kPlayerTurnSpeed = 10.0f;
 constexpr float kJumpSpeed = 6.2f;
 constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
@@ -22,6 +23,8 @@ constexpr float kCameraDistance = 5.0f;
 constexpr float kCameraTargetHeight = 0.92f;
 constexpr float kCameraPitchLimit = kPi / 12.0f;
 constexpr float kInitialCameraPitch = -kCameraPitchLimit;
+constexpr float kFallbackRunCycleSeconds = 0.9f;
+constexpr float kFallbackRunStrideHeightRatio = 1.3f;
 
 std::optional<float> playerGroundHeight(
     const TerrainScene& terrain,
@@ -160,11 +163,18 @@ CapsuleMeshData createCapsuleMesh(
 void PlayerController::clear() {
     active_ = false;
     grounded_ = true;
+    moving_ = false;
     jumpWasDown_ = false;
     lookDragging_ = false;
     spawnPosition_ = glm::vec3(0.0f);
     position_ = glm::vec3(0.0f);
     velocity_ = glm::vec3(0.0f);
+    facingYawRadians_ = 0.0f;
+    runAnimationTimeSeconds_ = 0.0f;
+    runCycleDurationSeconds_ = kFallbackRunCycleSeconds;
+    runGroundSpeed_ = kBotwLinkHeight * kFallbackRunStrideHeightRatio /
+        kFallbackRunCycleSeconds;
+    footTractionSamples_.assign(1, 1.0f);
 }
 
 void PlayerController::reset(
@@ -172,6 +182,14 @@ void PlayerController::reset(
     PhysicsWorld& physics,
     const std::optional<glm::vec3>& spawnPosition
 ) {
+    if (runCycleDurationSeconds_ <= 0.0f || runGroundSpeed_ <= 0.0f) {
+        configureRunGait(
+            kFallbackRunCycleSeconds,
+            kBotwLinkHeight * kFallbackRunStrideHeightRatio /
+                kFallbackRunCycleSeconds,
+            {1.0f}
+        );
+    }
     spawnPosition_ = terrain.centerPosition();
     if (spawnPosition.has_value()) {
         spawnPosition_.x = spawnPosition->x;
@@ -188,11 +206,61 @@ void PlayerController::reset(
     position_ = physics.playerFootPosition();
     velocity_ = physics.playerLinearVelocity();
     grounded_ = physics.playerGrounded();
+    moving_ = false;
     jumpWasDown_ = false;
     lookDragging_ = false;
+    // Imported player models use local +Z as forward. The initial camera
+    // looks toward world -Z, so start the visual facing the same direction.
+    facingYawRadians_ = kPi;
+    runAnimationTimeSeconds_ = 0.0f;
     yawRadians_ = 0.0f;
     pitchRadians_ = kInitialCameraPitch;
     active_ = true;
+}
+
+void PlayerController::configureRunGait(
+    float cycleDurationSeconds,
+    float groundSpeed,
+    std::vector<float> footTractionSamples
+) {
+    if (!std::isfinite(cycleDurationSeconds) || cycleDurationSeconds <= 0.0f ||
+        !std::isfinite(groundSpeed) || groundSpeed <= 0.0f) {
+        return;
+    }
+    runCycleDurationSeconds_ = cycleDurationSeconds;
+    runGroundSpeed_ = groundSpeed;
+    footTractionSamples_ = std::move(footTractionSamples);
+    if (footTractionSamples_.empty()) {
+        footTractionSamples_.assign(1, 1.0f);
+    }
+    for (float& traction : footTractionSamples_) {
+        traction = std::isfinite(traction)
+            ? std::clamp(traction, 0.0f, 1.0f)
+            : 1.0f;
+    }
+    runAnimationTimeSeconds_ = 0.0f;
+}
+
+float PlayerController::currentFootTraction() const {
+    if (footTractionSamples_.empty() || runCycleDurationSeconds_ <= 0.0f) {
+        return 1.0f;
+    }
+    const float phase = std::clamp(
+        runAnimationTimeSeconds_ / runCycleDurationSeconds_,
+        0.0f,
+        1.0f
+    );
+    const float samplePosition = phase *
+        static_cast<float>(footTractionSamples_.size());
+    const std::size_t leftIndex = static_cast<std::size_t>(samplePosition) %
+        footTractionSamples_.size();
+    const std::size_t rightIndex = (leftIndex + 1) % footTractionSamples_.size();
+    const float factor = samplePosition - std::floor(samplePosition);
+    return glm::mix(
+        footTractionSamples_[leftIndex],
+        footTractionSamples_[rightIndex],
+        factor
+    );
 }
 
 glm::vec3 PlayerController::horizontalForward() const {
@@ -247,27 +315,65 @@ void PlayerController::update(
     }
     jumpWasDown_ = jumpDown;
 
-    glm::vec2 horizontalVelocity(0.0f);
+    glm::vec2 movementDirection2D(0.0f);
+    moving_ = false;
     if (!keyboardCaptured && window != nullptr) {
+        const bool moveLeft =
+            glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
+        const bool moveRight =
+            glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+        const bool moveForward =
+            glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+        const bool moveBackward =
+            glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
+            glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
         const float horizontalInput =
-            static_cast<float>(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) -
-            static_cast<float>(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS);
+            static_cast<float>(moveRight) - static_cast<float>(moveLeft);
         const float forwardInput =
-            static_cast<float>(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) -
-            static_cast<float>(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS);
+            static_cast<float>(moveForward) - static_cast<float>(moveBackward);
         const glm::vec3 forward = horizontalForward();
         const glm::vec3 right = glm::vec3(-forward.z, 0.0f, forward.x);
         const glm::vec3 inputDirection = forward * forwardInput + right * horizontalInput;
         if (glm::length(inputDirection) > 0.001f) {
-            const glm::vec3 movementVelocity =
-                glm::normalize(inputDirection) * kMovementSpeed;
-            horizontalVelocity = glm::vec2(
-                movementVelocity.x,
-                movementVelocity.z
+            const glm::vec3 movementDirection = glm::normalize(inputDirection);
+            movementDirection2D = glm::vec2(
+                movementDirection.x,
+                movementDirection.z
             );
+            moving_ = true;
+            const float targetFacingYaw = std::atan2(
+                movementDirection.x,
+                movementDirection.z
+            );
+            const float facingDelta = std::remainder(
+                targetFacingYaw - facingYawRadians_,
+                2.0f * kPi
+            );
+            const float maximumTurn = kPlayerTurnSpeed * deltaSeconds;
+            facingYawRadians_ += std::clamp(
+                facingDelta,
+                -maximumTurn,
+                maximumTurn
+            );
+            facingYawRadians_ = std::remainder(facingYawRadians_, 2.0f * kPi);
         }
     }
-    physics.setPlayerHorizontalVelocity(horizontalVelocity);
+    if (moving_ && runCycleDurationSeconds_ > 0.0f) {
+        runAnimationTimeSeconds_ = std::fmod(
+            runAnimationTimeSeconds_ + deltaSeconds,
+            runCycleDurationSeconds_
+        );
+    } else {
+        runAnimationTimeSeconds_ = 0.0f;
+    }
+    physics.setPlayerFootTraction(
+        movementDirection2D,
+        moving_ ? runGroundSpeed_ : 0.0f,
+        moving_ ? currentFootTraction() : 1.0f
+    );
     physics.simulate(deltaSeconds);
     position_ = physics.playerRenderFootPosition();
     velocity_ = physics.playerLinearVelocity();

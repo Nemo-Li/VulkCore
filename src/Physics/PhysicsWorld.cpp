@@ -28,6 +28,9 @@ constexpr float kGroundProbeDistance = 0.12f;
 constexpr float kMinimumGroundNormalY = 0.35f;
 constexpr float kMaximumGroundedUpwardSpeed = 1.0f;
 constexpr float kPlayerMass = 70.0f;
+constexpr float kPlayerFootStaticFriction = 1.35f;
+constexpr float kPlayerFootDynamicFriction = 1.05f;
+constexpr float kMinimumAnimatedFootContact = 0.2f;
 
 physx::PxVec3 toPhysX(const glm::vec3& value) {
     return physx::PxVec3(value.x, value.y, value.z);
@@ -55,6 +58,7 @@ struct PhysicsWorld::Impl {
     physx::PxDefaultCpuDispatcher* dispatcher = nullptr;
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
+    physx::PxMaterial* playerFootMaterial = nullptr;
     std::vector<physx::PxRigidStatic*> terrainActors;
     std::vector<physx::PxTriangleMesh*> terrainMeshes;
     physx::PxRigidDynamic* playerActor = nullptr;
@@ -66,6 +70,9 @@ struct PhysicsWorld::Impl {
     bool playerPoseInitialized = false;
     bool extensionsInitialized = false;
     bool grounded = false;
+    glm::vec2 playerMovementDirection{0.0f};
+    float playerTargetSpeed = 0.0f;
+    float playerFootContactStrength = 1.0f;
 
     Impl() {
         try {
@@ -114,6 +121,15 @@ struct PhysicsWorld::Impl {
             if (material == nullptr) {
                 throw std::runtime_error("failed to create the default PhysX material");
             }
+            playerFootMaterial = physics->createMaterial(
+                kPlayerFootStaticFriction,
+                kPlayerFootDynamicFriction,
+                0.0f
+            );
+            if (playerFootMaterial == nullptr) {
+                throw std::runtime_error("failed to create the player foot material");
+            }
+            playerFootMaterial->setFrictionCombineMode(physx::PxCombineMode::eMAX);
         } catch (...) {
             shutdown();
             throw;
@@ -126,6 +142,10 @@ struct PhysicsWorld::Impl {
 
     void shutdown() {
         clear();
+        if (playerFootMaterial != nullptr) {
+            playerFootMaterial->release();
+            playerFootMaterial = nullptr;
+        }
         if (material != nullptr) {
             material->release();
             material = nullptr;
@@ -164,6 +184,9 @@ struct PhysicsWorld::Impl {
         previousPlayerFootPosition = glm::vec3(0.0f);
         currentPlayerFootPosition = glm::vec3(0.0f);
         playerPoseInitialized = false;
+        playerMovementDirection = glm::vec2(0.0f);
+        playerTargetSpeed = 0.0f;
+        playerFootContactStrength = 1.0f;
     }
 
     glm::vec3 rawPlayerFootPosition() const {
@@ -227,6 +250,52 @@ struct PhysicsWorld::Impl {
                 return;
             }
         }
+    }
+
+    void applyPlayerFootTraction() {
+        if (playerActor == nullptr || !grounded) {
+            return;
+        }
+
+        const bool wantsMovement = playerTargetSpeed > 0.0f &&
+            glm::dot(playerMovementDirection, playerMovementDirection) > 0.0f;
+        const glm::vec2 desiredVelocity = wantsMovement
+            ? playerMovementDirection * playerTargetSpeed
+            : glm::vec2(0.0f);
+        const physx::PxVec3 currentVelocity = playerActor->getLinearVelocity();
+        glm::vec2 velocityChange = desiredVelocity - glm::vec2(
+            currentVelocity.x,
+            currentVelocity.z
+        );
+        const float velocityChangeLength = glm::length(velocityChange);
+        if (velocityChangeLength <= std::numeric_limits<float>::epsilon()) {
+            return;
+        }
+
+        // Coulomb friction bounds the impulse available from a planted foot.
+        // Releasing the movement keys uses static friction to settle the body;
+        // while running, the sampled animation contact controls how much of
+        // the dynamic-friction budget the current stance can use.
+        const float friction = wantsMovement
+            ? kPlayerFootDynamicFriction
+            : kPlayerFootStaticFriction;
+        const float contactStrength = wantsMovement
+            ? std::clamp(
+                  playerFootContactStrength,
+                  kMinimumAnimatedFootContact,
+                  1.0f
+              )
+            : 1.0f;
+        const float maximumVelocityChange =
+            friction * kGravity * contactStrength * kFixedTimeStep;
+        if (velocityChangeLength > maximumVelocityChange) {
+            velocityChange *= maximumVelocityChange / velocityChangeLength;
+        }
+        playerActor->addForce(
+            physx::PxVec3(velocityChange.x, 0.0f, velocityChange.y),
+            physx::PxForceMode::eVELOCITY_CHANGE,
+            true
+        );
     }
 };
 
@@ -407,7 +476,7 @@ void PhysicsWorld::createPlayer(
     const physx::PxCapsuleGeometry playerGeometry(radius, halfCylinderHeight);
     physx::PxShape* playerShape = impl_->physics->createShape(
         playerGeometry,
-        *impl_->material,
+        *impl_->playerFootMaterial,
         true
     );
     if (playerShape == nullptr) {
@@ -451,14 +520,24 @@ bool PhysicsWorld::hasPlayer() const {
     return impl_->playerActor != nullptr;
 }
 
-void PhysicsWorld::setPlayerHorizontalVelocity(const glm::vec2& velocity) {
-    if (impl_->playerActor == nullptr) {
+void PhysicsWorld::setPlayerFootTraction(
+    const glm::vec2& direction,
+    float targetSpeed,
+    float contactStrength
+) {
+    if (!std::isfinite(targetSpeed) || targetSpeed <= 0.0f ||
+        !std::isfinite(direction.x) || !std::isfinite(direction.y) ||
+        glm::length(direction) <= std::numeric_limits<float>::epsilon()) {
+        impl_->playerMovementDirection = glm::vec2(0.0f);
+        impl_->playerTargetSpeed = 0.0f;
+        impl_->playerFootContactStrength = 1.0f;
         return;
     }
-    physx::PxVec3 linearVelocity = impl_->playerActor->getLinearVelocity();
-    linearVelocity.x = velocity.x;
-    linearVelocity.z = velocity.y;
-    impl_->playerActor->setLinearVelocity(linearVelocity, true);
+    impl_->playerMovementDirection = glm::normalize(direction);
+    impl_->playerTargetSpeed = targetSpeed;
+    impl_->playerFootContactStrength = std::isfinite(contactStrength)
+        ? std::clamp(contactStrength, 0.0f, 1.0f)
+        : 1.0f;
 }
 
 bool PhysicsWorld::jump(float verticalSpeed) {
@@ -482,6 +561,7 @@ void PhysicsWorld::simulate(float deltaSeconds) {
         kMaximumAccumulatedTime
     );
     while (impl_->accumulator >= kFixedTimeStep) {
+        impl_->applyPlayerFootTraction();
         if (impl_->playerPoseInitialized) {
             impl_->previousPlayerFootPosition = impl_->currentPlayerFootPosition;
         }
@@ -492,6 +572,7 @@ void PhysicsWorld::simulate(float deltaSeconds) {
         if (impl_->playerPoseInitialized) {
             impl_->currentPlayerFootPosition = impl_->rawPlayerFootPosition();
         }
+        impl_->updateGroundedState();
         impl_->accumulator -= kFixedTimeStep;
     }
     impl_->updateGroundedState();

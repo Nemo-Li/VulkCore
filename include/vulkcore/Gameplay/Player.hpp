@@ -38,6 +38,11 @@ public:
         PhysicsWorld& physics,
         const std::optional<glm::vec3>& spawnPosition = std::nullopt
     );
+    void configureRunGait(
+        float cycleDurationSeconds,
+        float groundSpeed,
+        std::vector<float> footTractionSamples
+    );
     void update(
         GLFWwindow* window,
         float deltaSeconds,
@@ -51,14 +56,19 @@ public:
     const glm::vec3& spawnPosition() const { return spawnPosition_; }
     const glm::vec3& velocity() const { return velocity_; }
     bool grounded() const { return grounded_; }
+    float facingYawRadians() const { return facingYawRadians_; }
+    bool moving() const { return moving_; }
+    float runAnimationTimeSeconds() const { return runAnimationTimeSeconds_; }
     glm::vec3 cameraTargetWorld() const;
     glm::vec3 cameraPositionWorld() const;
 
 private:
     glm::vec3 horizontalForward() const;
+    float currentFootTraction() const;
 
     bool active_ = false;
     bool grounded_ = true;
+    bool moving_ = false;
     bool jumpWasDown_ = false;
     bool lookDragging_ = false;
     double lastCursorX_ = 0.0;
@@ -66,6 +76,11 @@ private:
     glm::vec3 spawnPosition_{0.0f};
     glm::vec3 position_{0.0f};
     glm::vec3 velocity_{0.0f};
+    float facingYawRadians_ = 0.0f;
+    float runAnimationTimeSeconds_ = 0.0f;
+    float runCycleDurationSeconds_ = 0.0f;
+    float runGroundSpeed_ = 0.0f;
+    std::vector<float> footTractionSamples_;
     float yawRadians_ = 0.0f;
     float pitchRadians_ = -0.2617993878f;
 };
