@@ -951,6 +951,7 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
     if (!meshData.skeletonBones.empty() && !meshData.skeletalAnimations.empty()) {
         VulkCore::SkeletalAnimationInstance instance;
         instance.rootNodeId = meshData.hierarchy.nodeId;
+        instance.vertexCount = static_cast<std::uint32_t>(meshData.vertices.size());
         instance.boneCount = static_cast<std::uint32_t>(meshData.skeletonBones.size());
         instance.animationCount = static_cast<std::uint32_t>(meshData.skeletalAnimations.size());
         instance.globalInverseTransform = glm::inverse(meshData.hierarchy.globalTransform);

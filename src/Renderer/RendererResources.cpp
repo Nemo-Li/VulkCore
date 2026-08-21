@@ -4,7 +4,8 @@ namespace VulkCore {
 
 bool Renderer::importModelResource(
     const std::filesystem::path& path,
-    std::optional<std::uint32_t> preferredRootNodeId
+    std::optional<std::uint32_t> preferredRootNodeId,
+    bool playerModel
 ) {
     resourceImportFailed_ = false;
     resourceImportStatus_.clear();
@@ -96,7 +97,8 @@ bool Renderer::importModelResource(
     appendImportedModel(
         std::move(importedMesh),
         resolvedPath,
-        preferredRootNodeId
+        preferredRootNodeId,
+        playerModel
     );
     discoverModelResources();
     if (preserveSun) {
@@ -111,8 +113,10 @@ bool Renderer::importModelResource(
     materialSpecularTexturePathMaterialIndex_ = -1;
     selectedResourceType_ = ResourceSelectionType::Model;
     selectedResourceMaterialIndex_ = -1;
-    resourceImportStatus_ = "Imported " + resolvedPath.filename().string() +
-        " into the scene (" + std::to_string(importedVertexCount) + " vertices, " +
+    resourceImportStatus_ = std::string(playerModel ? "Set player model to " : "Imported ") +
+        resolvedPath.filename().string() +
+        (playerModel ? " (" : " into the scene (") +
+        std::to_string(importedVertexCount) + " vertices, " +
         std::to_string(importedTriangleCount) + " triangles).";
     selectModelResource(resolvedPath);
     return true;

@@ -54,27 +54,42 @@ int main() {
         return 1;
     }
 
-    for (int step = 0; step < 180; ++step) {
-        physics.setPlayerHorizontalVelocity(glm::vec2(2.0f, 0.0f));
+    physics.setPlayerFootTraction(glm::vec2(1.0f, 0.0f), 2.0f, 1.0f);
+    physics.simulate(1.0f / 60.0f);
+    const float firstTractionStepSpeed = physics.playerLinearVelocity().x;
+    if (firstTractionStepSpeed <= 0.0f || firstTractionStepSpeed >= 2.0f) {
+        std::cerr << "foot traction did not accelerate progressively: vx="
+                  << firstTractionStepSpeed << '\n';
+        return 2;
+    }
+    for (int step = 1; step < 180; ++step) {
         physics.simulate(1.0f / 60.0f);
     }
-    physics.setPlayerHorizontalVelocity(glm::vec2(0.0f));
+    physics.setPlayerFootTraction(glm::vec2(0.0f), 0.0f, 1.0f);
     if (!physics.playerGrounded() || physics.playerFootPosition().x < 2.0f) {
         std::cerr << "player did not cross the terrain chunk boundary: x="
                   << physics.playerFootPosition().x << '\n';
-        return 2;
+        return 3;
+    }
+    for (int step = 0; step < 60; ++step) {
+        physics.simulate(1.0f / 60.0f);
+    }
+    if (std::abs(physics.playerLinearVelocity().x) > 0.1f) {
+        std::cerr << "static foot friction did not stop the player: vx="
+                  << physics.playerLinearVelocity().x << '\n';
+        return 4;
     }
 
     const glm::vec3 preJumpPosition = physics.playerFootPosition();
     if (!physics.jump(6.2f)) {
         std::cerr << "grounded player could not jump\n";
-        return 3;
+        return 5;
     }
     physics.simulate(1.0f / 60.0f);
     const glm::vec3 postJumpPosition = physics.playerFootPosition();
     if (postJumpPosition.y <= preJumpPosition.y) {
         std::cerr << "jump did not move the player upward\n";
-        return 4;
+        return 6;
     }
 
     physics.simulate(1.0f / 120.0f);
@@ -83,7 +98,7 @@ int main() {
         renderPosition.y >= postJumpPosition.y) {
         std::cerr << "render pose was not interpolated between fixed steps: y="
                   << renderPosition.y << '\n';
-        return 5;
+        return 7;
     }
 
     return 0;

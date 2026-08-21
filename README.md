@@ -132,7 +132,7 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 p
 - 首个 UV 通道、顶点颜色和材质信息读取
 - FBX 原始节点层级保留，供右侧 Model Hierarchy 面板展示
 - 骨骼、绑定影响、动画 Clip/Channel 和 Position/Rotation/Scale 关键帧读取
-- 每个顶点最多保留 4 个骨骼影响；每帧在 CPU 上采样关键帧并更新当前帧顶点缓冲，兼容现有材质 Shader ABI
+- 每个顶点最多保留 4 个骨骼影响；每帧只对动画模型自身的顶点区间执行 CPU 蒙皮和局部缓冲上传，不复制地形等静态场景数据
 - 模型实例之间使用独立的骨骼/Clip 索引范围，重复导入同一个动画模型也会分别播放
 
 没有 UV 的顶点会使用 `(0, 0)`。每个材质对应一个绘制分段，材质纹理不可用时使用其
@@ -219,12 +219,17 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 #### PhysX 地形与 Player 物理
 
 加载包含 BOTW Terrain 和 Player 的游戏场景时，每个渲染地形 Chunk 会同时烘焙为 PhysX
-静态三角网格。每 Chunk 的 AABB 与网格内部 BVH 用于分级碰撞粗筛，Player 则使用与可视胶囊
-同尺寸的动态胶囊碰撞体。
+静态三角网格。每 Chunk 的 AABB 与网格内部 BVH 用于分级碰撞粗筛，Player 使用 1.58 m 高的
+动态胶囊碰撞体。场景可通过 `player_model_resource "path/to/model.glb"` 指定 Player 外观；
+FBX/GLB 等导入模型会自动按碰撞体高度缩放、脚底对齐，并让完整节点层级与骨骼动画跟随
+Player 移动。未设置该字段时继续显示程序化胶囊，也可以在 Assets 的模型 Inspector 中用
+`Set as Player Model` / `Use Player Capsule` 切换并保存到当前场景。
 物理场景以 60 Hz 固定步长运行，开启连续碰撞检测（CCD），当前实现包含：
 
-- PhysX 重力、地形接触、摩擦和穿透修正
-- `WASD` 水平速度控制与 `Space` grounded 跳跃
+- PhysX 重力、地形接触、脚底高摩擦材质和穿透修正
+- `WASD` / 方向键触发 Player 的 `Run1` 循环并平滑转向；移动速度从动画触地脚骨反推，
+  每个固定物理步通过落脚相位控制的摩擦冲量推进，松键后由静摩擦减速
+- Player 默认保持 bind pose、不自动播放导入动画，`Space` 仍执行 grounded 跳跃
 - 动态刚体位置/速度同步到 Player 渲染节点和相机目标
 - Player Inspector 中的落地状态与实时速度信息
 

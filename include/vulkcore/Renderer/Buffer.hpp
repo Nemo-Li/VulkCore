@@ -23,7 +23,11 @@ public:
     VkDeviceMemory memory() const;
     VkDeviceSize size() const;
 
-    void upload(const void* data, VkDeviceSize dataSize);
+    void upload(
+        const void* data,
+        VkDeviceSize dataSize,
+        VkDeviceSize destinationOffset = 0
+    );
     void download(void* data, VkDeviceSize dataSize) const;
 
 private:
