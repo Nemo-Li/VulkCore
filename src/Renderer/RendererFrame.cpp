@@ -504,15 +504,8 @@ void Renderer::drawFrame() {
     );
     updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
     lastFrameElapsedSeconds_ = elapsedSeconds;
-    const glm::vec3 cameraTarget(0.0f);
-    const glm::vec3 cameraPosition = cameraPosition_;
-    const glm::vec3 cameraForward = glm::normalize(cameraTarget - cameraPosition);
-    const glm::vec3 worldUp = std::abs(glm::dot(cameraForward, glm::vec3(0.0f, 0.0f, 1.0f))) > 0.99f
-        ? glm::vec3(0.0f, 1.0f, 0.0f)
-        : glm::vec3(0.0f, 0.0f, 1.0f);
-    const glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
-    const glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
-    updateParticleSystems(particleDeltaSeconds, cameraRight, cameraUp);
+    updateCameraBasis();
+    updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
     updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {

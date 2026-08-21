@@ -1198,6 +1198,10 @@ void Renderer::loadTransformSettings() {
     cameraPosition_ = glm::length(cameraPosition) < 0.05f
         ? glm::vec3(3.5f, 3.5f, 2.8f)
         : cameraPosition;
+    // A loaded scene may replace the camera while another scene was already
+    // active. Reinitialize the roll once for the new saved camera position;
+    // subsequent position edits remain continuous through updateCameraBasis().
+    cameraBasisInitialized_ = false;
     ambientLightIntensity_ = std::clamp(ambientLightIntensity, 0.0f, 4.0f);
     sunLightDirection_ = sunLightDirection;
     if (glm::length(sunLightDirection_) < 0.001f) {
