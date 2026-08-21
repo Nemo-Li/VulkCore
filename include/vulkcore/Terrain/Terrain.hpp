@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,13 @@ public:
     const std::vector<std::uint16_t>& heights() const { return heights_; }
     const glm::vec3& boundsMinimum() const { return boundsMinimum_; }
     const glm::vec3& boundsMaximum() const { return boundsMaximum_; }
+
+    bool containsWorldPoint(const glm::vec2& worldPosition) const;
+    std::optional<float> heightAtWorld(
+        const glm::vec2& worldPosition,
+        float worldScale,
+        float maximumHeight
+    ) const;
 
     // Appends a sampled regular grid to a shared mesh. The stride is applied
     // to the 256x256 source samples and the final edge sample is always kept.
@@ -133,7 +141,12 @@ public:
 
     const TerrainSceneHeader& header() const { return header_; }
     const std::vector<TerrainChunk>& chunks() const { return chunks_; }
+    const glm::vec3& boundsMinimum() const { return boundsMinimum_; }
+    const glm::vec3& boundsMaximum() const { return boundsMaximum_; }
     std::size_t tileCount() const;
+
+    std::optional<float> heightAtWorld(const glm::vec2& worldPosition) const;
+    glm::vec3 centerPosition() const;
 
     TerrainMeshData buildMesh(const TerrainMeshOptions& options = {}) const;
 
@@ -142,6 +155,8 @@ private:
 
     TerrainSceneHeader header_;
     std::vector<TerrainChunk> chunks_;
+    glm::vec3 boundsMinimum_{0.0f};
+    glm::vec3 boundsMaximum_{0.0f};
 };
 
 } // namespace VulkCore

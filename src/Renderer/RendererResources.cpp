@@ -883,24 +883,27 @@ void Renderer::updateSceneTextureDescriptors() {
 }
 
 void Renderer::updateCameraBasis() {
-    constexpr float kMinimumCameraDistance = 0.05f;
     constexpr float kMinimumBasisLength = 0.0001f;
-    const glm::vec3 cameraTarget(0.0f);
-    glm::vec3 targetDelta = cameraTarget - cameraPosition_;
+    const float kMinimumCameraDistance = playerController_.active()
+        ? std::max(0.00001f, modelScale_ * 0.02f)
+        : 0.05f;
+    glm::vec3 targetDelta = cameraTarget_ - cameraPosition_;
     if (glm::length(targetDelta) < kMinimumCameraDistance) {
-        cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
-        targetDelta = cameraTarget - cameraPosition_;
+        cameraPosition_ = cameraTarget_ + glm::vec3(3.5f, 2.8f, 3.5f);
+        targetDelta = cameraTarget_ - cameraPosition_;
         cameraBasisInitialized_ = false;
     }
 
     cameraForward_ = glm::normalize(targetDelta);
 
     if (!cameraBasisInitialized_) {
-        // Use the renderer's Z-up convention to initialize ordinary views.
+        const glm::vec3 worldUp = playerController_.active()
+            ? glm::vec3(0.0f, 1.0f, 0.0f)
+            : glm::vec3(0.0f, 0.0f, 1.0f);
         // At the exact pole the position alone does not define camera roll,
         // so retain the historical front-view orientation as the initial one.
-        glm::vec3 initialUp = glm::vec3(0.0f, 0.0f, 1.0f) -
-            cameraForward_ * glm::dot(glm::vec3(0.0f, 0.0f, 1.0f), cameraForward_);
+        glm::vec3 initialUp = worldUp -
+            cameraForward_ * glm::dot(worldUp, cameraForward_);
         if (glm::length(initialUp) < kMinimumBasisLength) {
             initialUp = glm::vec3(0.0f, 1.0f, 0.0f);
         }
@@ -921,8 +924,11 @@ void Renderer::updateCameraBasis() {
         }
         if (glm::length(continuousUp) < kMinimumBasisLength) {
             // Defensive fallback for a discontinuous external camera jump.
-            continuousUp = glm::vec3(0.0f, 1.0f, 0.0f) -
-                cameraForward_ * glm::dot(glm::vec3(0.0f, 1.0f, 0.0f), cameraForward_);
+            const glm::vec3 worldUp = playerController_.active()
+                ? glm::vec3(0.0f, 1.0f, 0.0f)
+                : glm::vec3(0.0f, 0.0f, 1.0f);
+            continuousUp = worldUp -
+                cameraForward_ * glm::dot(worldUp, cameraForward_);
         }
         cameraUp_ = glm::normalize(continuousUp);
     }
@@ -948,8 +954,7 @@ void Renderer::updateUniformBuffer() {
 
     ubo.model = modelNormalization;
     ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
-    const glm::vec3 cameraTarget(0.0f);
-    ubo.view = glm::lookAt(cameraPosition_, cameraTarget, cameraUp_);
+    ubo.view = glm::lookAt(cameraPosition_, cameraTarget_, cameraUp_);
 
     const VkExtent2D extent = swapChain_->extent();
     if (extent.height == 0) {
@@ -961,10 +966,13 @@ void Renderer::updateUniformBuffer() {
         1.0f / static_cast<float>(extent.width),
         1.0f / static_cast<float>(extent.height)
     );
+    const float nearPlane = playerController_.active()
+        ? std::max(0.00001f, modelScale_ * 0.02f)
+        : 0.01f;
     ubo.projection = glm::perspective(
         glm::radians(45.0f),
         static_cast<float>(extent.width) / static_cast<float>(extent.height),
-        0.01f,
+        nearPlane,
         100.0f
     );
     // GLM follows OpenGL's Y direction; Vulkan's viewport uses the opposite one.

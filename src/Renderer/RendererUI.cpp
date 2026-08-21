@@ -966,6 +966,10 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             ImGui::TextWrapped("Select a hierarchy node to inspect its material bindings.");
             } else if (selectedModelNode_->objectType == SceneObjectType::ParticleSystem) {
             ImGui::TextWrapped("The selected object is a Particle System, not a model node.");
+            } else if (selectedModelNode_->objectType == SceneObjectType::Player) {
+            ImGui::SeparatorText("Player Controller");
+            ImGui::TextWrapped("BOTW Link capsule height: %.2f m", PlayerController::kBotwLinkHeight);
+            ImGui::TextWrapped("WASD move, Space jump, hold RMB to orbit the camera.");
             } else {
             ImGui::SeparatorText("Selected Model Node");
             ImGui::TextWrapped("%s  (ID %u)",
