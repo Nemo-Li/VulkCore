@@ -45,7 +45,10 @@ void main() {
     float turbulence = clamp(pushConstants.waterSurface.x, 0.0, 1.0);
     float waveScale = max(pushConstants.waterSurface.y, 0.1);
     float waveHeight = max(pushConstants.waterSurface.z, 0.0);
-    vec2 scaledPosition = inPosition.xy * waveScale;
+    // VulkCore uses Y-up terrain coordinates. Keep the wave phase in UV
+    // space so large BOTW world coordinates do not create excessively dense
+    // ripples, while the per-vertex extm flow data remains interpolated.
+    vec2 scaledPosition = inTexCoord * waveScale * 12.0;
     vec2 flowOffset = flowDirection * flowSpeed * time;
     float waveA = sin(dot(scaledPosition, vec2(1.8, 2.6)) +
         dot(flowOffset, vec2(2.2, 1.4)) + time * 0.18);

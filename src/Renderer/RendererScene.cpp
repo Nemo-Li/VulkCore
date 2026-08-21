@@ -8,6 +8,8 @@ namespace {
 
 constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
 constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
+constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
+constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
 
 } // namespace
 
@@ -221,6 +223,7 @@ void Renderer::initializeEmptyScene() {
     meshData_ = MeshData{};
     terrainScene_.reset();
     terrainResourcePath_.clear();
+    waterResourcePath_.clear();
     playerController_.clear();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
@@ -344,6 +347,123 @@ void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
     }
     meshData_.additionalNodes.push_back(std::move(terrainNode));
     recalculateSceneBounds();
+}
+
+void Renderer::appendWaterToScene(const TerrainScene& terrain) {
+    const TerrainMeshData waterMesh = terrain.buildWaterMesh();
+    if (waterMesh.vertices.empty() || waterMesh.indices.empty() ||
+        waterMesh.chunks.empty()) {
+        return;
+    }
+    if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
+            waterMesh.vertices.size() ||
+        meshData_.indices.size() > std::numeric_limits<std::uint32_t>::max() -
+            waterMesh.indices.size()) {
+        throw std::runtime_error("BOTW water exceeds the renderer's 32-bit mesh limits");
+    }
+
+    MaterialData waterMaterial;
+    waterMaterial.name = "BOTW Water (terrain_water)";
+    waterMaterial.baseColor = glm::vec4(0.84f, 0.96f, 1.0f, 1.0f);
+    waterMaterial.metallic = 0.05f;
+    waterMaterial.roughness = 0.18f;
+    waterMaterial.opacity = 0.9f;
+    waterMaterial.blendMode = MaterialData::BlendMode::AlphaBlend;
+    waterMaterial.depthWrite = false;
+    waterMaterial.doubleSided = true;
+    waterMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
+        "shader_water.vert";
+    waterMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
+        "shader_water.frag";
+    waterMaterial.waterShaderSettings.flowDirection = glm::vec2(0.0f, 1.0f);
+    waterMaterial.waterShaderSettings.flowSpeed = 0.18f;
+    waterMaterial.waterShaderSettings.flowStrength = 0.85f;
+    waterMaterial.waterShaderSettings.flowTurbulence = 0.3f;
+    waterMaterial.waterShaderSettings.waveScale = 1.0f;
+    waterMaterial.waterShaderSettings.waveHeight = 0.035f;
+    const std::uint32_t waterMaterialIndex = static_cast<std::uint32_t>(
+        meshData_.materials.size()
+    );
+    meshData_.materials.push_back(std::move(waterMaterial));
+
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    meshData_.vertices.insert(
+        meshData_.vertices.end(),
+        waterMesh.vertices.begin(),
+        waterMesh.vertices.end()
+    );
+    meshData_.bindPoseVertices.insert(
+        meshData_.bindPoseVertices.end(),
+        waterMesh.vertices.begin(),
+        waterMesh.vertices.end()
+    );
+    meshData_.skinSourceVertices.insert(
+        meshData_.skinSourceVertices.end(),
+        waterMesh.vertices.begin(),
+        waterMesh.vertices.end()
+    );
+    for (const std::uint32_t index : waterMesh.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+
+    ModelNode waterNode;
+    waterNode.name = "BOTW Water";
+    waterNode.nodeId = kWaterSceneNodeId;
+    waterNode.globalTransform = glm::mat4(1.0f);
+    waterNode.hasBounds = false;
+    for (std::size_t chunkIndex = 0; chunkIndex < waterMesh.chunks.size(); ++chunkIndex) {
+        const TerrainChunkMesh& chunkMesh = waterMesh.chunks[chunkIndex];
+        if (chunkMesh.indexCount == 0) {
+            continue;
+        }
+        if (chunkIndex > std::numeric_limits<std::uint32_t>::max() -
+                kWaterChunkNodeBase) {
+            throw std::runtime_error("BOTW water tile node IDs overflow 32-bit storage");
+        }
+        const std::uint32_t chunkNodeId = kWaterChunkNodeBase +
+            static_cast<std::uint32_t>(chunkIndex);
+        const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
+        meshData_.parts.push_back({
+            indexOffset + static_cast<std::uint32_t>(chunkMesh.indexOffset),
+            static_cast<std::uint32_t>(chunkMesh.indexCount),
+            waterMaterialIndex,
+            chunkNodeId
+        });
+
+        ModelNode chunkNode;
+        chunkNode.name = "Water tile (" +
+            std::to_string(chunkMesh.coordinate.x) + ", " +
+            std::to_string(chunkMesh.coordinate.y) + ")";
+        chunkNode.nodeId = chunkNodeId;
+        chunkNode.meshCount = chunkMesh.tileCount;
+        chunkNode.globalTransform = glm::mat4(1.0f);
+        chunkNode.meshPartIndices.push_back(partIndex);
+        chunkNode.hasBounds = true;
+        chunkNode.boundsMinimum = chunkMesh.boundsMinimum;
+        chunkNode.boundsMaximum = chunkMesh.boundsMaximum;
+        waterNode.children.push_back(std::move(chunkNode));
+
+        if (!waterNode.hasBounds) {
+            waterNode.boundsMinimum = chunkMesh.boundsMinimum;
+            waterNode.boundsMaximum = chunkMesh.boundsMaximum;
+            waterNode.hasBounds = true;
+        } else {
+            waterNode.boundsMinimum = glm::min(
+                waterNode.boundsMinimum,
+                chunkMesh.boundsMinimum
+            );
+            waterNode.boundsMaximum = glm::max(
+                waterNode.boundsMaximum,
+                chunkMesh.boundsMaximum
+            );
+        }
+    }
+
+    if (!waterNode.children.empty()) {
+        meshData_.additionalNodes.push_back(std::move(waterNode));
+        recalculateSceneBounds();
+    }
 }
 
 void Renderer::appendPlayerToScene() {
@@ -835,6 +955,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     };
     std::vector<ModelResourceReference> modelReferences;
     std::filesystem::path terrainPath;
+    std::filesystem::path waterPath;
     bool sceneHasSun = false;
     bool sceneHasPlayer = true;
     std::ifstream sceneFile(resolvedScenePath);
@@ -875,6 +996,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             terrainPath = std::move(configuredPath);
+        } else if (key == "water_resource") {
+            std::string configuredPath;
+            if (!(sceneFile >> std::quoted(configuredPath))) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid water path.";
+                return false;
+            }
+            waterPath = std::move(configuredPath);
         } else if (key == "player_present") {
             int present = 1;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -916,6 +1045,32 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             return false;
         }
         terrainPath = normalizedPath(terrainPath);
+
+        if (waterPath.empty()) {
+            const std::filesystem::path defaultWaterPath = terrainPath / "terrain_water";
+            if (std::filesystem::is_directory(defaultWaterPath, error)) {
+                waterPath = defaultWaterPath;
+            }
+        }
+        if (!waterPath.empty()) {
+            if (waterPath.is_relative()) {
+                const std::filesystem::path sceneRelativePath =
+                    resolvedScenePath.parent_path() / waterPath;
+                if (std::filesystem::is_directory(sceneRelativePath, error)) {
+                    waterPath = sceneRelativePath;
+                } else {
+                    error.clear();
+                    waterPath = std::filesystem::absolute(waterPath, error);
+                }
+            }
+            if (!std::filesystem::is_directory(waterPath, error)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Water referenced by scene was not found: " +
+                    waterPath.string();
+                return false;
+            }
+            waterPath = normalizedPath(waterPath);
+        }
     }
 
     for (ModelResourceReference& modelReference : modelReferences) {
@@ -951,11 +1106,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         try {
             auto terrain = TerrainScene::load(
                 terrainPath / "MainField.tscb",
-                terrainPath
+                terrainPath,
+                waterPath
             );
             appendTerrainToScene(*terrain);
+            appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
             terrainResourcePath_ = terrainPath;
+            waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
                 playerController_.reset(*terrainScene_);
                 appendPlayerToScene();
@@ -963,7 +1121,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             generatedGeometryChanged = true;
             std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
                       << " tiles in " << terrainScene_->chunks().size()
-                      << " chunks\n";
+                      << " chunks, " << terrainScene_->waterTileCount()
+                      << " water tiles\n";
         } catch (const std::exception& terrainError) {
             sceneStatusFailed_ = true;
             sceneStatus_ = "Failed to load scene terrain: " +
@@ -1751,6 +1910,19 @@ bool Renderer::saveTransformSettings() const {
         }
         file << "terrain_resource " << std::quoted(terrainReference.generic_string()) << "\n"
              << "player_present " << (playerController_.active() ? 1 : 0) << "\n";
+        if (!waterResourcePath_.empty()) {
+            relativeError.clear();
+            std::filesystem::path waterReference = std::filesystem::relative(
+                waterResourcePath_,
+                configPath.parent_path(),
+                relativeError
+            );
+            if (relativeError || waterReference.empty()) {
+                waterReference = waterResourcePath_;
+            }
+            file << "water_resource " << std::quoted(waterReference.generic_string())
+                 << "\n";
+        }
     }
     for (const SceneModelResource& model : sceneModelResources_) {
         file << "model_resource_path " << std::quoted(model.path.string()) << ' '

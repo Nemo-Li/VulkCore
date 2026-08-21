@@ -15,6 +15,7 @@
 namespace VulkCore {
 
 inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
+inline constexpr std::uint32_t kTerrainWaterResolution = 64;
 
 struct TerrainTileMetadata {
     std::string fileBase;
@@ -93,6 +94,24 @@ struct TerrainMeshData {
     std::vector<TerrainChunkMesh> chunks;
 };
 
+struct WaterMeshOptions {
+    // The .water.extm files are native 64x64 flow/height grids. Keeping the
+    // source resolution preserves narrow rivers and shoreline boundaries.
+    std::uint32_t sampleStride = 1;
+};
+
+struct WaterSample {
+    std::uint16_t height = 0;
+    std::uint16_t flowX = 0x8000;
+    std::uint16_t flowZ = 0x8000;
+    std::uint8_t material = 0;
+};
+
+struct WaterTileData {
+    TerrainTileMetadata metadata;
+    std::vector<WaterSample> samples;
+};
+
 class TerrainChunk {
 public:
     TerrainChunk(std::uint32_t lod, glm::ivec2 coordinate);
@@ -136,7 +155,8 @@ class TerrainScene {
 public:
     static std::unique_ptr<TerrainScene> load(
         const std::filesystem::path& tscbPath,
-        const std::filesystem::path& terrainRoot
+        const std::filesystem::path& terrainRoot,
+        const std::filesystem::path& waterRoot = {}
     );
 
     const TerrainSceneHeader& header() const { return header_; }
@@ -144,17 +164,20 @@ public:
     const glm::vec3& boundsMinimum() const { return boundsMinimum_; }
     const glm::vec3& boundsMaximum() const { return boundsMaximum_; }
     std::size_t tileCount() const;
+    std::size_t waterTileCount() const;
 
     std::optional<float> heightAtWorld(const glm::vec2& worldPosition) const;
     glm::vec3 centerPosition() const;
 
     TerrainMeshData buildMesh(const TerrainMeshOptions& options = {}) const;
+    TerrainMeshData buildWaterMesh(const WaterMeshOptions& options = {}) const;
 
 private:
     TerrainScene() = default;
 
     TerrainSceneHeader header_;
     std::vector<TerrainChunk> chunks_;
+    std::vector<WaterTileData> waterTiles_;
     glm::vec3 boundsMinimum_{0.0f};
     glm::vec3 boundsMaximum_{0.0f};
 };
