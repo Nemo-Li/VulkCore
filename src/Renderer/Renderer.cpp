@@ -30,6 +30,7 @@ Renderer::Renderer(GLFWwindow* window)
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createPostProcessPipeline();
+    createSkyboxPipeline();
     createBoundingBoxPipeline();
     createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
@@ -38,6 +39,7 @@ Renderer::Renderer(GLFWwindow* window)
     discoverModelResources();
     discoverSceneResources();
     loadTransformSettings();
+    createSkyboxTexture();
     createVertexBuffer();
     createIndexBuffer();
     createParticleBuffer();
@@ -69,6 +71,7 @@ Renderer::~Renderer() {
     specularTextures_.clear();
     terrainDetailTextures_ = {};
     particleTextures_.clear();
+    skyboxTexture_.reset();
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();
@@ -108,6 +111,9 @@ Renderer::~Renderer() {
     }
     if (postProcessPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), postProcessPipeline_, nullptr);
+    }
+    if (skyboxPipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(context_->device(), skyboxPipeline_, nullptr);
     }
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);

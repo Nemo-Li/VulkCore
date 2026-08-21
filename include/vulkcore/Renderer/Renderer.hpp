@@ -106,6 +106,7 @@ private:
     void createBoundingBoxPipeline();
     void createParticlePipelines();
     void createPostProcessPipeline();
+    void createSkyboxPipeline();
     VkPipeline createParticlePipeline(bool additiveBlending);
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
@@ -146,6 +147,7 @@ private:
     void createVertexBuffer();
     void createIndexBuffer();
     void createMaterialTextures();
+    void createSkyboxTexture();
     void rebuildMaterialResources();
     void createUniformBuffers();
     void createDescriptorPool();
@@ -219,6 +221,7 @@ private:
     VkPipeline particleAlphaPipeline_ = VK_NULL_HANDLE;
     VkPipeline particleAdditivePipeline_ = VK_NULL_HANDLE;
     VkPipeline postProcessPipeline_ = VK_NULL_HANDLE;
+    VkPipeline skyboxPipeline_ = VK_NULL_HANDLE;
     std::array<std::vector<std::string>, kShaderStageCount> availableShaders_;
     std::unordered_map<std::string, VkShaderModule> shaderModules_;
     std::unordered_map<std::string, VkPipeline> nodeGraphicsPipelines_;
@@ -259,6 +262,7 @@ private:
         terrainDetailTextures_{};
     bool terrainDetailTexturesReady_ = false;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
+    std::unique_ptr<Texture> skyboxTexture_;
     std::unique_ptr<Texture> fallbackTexture_;
     std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
@@ -269,6 +273,7 @@ private:
     std::string screenshotStatus_ = "F12: Save the current frame";
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets_;
+    std::vector<VkDescriptorSet> skyboxDescriptorSets_;
     std::unordered_map<std::uint32_t, std::array<VkDescriptorSet, kMaxFramesInFlight>>
         particleDescriptorSets_;
 
@@ -279,6 +284,7 @@ private:
     uint32_t currentFrame_ = 0;
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
+    bool toolUiVisible_ = true;
     glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
     glm::vec3 cameraForward_{0.0f, 0.0f, -1.0f};
     glm::vec3 cameraRight_{1.0f, 0.0f, 0.0f};

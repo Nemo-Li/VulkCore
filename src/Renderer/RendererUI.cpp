@@ -1120,6 +1120,14 @@ void Renderer::buildImGuiFrame() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
+    if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+        toolUiVisible_ = !toolUiVisible_;
+    }
+    if (!toolUiVisible_) {
+        ImGui::Render();
+        return;
+    }
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -1159,6 +1167,8 @@ void Renderer::buildImGuiFrame() {
         ImGuiWindowFlags_NoScrollbar
     );
     ImGui::TextUnformatted("Scene Tools");
+    ImGui::SameLine();
+    ImGui::TextDisabled("[F1: Hide/show all tools]");
     ImGui::SameLine();
     ImGui::BeginDisabled(!canCreateParticleSystem);
     if (ImGui::Button("Create Particle System")) {
