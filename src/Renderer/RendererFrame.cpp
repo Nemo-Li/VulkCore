@@ -274,6 +274,28 @@ void Renderer::recordCommandBuffer(
     vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     bindViewport();
 
+    if (skyboxTexture_ != nullptr &&
+        currentFrame_ < skyboxDescriptorSets_.size()) {
+        vkCmdBindPipeline(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            skyboxPipeline_
+        );
+        const VkDescriptorSet& skyboxDescriptorSet =
+            skyboxDescriptorSets_[currentFrame_];
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_,
+            0,
+            1,
+            &skyboxDescriptorSet,
+            0,
+            nullptr
+        );
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
+
     // Render the opaque scene into a sampled color/depth pair first. Water
     // parts are intentionally excluded: they need this color/depth as their
     // reflection and refraction source in the second pass.

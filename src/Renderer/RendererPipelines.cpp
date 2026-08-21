@@ -168,30 +168,20 @@ void Renderer::createSceneRenderResources() {
     subpass.pColorAttachments = &colorReference;
     subpass.pDepthStencilAttachment = &depthReference;
 
-    std::array<VkSubpassDependency, 2> dependencies{};
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    dependencies[0].dstStageMask =
+    // Match the swap-chain render pass dependency shape so material pipelines
+    // created for that pass remain compatible in this off-screen pass. The
+    // explicit barriers after vkCmdEndRenderPass provide the outgoing color
+    // and depth visibility needed by the transfer and sampling stages.
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask =
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependencies[0].dstAccessMask =
+    dependency.dstAccessMask =
         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask =
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dependencies[1].srcAccessMask =
-        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstStageMask =
-        VK_PIPELINE_STAGE_TRANSFER_BIT |
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependencies[1].dstAccessMask =
-        VK_ACCESS_TRANSFER_READ_BIT |
-        VK_ACCESS_SHADER_READ_BIT;
 
     const std::array<VkAttachmentDescription, 2> attachments = {
         colorAttachment,
@@ -203,8 +193,8 @@ void Renderer::createSceneRenderResources() {
     renderPassInfo.pAttachments = attachments.data();
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-    renderPassInfo.pDependencies = dependencies.data();
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
     if (vkCreateRenderPass(context_->device(), &renderPassInfo, nullptr, &sceneRenderPass_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create scene render pass!");
     }
@@ -437,7 +427,8 @@ void Renderer::discoverShaderBinaries() {
         // Full-screen demo shaders use a different vertex interface and are
         // owned by the post-process pipeline, not by mesh materials.
         if (shaderName == "shader_fullscreen.vert" ||
-            shaderName == "shader_postprocess.frag") {
+            shaderName == "shader_postprocess.frag" ||
+            shaderName == "shader_skybox.frag") {
             continue;
         }
         availableShaders_[static_cast<std::size_t>(stage)].push_back(std::move(shaderName));
@@ -852,6 +843,96 @@ void Renderer::createPostProcessPipeline() {
             &postProcessPipeline_
         ) != VK_SUCCESS) {
         throw std::runtime_error("failed to create post-process graphics pipeline");
+    }
+}
+
+void Renderer::createSkyboxPipeline() {
+    VkPipelineShaderStageCreateInfo vertexStage{};
+    vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertexStage.module = shaderModule("shader_fullscreen.vert");
+    vertexStage.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragmentStage{};
+    fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragmentStage.module = shaderModule("shader_skybox.frag");
+    fragmentStage.pName = "main";
+    const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
+        vertexStage,
+        fragmentStage
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // The sky is drawn first and never touches depth. Opaque geometry then
+    // naturally overwrites it while untouched pixels keep the sky color.
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const std::array<VkDynamicState, 2> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+    pipelineInfo.pStages = stages.data();
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout_;
+    pipelineInfo.renderPass = sceneRenderPass_;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(
+            context_->device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+            &skyboxPipeline_
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create skybox graphics pipeline");
     }
 }
 

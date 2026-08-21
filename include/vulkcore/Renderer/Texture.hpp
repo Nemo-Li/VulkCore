@@ -12,7 +12,12 @@ class VulkanContext;
 
 class Texture {
 public:
-    Texture(VulkanContext& context, const std::filesystem::path& path);
+    Texture(
+        VulkanContext& context,
+        const std::filesystem::path& path,
+        VkSamplerAddressMode addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT
+    );
     Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData);
     Texture(
         VulkanContext& context,
@@ -44,6 +49,8 @@ private:
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
     std::uint32_t mipLevels_ = 1;
+    VkSamplerAddressMode addressModeU_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VkSamplerAddressMode addressModeV_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 };
 
 } // namespace VulkCore

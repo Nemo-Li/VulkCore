@@ -585,6 +585,24 @@ void Renderer::createMaterialTextures() {
     }
 }
 
+void Renderer::createSkyboxTexture() {
+    skyboxTexture_.reset();
+    const std::filesystem::path skyboxPath =
+        (assetsDirectory_.empty() ? locateAssetsDirectory() : assetsDirectory_) /
+        "textures" / "skybox_botw_day.png";
+    try {
+        skyboxTexture_ = std::make_unique<Texture>(
+            *context_,
+            skyboxPath,
+            VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+        );
+    } catch (const std::exception& error) {
+        std::cerr << "warning: failed to load skybox texture '"
+                  << skyboxPath.string() << "': " << error.what() << '\n';
+    }
+}
+
 void Renderer::createParticleTextures() {
     particleTextures_.clear();
     for (const auto& [nodeId, system] : particleSystems_) {
@@ -637,6 +655,7 @@ void Renderer::rebuildMaterialResources() {
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     descriptorSets_.clear();
+    skyboxDescriptorSets_.clear();
     particleDescriptorSets_.clear();
     if (descriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
@@ -666,19 +685,23 @@ void Renderer::createDescriptorPool() {
     const uint32_t materialDescriptorCount = kMaxFramesInFlight * materialCount;
     const uint32_t particleDescriptorCapacity =
         kMaxFramesInFlight * kMaximumParticleSystems;
+    const uint32_t skyboxDescriptorCount = kMaxFramesInFlight;
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = materialDescriptorCount + particleDescriptorCapacity;
+    poolSizes[0].descriptorCount =
+        materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity) *
-        (5 + static_cast<uint32_t>(kTerrainDetailTextureCount));
+        (5 + static_cast<uint32_t>(kTerrainDetailTextureCount)) +
+        skyboxDescriptorCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = materialDescriptorCount + particleDescriptorCapacity;
+    poolInfo.maxSets =
+        materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
 
     if (vkCreateDescriptorPool(context_->device(), &poolInfo, nullptr, &descriptorPool_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create descriptor pool!");
@@ -817,6 +840,63 @@ void Renderer::createDescriptorSets() {
             );
         }
     }
+    skyboxDescriptorSets_.clear();
+    std::array<VkDescriptorSetLayout, kMaxFramesInFlight> skyboxLayouts{};
+    skyboxLayouts.fill(descriptorSetLayout_);
+    skyboxDescriptorSets_.resize(kMaxFramesInFlight);
+    VkDescriptorSetAllocateInfo skyboxAllocateInfo{};
+    skyboxAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    skyboxAllocateInfo.descriptorPool = descriptorPool_;
+    skyboxAllocateInfo.descriptorSetCount = kMaxFramesInFlight;
+    skyboxAllocateInfo.pSetLayouts = skyboxLayouts.data();
+    if (vkAllocateDescriptorSets(
+            context_->device(),
+            &skyboxAllocateInfo,
+            skyboxDescriptorSets_.data()
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate skybox descriptor sets");
+    }
+
+    const Texture* skyboxDescriptorTexture = skyboxTexture_ != nullptr
+        ? skyboxTexture_.get()
+        : fallbackTexture_.get();
+    if (skyboxDescriptorTexture == nullptr) {
+        throw std::runtime_error("skybox has no usable texture fallback");
+    }
+    for (std::uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = uniformBuffers_[frameIndex]->handle();
+        bufferInfo.range = sizeof(UniformBufferObject);
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = skyboxDescriptorTexture->imageView();
+        imageInfo.sampler = skyboxDescriptorTexture->sampler();
+
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = skyboxDescriptorSets_[frameIndex];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].descriptorCount = 1;
+        writes[0].pBufferInfo = &bufferInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = skyboxDescriptorSets_[frameIndex];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(
+            context_->device(),
+            static_cast<std::uint32_t>(writes.size()),
+            writes.data(),
+            0,
+            nullptr
+        );
+    }
+
     updateSceneTextureDescriptors();
     particleDescriptorSets_.clear();
     for (const auto& [nodeId, system] : particleSystems_) {

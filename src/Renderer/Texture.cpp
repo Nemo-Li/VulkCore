@@ -13,8 +13,15 @@
 
 namespace VulkCore {
 
-Texture::Texture(VulkanContext& context, const std::filesystem::path& path)
-    : context_(context) {
+Texture::Texture(
+    VulkanContext& context,
+    const std::filesystem::path& path,
+    VkSamplerAddressMode addressModeU,
+    VkSamplerAddressMode addressModeV
+)
+    : context_(context),
+      addressModeU_(addressModeU),
+      addressModeV_(addressModeV) {
     int width = 0;
     int height = 0;
     const std::string pathString = path.string();
@@ -224,9 +231,9 @@ void Texture::createSampler() {
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeU = addressModeU_;
+    samplerInfo.addressModeV = addressModeV_;
+    samplerInfo.addressModeW = addressModeV_;
     VkPhysicalDeviceFeatures supportedFeatures{};
     vkGetPhysicalDeviceFeatures(context_.physicalDevice(), &supportedFeatures);
     VkPhysicalDeviceProperties properties{};
