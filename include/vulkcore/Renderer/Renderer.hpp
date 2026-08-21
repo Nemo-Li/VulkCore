@@ -27,6 +27,7 @@ class Buffer;
 class SwapChain;
 class Texture;
 class VulkanContext;
+class TerrainScene;
 
 class Renderer {
 public:
@@ -71,6 +72,7 @@ private:
     void loadTransformSettings();
     bool saveTransformSettings() const;
     void initializeEmptyScene();
+    void appendTerrainToScene(const TerrainScene& terrain);
     void clearSceneData();
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
@@ -209,6 +211,7 @@ private:
     std::unordered_set<std::string> failedNodeComputePipelineKeys_;
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
+    std::unique_ptr<TerrainScene> terrainScene_;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
     std::unordered_set<std::uint32_t> removedSceneNodeIds_;
