@@ -130,8 +130,23 @@ void PlayerController::clear() {
     velocity_ = glm::vec3(0.0f);
 }
 
-void PlayerController::reset(const TerrainScene& terrain) {
+void PlayerController::reset(
+    const TerrainScene& terrain,
+    const std::optional<glm::vec3>& spawnPosition
+) {
     spawnPosition_ = terrain.centerPosition();
+    if (spawnPosition.has_value()) {
+        const std::optional<float> groundHeight = terrain.heightAtWorld(
+            glm::vec2(spawnPosition->x, spawnPosition->z)
+        );
+        if (groundHeight.has_value()) {
+            spawnPosition_ = glm::vec3(
+                spawnPosition->x,
+                *groundHeight,
+                spawnPosition->z
+            );
+        }
+    }
     position_ = spawnPosition_;
     velocity_ = glm::vec3(0.0f);
     grounded_ = true;

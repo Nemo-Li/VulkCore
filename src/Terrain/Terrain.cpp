@@ -18,6 +18,7 @@ namespace VulkCore {
 namespace {
 
 constexpr std::size_t kTscbHeaderSize = 0x34;
+constexpr std::size_t kTscbMaterialRecordSize = 0x14;
 constexpr float kTerrainGridSize = 32.0f;
 constexpr float kTerrainWorldExtentMultiplier = 20.0f;
 
@@ -569,9 +570,6 @@ void TerrainTile::appendMesh(
             } else {
                 normal = glm::normalize(normal);
             }
-            const float normalizedHeight = maximumHeight <= 0.0f
-                ? 0.0f
-                : current.y / maximumHeight;
             vertices.push_back({
                 current,
                 normal,
@@ -582,10 +580,10 @@ void TerrainTile::appendMesh(
                         static_cast<float>(kTerrainHeightmapResolution - 1)
                 ),
                 glm::vec4(
-                    0.25f + normalizedHeight * 0.22f,
-                    0.34f + normalizedHeight * 0.20f,
-                    0.16f + normalizedHeight * 0.12f,
-                    1.0f
+                    glm::clamp(metadata_.materialInfo.textureScale.x, 0.05f, 2.0f),
+                    glm::clamp(metadata_.materialInfo.textureScale.y, 0.05f, 2.0f),
+                    glm::clamp(metadata_.materialInfo.paletteBias, 0.0f, 1.0f),
+                    glm::clamp(metadata_.materialInfo.paletteContrast, 0.2f, 1.63f)
                 )
             });
         }
@@ -674,6 +672,36 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
     }
 
     const std::uint32_t materialSectionSize = readU32BE(data, 0x30);
+    if (materialCount == 0) {
+        throw std::runtime_error("TSCB contains no terrain material records");
+    }
+    requireRange(
+        data,
+        kTscbHeaderSize,
+        static_cast<std::size_t>(materialCount) * sizeof(std::uint32_t),
+        "material lookup table"
+    );
+    scene->materialInfos_.reserve(materialCount);
+    for (std::uint32_t index = 0; index < materialCount; ++index) {
+        const std::size_t lookupOffset =
+            kTscbHeaderSize + static_cast<std::size_t>(index) * sizeof(std::uint32_t);
+        const std::size_t entryOffset = lookupOffset + readU32BE(data, lookupOffset);
+        requireRange(data, entryOffset, kTscbMaterialRecordSize, "material entry");
+
+        TerrainMaterialInfo material;
+        material.index = readU32BE(data, entryOffset + 0x00);
+        material.textureScale = glm::vec2(
+            readF32BE(data, entryOffset + 0x04),
+            readF32BE(data, entryOffset + 0x08)
+        );
+        material.paletteBias = readF32BE(data, entryOffset + 0x0c);
+        material.paletteContrast = readF32BE(data, entryOffset + 0x10);
+        if (material.index >= materialCount) {
+            throw std::runtime_error("TSCB contains an invalid terrain material index");
+        }
+        scene->materialInfos_.push_back(material);
+    }
+
     const std::size_t areaLookupOffset =
         kTscbHeaderSize - sizeof(std::uint32_t) + materialSectionSize;
     requireRange(
@@ -682,8 +710,6 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
         static_cast<std::size_t>(scene->header_.areaCount) * sizeof(std::uint32_t),
         "area lookup table"
     );
-    (void)materialCount;
-
     std::vector<ParsedTile> parsedTiles;
     parsedTiles.reserve(scene->header_.areaCount);
     std::vector<WaterTileData> parsedWaterTiles;
@@ -704,6 +730,7 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
         metadata.maximumHeight = readF32BE(data, entryOffset + 0x10);
         metadata.minimumWaterHeight = readF32BE(data, entryOffset + 0x14);
         metadata.maximumWaterHeight = readF32BE(data, entryOffset + 0x18);
+        metadata.areaFlags = readU32BE(data, entryOffset + 0x1c);
         metadata.lod = lodFromFileBase(
             readRelativeString(data, entryOffset, readU32BE(data, entryOffset + 0x20))
         );
@@ -712,6 +739,33 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             entryOffset,
             readU32BE(data, entryOffset + 0x20)
         );
+
+        // The extracted project does not include the source .mate files, so
+        // use the TSCB height band and area flag to select a stable tuning
+        // record. The terrain shader derives the visible landform from height
+        // and slope while preserving the source material scale values.
+        const float averageHeight = glm::clamp(
+            (metadata.minimumHeight + metadata.maximumHeight) * 0.5f,
+            0.0f,
+            1.0f
+        );
+        const std::uint32_t heightBand = static_cast<std::uint32_t>(
+            averageHeight * static_cast<float>(materialCount - 1)
+        );
+        const std::uint32_t selectedMaterial =
+            (heightBand + metadata.areaFlags * 17u) % materialCount;
+        const auto materialIt = std::find_if(
+            scene->materialInfos_.begin(),
+            scene->materialInfos_.end(),
+            [selectedMaterial](const TerrainMaterialInfo& material) {
+                return material.index == selectedMaterial;
+            }
+        );
+        if (materialIt == scene->materialInfos_.end()) {
+            throw std::runtime_error("TSCB material lookup is missing a referenced index");
+        }
+        metadata.materialIndex = materialIt->index;
+        metadata.materialInfo = *materialIt;
 
         const std::filesystem::path watermapPath = findWatermapPath(
             waterRoot,

@@ -73,7 +73,10 @@ private:
     void loadTransformSettings();
     bool saveTransformSettings() const;
     void initializeEmptyScene();
-    void appendTerrainToScene(const TerrainScene& terrain);
+    void appendTerrainToScene(
+        const TerrainScene& terrain,
+        const std::filesystem::path& terrainRoot
+    );
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
     void updatePlayerController(float deltaSeconds);
@@ -221,6 +224,7 @@ private:
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
+    std::optional<glm::vec3> playerSpawnPosition_;
     static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -30,7 +31,10 @@ public:
     static constexpr float kBotwLinkHeight = 1.58f;
 
     void clear();
-    void reset(const TerrainScene& terrain);
+    void reset(
+        const TerrainScene& terrain,
+        const std::optional<glm::vec3>& spawnPosition = std::nullopt
+    );
     void update(
         GLFWwindow* window,
         float deltaSeconds,
