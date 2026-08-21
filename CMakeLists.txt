@@ -296,6 +296,7 @@ add_executable(VulkCore
     src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
     src/Gameplay/Player.cpp
+    src/Terrain/Grass.cpp
     src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
     src/Utils/ModelLoader.cpp

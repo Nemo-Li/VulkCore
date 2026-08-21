@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 
 struct GLFWwindow;
@@ -10,7 +11,10 @@ class Renderer;
 
 class Application {
 public:
-    Application();
+    explicit Application(
+        std::filesystem::path startupScene = {},
+        bool hideTools = false
+    );
     ~Application();
 
     Application(const Application&) = delete;
@@ -24,6 +28,8 @@ private:
 
     GLFWwindow* window_ = nullptr;
     std::unique_ptr<Renderer> renderer_;
+    std::filesystem::path startupScene_;
+    bool hideTools_ = false;
 };
 
 } // namespace VulkCore

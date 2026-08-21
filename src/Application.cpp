@@ -4,13 +4,15 @@
 #include "vulkcore/Application.hpp"
 
 #include <stdexcept>
+#include <utility>
 
 #include "vulkcore/Core/Config.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
 
 namespace VulkCore {
 
-Application::Application() = default;
+Application::Application(std::filesystem::path startupScene, bool hideTools)
+    : startupScene_(std::move(startupScene)), hideTools_(hideTools) {}
 
 Application::~Application() {
     renderer_.reset();
@@ -22,7 +24,7 @@ Application::~Application() {
 
 void Application::run() {
     initWindow();
-    renderer_ = std::make_unique<Renderer>(window_);
+    renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
     mainLoop();
 }
 

@@ -8,6 +8,7 @@
 2. [Vulkan 图形管线与帧流程](02-rendering-pipeline.md)：理解从设备创建到每帧提交，以及网格、水面、透明物体、粒子和 UI 的实际渲染顺序。
 3. [能力差距、问题分析与演进路线](03-gap-analysis-and-roadmap.md)：识别与通用完善引擎的差距、优先级、依赖关系和可验证的阶段目标。
 4. [高扩展性引擎目标架构](04-scalable-engine-architecture.md)：给出模块化、数据驱动、Render Graph、资源系统、ECS、插件与工具链的目标设计和渐进迁移方法。
+5. [BOTW 风格草地技术方案与实现](07-botw-grass.md)：说明三层草地 LOD、程序化种植、风场、Player 踩踏和当前性能边界。
 
 ## 状态约定
 
@@ -35,4 +36,3 @@
 - 模型导入：[`src/Utils/ModelLoader.cpp`](../src/Utils/ModelLoader.cpp)
 - 粒子模拟：[`include/vulkcore/Renderer/ParticleSystem.hpp`](../include/vulkcore/Renderer/ParticleSystem.hpp)、[`src/Renderer/ParticleSystem.cpp`](../src/Renderer/ParticleSystem.cpp)
 - Shader：[`shaders/src`](../shaders/src)
-
