@@ -16,6 +16,7 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkcore/Core/Config.hpp"
+#include "vulkcore/Gameplay/Player.hpp"
 #include "vulkcore/Renderer/Mesh.hpp"
 #include "vulkcore/Renderer/ParticleSystem.hpp"
 
@@ -73,6 +74,9 @@ private:
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void appendTerrainToScene(const TerrainScene& terrain);
+    void appendPlayerToScene();
+    void updatePlayerController(float deltaSeconds);
+    void updatePlayerCamera();
     void clearSceneData();
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
@@ -190,6 +194,7 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
+    GLFWwindow* window_ = nullptr;
     std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;
@@ -212,6 +217,9 @@ private:
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
+    std::filesystem::path terrainResourcePath_;
+    PlayerController playerController_;
+    static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
     std::unordered_set<std::uint32_t> removedSceneNodeIds_;
@@ -254,6 +262,7 @@ private:
     glm::vec3 cameraRight_{1.0f, 0.0f, 0.0f};
     glm::vec3 cameraUp_{0.0f, 1.0f, 0.0f};
     bool cameraBasisInitialized_ = false;
+    glm::vec3 cameraTarget_{0.0f};
     glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
     float ambientLightIntensity_ = 1.0f;
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};

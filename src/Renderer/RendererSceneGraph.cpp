@@ -593,6 +593,12 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
     for (const ModelNode& node : meshData_.additionalNodes) {
         updateNode(updateNode, node, glm::mat4(1.0f), true);
     }
+    if (playerController_.active()) {
+        sceneNodeTransforms_[kPlayerSceneNodeId] = glm::translate(
+            glm::mat4(1.0f),
+            playerController_.position() - playerController_.spawnPosition()
+        );
+    }
 }
 
 glm::mat4 Renderer::transformForSceneNode(std::uint32_t nodeId) const {
@@ -671,6 +677,8 @@ void Renderer::drawModelHierarchy(ModelNode& node) {
     std::string label = node.name.empty() ? "<unnamed>" : node.name;
     if (node.objectType == SceneObjectType::ParticleSystem) {
         label += "  [Particle System]";
+    } else if (node.objectType == SceneObjectType::Player) {
+        label += "  [Player Controller, 1.58m]";
     } else if (!isRootNode && node.meshCount > 0) {
         label += "  [" + std::to_string(node.meshCount) +
             (node.meshCount == 1 ? " mesh]" : " meshes]");

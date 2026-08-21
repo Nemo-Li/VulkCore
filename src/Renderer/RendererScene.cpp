@@ -2,10 +2,6 @@
 
 #include "vulkcore/Terrain/Terrain.hpp"
 
-#ifndef VULKCORE_TERRAIN_ROOT
-#define VULKCORE_TERRAIN_ROOT ""
-#endif
-
 namespace VulkCore {
 
 namespace {
@@ -224,35 +220,22 @@ void Renderer::selectModelResource(const std::filesystem::path& path) {
 void Renderer::initializeEmptyScene() {
     meshData_ = MeshData{};
     terrainScene_.reset();
+    terrainResourcePath_.clear();
+    playerController_.clear();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
     modelCenter_ = glm::vec3(0.0f);
     modelScale_ = 1.0f;
+    cameraTarget_ = glm::vec3(0.0f);
+    cameraBasisInitialized_ = false;
+    postProcessSplitView_ = false;
     sunNodeId_ = 0;
     sunMaterialIndex_ = 0;
     sunPartIndex_ = 0;
     sunVertexStart_ = 0;
     sunIndexStart_ = 0;
     sunPresent_ = false;
-
-    const std::filesystem::path terrainRoot(VULKCORE_TERRAIN_ROOT);
-    if (terrainRoot.empty()) {
-        return;
-    }
-    try {
-        auto terrain = TerrainScene::load(
-            terrainRoot / "MainField.tscb",
-            terrainRoot
-        );
-        appendTerrainToScene(*terrain);
-        terrainScene_ = std::move(terrain);
-        std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
-                  << " tiles in " << terrainScene_->chunks().size()
-                  << " chunks\n";
-    } catch (const std::exception& error) {
-        std::cerr << "warning: BOTW terrain was not loaded: " << error.what() << '\n';
-    }
 }
 
 void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
@@ -361,6 +344,105 @@ void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
     }
     meshData_.additionalNodes.push_back(std::move(terrainNode));
     recalculateSceneBounds();
+}
+
+void Renderer::appendPlayerToScene() {
+    if (!terrainScene_ || findSceneNodeById(meshData_, kPlayerSceneNodeId) != nullptr) {
+        return;
+    }
+
+    const CapsuleMeshData capsule = createCapsuleMesh(
+        PlayerController::kBotwLinkHeight,
+        0.27f
+    );
+    if (capsule.vertices.empty() || capsule.indices.empty()) {
+        throw std::runtime_error("player capsule mesh contains no renderable triangles");
+    }
+    if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
+            capsule.vertices.size() ||
+        meshData_.indices.size() > std::numeric_limits<std::uint32_t>::max() -
+            capsule.indices.size()) {
+        throw std::runtime_error("player capsule exceeds the renderer's 32-bit mesh limits");
+    }
+
+    MaterialData playerMaterial;
+    playerMaterial.name = "BOTW Link Capsule";
+    playerMaterial.baseColor = glm::vec4(0.18f, 0.38f, 0.82f, 1.0f);
+    playerMaterial.roughness = 0.7f;
+    playerMaterial.doubleSided = true;
+    const std::uint32_t materialIndex = static_cast<std::uint32_t>(
+        meshData_.materials.size()
+    );
+    meshData_.materials.push_back(std::move(playerMaterial));
+
+    const glm::vec3 spawnPosition = playerController_.spawnPosition();
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    for (Vertex vertex : capsule.vertices) {
+        vertex.position += spawnPosition;
+        meshData_.vertices.push_back(vertex);
+        meshData_.bindPoseVertices.push_back(vertex);
+        meshData_.skinSourceVertices.push_back(vertex);
+    }
+    for (const std::uint32_t index : capsule.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+
+    ModelNode playerNode;
+    playerNode.name = "Player (Link Capsule)";
+    playerNode.nodeId = kPlayerSceneNodeId;
+    playerNode.objectType = SceneObjectType::Player;
+    playerNode.meshCount = 1;
+    playerNode.globalTransform = glm::mat4(1.0f);
+    playerNode.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
+    playerNode.hasBounds = true;
+    playerNode.boundsMinimum = spawnPosition + glm::vec3(-0.27f, 0.0f, -0.27f);
+    playerNode.boundsMaximum = spawnPosition + glm::vec3(
+        0.27f,
+        PlayerController::kBotwLinkHeight,
+        0.27f
+    );
+    meshData_.parts.push_back({
+        indexOffset,
+        static_cast<std::uint32_t>(capsule.indices.size()),
+        materialIndex,
+        kPlayerSceneNodeId
+    });
+    meshData_.additionalNodes.push_back(std::move(playerNode));
+    recalculateSceneBounds();
+}
+
+void Renderer::updatePlayerController(float deltaSeconds) {
+    if (!terrainScene_ || !playerController_.active()) {
+        return;
+    }
+    postProcessSplitView_ = false;
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool editingUiItem = ImGui::IsAnyItemActive();
+    const bool hoveringUiItem = ImGui::IsAnyItemHovered();
+    playerController_.update(
+        window_,
+        deltaSeconds,
+        *terrainScene_,
+        io.WantCaptureKeyboard && editingUiItem,
+        io.WantCaptureMouse && (editingUiItem || hoveringUiItem)
+    );
+    updatePlayerCamera();
+}
+
+void Renderer::updatePlayerCamera() {
+    if (!terrainScene_ || !playerController_.active()) {
+        cameraTarget_ = glm::vec3(0.0f);
+        return;
+    }
+    const float safeScale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
+    cameraTarget_ = safeScale * (
+        playerController_.cameraTargetWorld() - modelCenter_
+    );
+    cameraPosition_ = safeScale * (
+        playerController_.cameraPositionWorld() - modelCenter_
+    );
+    cameraBasisInitialized_ = false;
 }
 
 const Renderer::SceneModelResource* Renderer::sceneModelResourceForNode(
@@ -752,7 +834,9 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         std::optional<std::uint32_t> rootNodeId;
     };
     std::vector<ModelResourceReference> modelReferences;
+    std::filesystem::path terrainPath;
     bool sceneHasSun = false;
+    bool sceneHasPlayer = true;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
         sceneStatusFailed_ = true;
@@ -783,6 +867,22 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 rootNodeId = static_cast<std::uint32_t>(savedRootNodeId);
             }
             modelReferences.push_back({std::move(configuredPath), rootNodeId});
+        } else if (key == "terrain_resource") {
+            std::string configuredPath;
+            if (!(sceneFile >> std::quoted(configuredPath))) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid terrain path.";
+                return false;
+            }
+            terrainPath = std::move(configuredPath);
+        } else if (key == "player_present") {
+            int present = 1;
+            if (!(sceneFile >> present) || (present != 0 && present != 1)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player state.";
+                return false;
+            }
+            sceneHasPlayer = present != 0;
         } else if (key == "sun_present") {
             int present = 0;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -795,6 +895,27 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             std::string ignoredLine;
             std::getline(sceneFile, ignoredLine);
         }
+    }
+
+    if (!terrainPath.empty()) {
+        if (terrainPath.is_relative()) {
+            const std::filesystem::path sceneRelativePath =
+                resolvedScenePath.parent_path() / terrainPath;
+            if (std::filesystem::is_directory(sceneRelativePath, error)) {
+                terrainPath = sceneRelativePath;
+            } else {
+                error.clear();
+                terrainPath = std::filesystem::absolute(terrainPath, error);
+            }
+        }
+        if (!std::filesystem::is_directory(terrainPath, error) ||
+            !std::filesystem::is_regular_file(terrainPath / "MainField.tscb", error)) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Terrain referenced by scene was not found: " +
+                terrainPath.string();
+            return false;
+        }
+        terrainPath = normalizedPath(terrainPath);
     }
 
     for (ModelResourceReference& modelReference : modelReferences) {
@@ -825,13 +946,47 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         }
     }
 
+    bool generatedGeometryChanged = false;
+    if (!terrainPath.empty()) {
+        try {
+            auto terrain = TerrainScene::load(
+                terrainPath / "MainField.tscb",
+                terrainPath
+            );
+            appendTerrainToScene(*terrain);
+            terrainScene_ = std::move(terrain);
+            terrainResourcePath_ = terrainPath;
+            if (sceneHasPlayer) {
+                playerController_.reset(*terrainScene_);
+                appendPlayerToScene();
+            }
+            generatedGeometryChanged = true;
+            std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
+                      << " tiles in " << terrainScene_->chunks().size()
+                      << " chunks\n";
+        } catch (const std::exception& terrainError) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Failed to load scene terrain: " +
+                std::string(terrainError.what());
+            return false;
+        }
+    }
+
     if (sceneHasSun) {
         createSunMesh();
+        generatedGeometryChanged = true;
+    }
+    if (generatedGeometryChanged) {
         rebuildSceneGeometryResources();
     }
 
     currentScenePath_ = resolvedScenePath;
     loadTransformSettings();
+    if (!terrainPath.empty()) {
+        // A game scene starts with a single continuous camera view. The
+        // editor's post-process split preview is not part of gameplay.
+        postProcessSplitView_ = false;
+    }
     for (const SceneModelResource& model : sceneModelResources_) {
         refreshModelResourceCacheFromScene(model.path);
     }
@@ -1584,6 +1739,19 @@ bool Renderer::saveTransformSettings() const {
 
     file << "# VulkCore scene\n"
          << std::setprecision(9);
+    if (!terrainResourcePath_.empty()) {
+        std::error_code relativeError;
+        std::filesystem::path terrainReference = std::filesystem::relative(
+            terrainResourcePath_,
+            configPath.parent_path(),
+            relativeError
+        );
+        if (relativeError || terrainReference.empty()) {
+            terrainReference = terrainResourcePath_;
+        }
+        file << "terrain_resource " << std::quoted(terrainReference.generic_string()) << "\n"
+             << "player_present " << (playerController_.active() ? 1 : 0) << "\n";
+    }
     for (const SceneModelResource& model : sceneModelResources_) {
         file << "model_resource_path " << std::quoted(model.path.string()) << ' '
              << model.rootNodeId << "\n";
@@ -1753,6 +1921,13 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
         }
         sceneNodeTransforms_.erase(removedNodeId);
         sceneNodeRenderEnabled_.erase(removedNodeId);
+    }
+    if (std::find(
+            removedNodeIds.begin(),
+            removedNodeIds.end(),
+            kPlayerSceneNodeId
+        ) != removedNodeIds.end()) {
+        playerController_.clear();
     }
     if (std::find(
             removedNodeIds.begin(),

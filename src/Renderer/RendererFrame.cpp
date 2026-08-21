@@ -502,6 +502,7 @@ void Renderer::drawFrame() {
         0.0f,
         0.1f
     );
+    updatePlayerController(particleDeltaSeconds);
     updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
     lastFrameElapsedSeconds_ = elapsedSeconds;
     updateCameraBasis();

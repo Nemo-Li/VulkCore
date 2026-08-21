@@ -10,6 +10,7 @@
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace VulkCore {
@@ -157,6 +158,101 @@ struct ParsedTile {
     std::vector<std::uint16_t> heights;
 };
 
+struct TerrainVertexKey {
+    std::int64_t x = 0;
+    std::int64_t z = 0;
+
+    bool operator==(const TerrainVertexKey& other) const {
+        return x == other.x && z == other.z;
+    }
+};
+
+struct TerrainVertexKeyHash {
+    std::size_t operator()(const TerrainVertexKey& key) const {
+        const std::size_t xHash = std::hash<std::int64_t>{}(key.x);
+        const std::size_t zHash = std::hash<std::int64_t>{}(key.z);
+        return xHash ^ (zHash + static_cast<std::size_t>(0x9e3779b9) +
+            (xHash << 6) + (xHash >> 2));
+    }
+};
+
+TerrainVertexKey terrainVertexKey(const Vertex& vertex) {
+    constexpr double kCoordinateQuantization = 1000.0;
+    return {
+        static_cast<std::int64_t>(std::llround(
+            static_cast<double>(vertex.position.x) * kCoordinateQuantization
+        )),
+        static_cast<std::int64_t>(std::llround(
+            static_cast<double>(vertex.position.z) * kCoordinateQuantization
+        ))
+    };
+}
+
+void stitchTerrainMesh(TerrainMeshData& mesh) {
+    std::unordered_map<TerrainVertexKey, std::vector<std::uint32_t>, TerrainVertexKeyHash>
+        vertexGroups;
+    vertexGroups.reserve(mesh.vertices.size());
+    for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+        vertexGroups[terrainVertexKey(mesh.vertices[index])].push_back(
+            static_cast<std::uint32_t>(index)
+        );
+    }
+
+    std::vector<glm::vec3> normalSums(mesh.vertices.size(), glm::vec3(0.0f));
+
+    for (const auto& [key, indices] : vertexGroups) {
+        (void)key;
+        if (indices.size() < 2) {
+            continue;
+        }
+        float heightSum = 0.0f;
+        glm::vec4 colorSum(0.0f);
+        for (const std::uint32_t index : indices) {
+            heightSum += mesh.vertices[index].position.y;
+            colorSum += mesh.vertices[index].color;
+        }
+        const float averageHeight = heightSum / static_cast<float>(indices.size());
+        const glm::vec4 averageColor = colorSum / static_cast<float>(indices.size());
+        for (const std::uint32_t index : indices) {
+            mesh.vertices[index].position.y = averageHeight;
+            mesh.vertices[index].color = averageColor;
+        }
+    }
+
+    for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
+        const std::uint32_t first = mesh.indices[index];
+        const std::uint32_t second = mesh.indices[index + 1];
+        const std::uint32_t third = mesh.indices[index + 2];
+        if (first >= mesh.vertices.size() || second >= mesh.vertices.size() ||
+            third >= mesh.vertices.size()) {
+            continue;
+        }
+        const glm::vec3 faceNormal = glm::cross(
+            mesh.vertices[second].position - mesh.vertices[first].position,
+            mesh.vertices[third].position - mesh.vertices[first].position
+        );
+        normalSums[first] += faceNormal;
+        normalSums[second] += faceNormal;
+        normalSums[third] += faceNormal;
+    }
+
+    for (const auto& [key, indices] : vertexGroups) {
+        (void)key;
+        glm::vec3 averageNormal(0.0f);
+        for (const std::uint32_t index : indices) {
+            averageNormal += normalSums[index];
+        }
+        if (glm::length(averageNormal) <= std::numeric_limits<float>::epsilon()) {
+            averageNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+        } else {
+            averageNormal = glm::normalize(averageNormal);
+        }
+        for (const std::uint32_t index : indices) {
+            mesh.vertices[index].normal = averageNormal;
+        }
+    }
+}
+
 bool metadataContainsPoint(const TerrainTileMetadata& tile, const glm::vec2& point) {
     const glm::vec2 halfSize(tile.areaSize * 0.5f);
     const glm::vec2 minimum = tile.gridPosition - halfSize;
@@ -230,6 +326,59 @@ TerrainTile::TerrainTile(
         worldCenter.x + worldSize * 0.5f,
         maximumY,
         worldCenter.y + worldSize * 0.5f
+    );
+}
+
+bool TerrainTile::containsWorldPoint(const glm::vec2& worldPosition) const {
+    return worldPosition.x >= boundsMinimum_.x &&
+        worldPosition.x <= boundsMaximum_.x &&
+        worldPosition.y >= boundsMinimum_.z &&
+        worldPosition.y <= boundsMaximum_.z;
+}
+
+std::optional<float> TerrainTile::heightAtWorld(
+    const glm::vec2& worldPosition,
+    float worldScale,
+    float maximumHeight
+) const {
+    if (!containsWorldPoint(worldPosition)) {
+        return std::nullopt;
+    }
+
+    const float worldExtent = worldScale * kTerrainWorldExtentMultiplier;
+    const glm::vec2 worldCenter =
+        metadata_.gridPosition / kTerrainGridSize * worldExtent;
+    const float worldSize = metadata_.areaSize / kTerrainGridSize * worldExtent;
+    if (worldSize <= std::numeric_limits<float>::epsilon()) {
+        return std::nullopt;
+    }
+
+    const glm::vec2 normalized = glm::clamp(
+        (worldPosition - (worldCenter - glm::vec2(worldSize * 0.5f))) / worldSize,
+        glm::vec2(0.0f),
+        glm::vec2(1.0f)
+    );
+    const float sampleX = normalized.x * static_cast<float>(kTerrainHeightmapResolution - 1);
+    const float sampleZ = normalized.y * static_cast<float>(kTerrainHeightmapResolution - 1);
+    const std::uint32_t x0 = static_cast<std::uint32_t>(std::floor(sampleX));
+    const std::uint32_t z0 = static_cast<std::uint32_t>(std::floor(sampleZ));
+    const std::uint32_t x1 = std::min(x0 + 1, kTerrainHeightmapResolution - 1);
+    const std::uint32_t z1 = std::min(z0 + 1, kTerrainHeightmapResolution - 1);
+    const float tx = sampleX - static_cast<float>(x0);
+    const float tz = sampleZ - static_cast<float>(z0);
+    const float top = glm::mix(
+        static_cast<float>(sample(x0, z0)),
+        static_cast<float>(sample(x1, z0)),
+        tx
+    );
+    const float bottom = glm::mix(
+        static_cast<float>(sample(x0, z1)),
+        static_cast<float>(sample(x1, z1)),
+        tx
+    );
+    return worldHeight(
+        static_cast<std::uint16_t>(std::clamp(glm::mix(top, bottom, tz), 0.0f, 65535.0f)),
+        maximumHeight
     );
 }
 
@@ -559,6 +708,12 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             return left.coordinate().x < right.coordinate().x;
         }
     );
+    scene->boundsMinimum_ = scene->chunks_.front().boundsMinimum();
+    scene->boundsMaximum_ = scene->chunks_.front().boundsMaximum();
+    for (const TerrainChunk& chunk : scene->chunks_) {
+        scene->boundsMinimum_ = glm::min(scene->boundsMinimum_, chunk.boundsMinimum());
+        scene->boundsMaximum_ = glm::max(scene->boundsMaximum_, chunk.boundsMaximum());
+    }
     return scene;
 }
 
@@ -568,6 +723,77 @@ std::size_t TerrainScene::tileCount() const {
         count += chunk.tiles().size();
     }
     return count;
+}
+
+std::optional<float> TerrainScene::heightAtWorld(const glm::vec2& worldPosition) const {
+    const TerrainTile* selectedTile = nullptr;
+    for (const TerrainChunk& chunk : chunks_) {
+        for (const TerrainTile& tile : chunk.tiles()) {
+            if (!tile.containsWorldPoint(worldPosition)) {
+                continue;
+            }
+            if (selectedTile == nullptr || tile.metadata().lod > selectedTile->metadata().lod) {
+                selectedTile = &tile;
+            }
+        }
+    }
+    return selectedTile == nullptr
+        ? std::nullopt
+        : selectedTile->heightAtWorld(
+            worldPosition,
+            header_.worldScale,
+            header_.maximumHeight
+        );
+}
+
+glm::vec3 TerrainScene::centerPosition() const {
+    const glm::vec2 terrainCenter(
+        (boundsMinimum_.x + boundsMaximum_.x) * 0.5f,
+        (boundsMinimum_.z + boundsMaximum_.z) * 0.5f
+    );
+
+    // MainField's geometric midpoint is the shared corner of four tiles. A
+    // player spawned exactly on that corner sees the independent source
+    // height samples as a hard cross-shaped seam. Pick the center of the
+    // nearest central tile instead, which remains at the middle of MainField
+    // while giving the player a continuous local ground surface.
+    const TerrainTile* centralTile = nullptr;
+    glm::vec3 centralTileCenter(0.0f);
+    float bestDistance = std::numeric_limits<float>::max();
+    for (const TerrainChunk& chunk : chunks_) {
+        for (const TerrainTile& tile : chunk.tiles()) {
+            const glm::vec3 tileCenter =
+                (tile.boundsMinimum() + tile.boundsMaximum()) * 0.5f;
+            const float distance = glm::distance(
+                glm::vec2(tileCenter.x, tileCenter.z),
+                terrainCenter
+            );
+            const bool preferredTie = centralTile != nullptr &&
+                std::abs(distance - bestDistance) < 0.0001f &&
+                (tileCenter.x > centralTileCenter.x ||
+                 (tileCenter.x == centralTileCenter.x && tileCenter.z > centralTileCenter.z));
+            if (centralTile == nullptr || distance < bestDistance || preferredTie) {
+                centralTile = &tile;
+                centralTileCenter = tileCenter;
+                bestDistance = distance;
+            }
+        }
+    }
+    if (centralTile != nullptr) {
+        const std::optional<float> height = centralTile->heightAtWorld(
+            glm::vec2(centralTileCenter.x, centralTileCenter.z),
+            header_.worldScale,
+            header_.maximumHeight
+        );
+        return glm::vec3(
+            centralTileCenter.x,
+            height.value_or(centralTileCenter.y),
+            centralTileCenter.z
+        );
+    }
+
+    const std::optional<float> height = heightAtWorld(terrainCenter);
+    return glm::vec3(terrainCenter.x, height.value_or(boundsMinimum_.y), terrainCenter.y);
 }
 
 TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const {
@@ -580,6 +806,7 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
             mesh
         );
     }
+    stitchTerrainMesh(mesh);
     return mesh;
 }
 

@@ -14,7 +14,7 @@
 namespace VulkCore {
 
 Renderer::Renderer(GLFWwindow* window)
-    : startTime_(std::chrono::steady_clock::now()) {
+    : window_(window), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
         throw std::invalid_argument("Renderer requires a valid GLFW window!");
     }
