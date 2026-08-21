@@ -969,6 +969,15 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
             } else if (selectedModelNode_->objectType == SceneObjectType::Player) {
             ImGui::SeparatorText("Player Controller");
             ImGui::TextWrapped("BOTW Link capsule height: %.2f m", PlayerController::kBotwLinkHeight);
+            ImGui::TextWrapped("Physics: NVIDIA PhysX 5.6.1 (60 Hz fixed step, CCD)");
+            ImGui::Text("Grounded: %s", playerController_.grounded() ? "yes" : "no");
+            const glm::vec3& playerVelocity = playerController_.velocity();
+            ImGui::Text(
+                "Velocity: (%.2f, %.2f, %.2f) m/s",
+                playerVelocity.x,
+                playerVelocity.y,
+                playerVelocity.z
+            );
             ImGui::TextWrapped("WASD move, Space jump, hold RMB to orbit the camera.");
             } else {
             ImGui::SeparatorText("Selected Model Node");

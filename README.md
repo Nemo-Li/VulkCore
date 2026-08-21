@@ -9,6 +9,7 @@
 - 模型：Assimp FBX 网格导入、节点变换、三角化、法线和 UV 提取，以及四骨骼 CPU 蒙皮动画播放
 - UI：Dear ImGui 1.92.9 GLFW/Vulkan backend，主画面控制面板和调试窗口
 - 粒子：Unity 风格基础 Particle System，支持发射、生命周期、速度、重力、形状、颜色/尺寸渐变、旋转、混合和 billboard 渲染
+- 物理：NVIDIA PhysX 5.6.1、60 Hz 固定步长、地形 BVH/AABB 碰撞、Player 动态胶囊、重力、跳跃和 CCD
 - Shader Demo Lab：对照 `3d-game-shaders-for-beginners` 提供可切换的材质 shader 与全屏后处理演示
 - 资源工具：GPU buffer 封装、staging buffer 上传和二进制文件读取
 - Shader 管线：GLSL 源码与构建生成的 SPIR-V 分离
@@ -28,6 +29,7 @@
 ```text
 include/vulkcore/       对外头文件和模块接口
   Core/                  构建配置和通用配置
+  Physics/               PhysX 后端隔离与物理世界接口
   Renderer/              Vulkan 上下文、交换链、buffer、渲染器
   Utils/                 文件读取和 Assimp 模型加载
 src/                    C++ 实现
@@ -67,6 +69,11 @@ Assimp 不要求单独安装：CMake 会优先使用系统中的 Assimp package�
 
 Dear ImGui 不要求单独安装：CMake 会从官方仓库下载固定版本 `v1.92.9`，并只编译
 核心库、GLFW platform backend 和 Vulkan renderer backend。
+
+PhysX 不要求单独安装：CMake 会下载固定提交的 PhysX `5.6.1` 源码并构建 CPU 静态库。
+由于 NVIDIA 官方 PhysX 5.x 目前只提供 Windows/Linux 构建预设，项目使用 O3DE 维护的
+跨平台 PhysX 分支补充 macOS/Apple Silicon 构建文件；PhysX 源码及许可证仍为
+BSD-3-Clause。首次构建会比后续增量构建耗时更长。
 
 ## 构建与运行
 
@@ -202,6 +209,20 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 `Play`、`Stop`、`Restart` 控制当前组件，纹理路径和参数会按对象 ID 自动保存到
 `vulkcore.ini` 的 `particle_system_object` 记录中。粒子位置使用组件的局部归一化场景坐标，
 默认在 GameObject 原点上方生成一束向上的火花。
+
+#### PhysX 地形与 Player 物理
+
+加载包含 BOTW Terrain 和 Player 的游戏场景时，每个渲染地形 Chunk 会同时烘焙为 PhysX
+静态三角网格。每 Chunk 的 AABB 与网格内部 BVH 用于分级碰撞粗筛，Player 则使用与可视胶囊
+同尺寸的动态胶囊碰撞体。
+物理场景以 60 Hz 固定步长运行，开启连续碰撞检测（CCD），当前实现包含：
+
+- PhysX 重力、地形接触、摩擦和穿透修正
+- `WASD` 水平速度控制与 `Space` grounded 跳跃
+- 动态刚体位置/速度同步到 Player 渲染节点和相机目标
+- Player Inspector 中的落地状态与实时速度信息
+
+当前地形碰撞使用渲染网格精度；物理材质、碰撞层、触发器、接触事件和通用刚体组件仍属于后续扩展。
 
 #### Material Shaders 与水面预设
 

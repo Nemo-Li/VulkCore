@@ -25,6 +25,7 @@ CapsuleMeshData createCapsuleMesh(
 );
 
 class TerrainScene;
+class PhysicsWorld;
 
 class PlayerController {
 public:
@@ -34,12 +35,13 @@ public:
     void clear();
     void reset(
         const TerrainScene& terrain,
+        PhysicsWorld& physics,
         const std::optional<glm::vec3>& spawnPosition = std::nullopt
     );
     void update(
         GLFWwindow* window,
         float deltaSeconds,
-        const TerrainScene& terrain,
+        PhysicsWorld& physics,
         bool keyboardCaptured,
         bool mouseCaptured
     );
@@ -47,8 +49,10 @@ public:
     bool active() const { return active_; }
     const glm::vec3& position() const { return position_; }
     const glm::vec3& spawnPosition() const { return spawnPosition_; }
+    const glm::vec3& velocity() const { return velocity_; }
+    bool grounded() const { return grounded_; }
     glm::vec3 cameraTargetWorld() const;
-    glm::vec3 cameraPositionWorld(const TerrainScene& terrain, float deltaSeconds);
+    glm::vec3 cameraPositionWorld() const;
 
 private:
     glm::vec3 horizontalForward() const;
@@ -63,10 +67,7 @@ private:
     glm::vec3 position_{0.0f};
     glm::vec3 velocity_{0.0f};
     float yawRadians_ = 0.0f;
-    float pitchRadians_ = -0.28f;
-    bool cameraCollisionStateInitialized_ = false;
-    float cameraDistanceFraction_ = 1.0f;
-    float cameraHeightOffset_ = 0.0f;
+    float pitchRadians_ = -0.2617993878f;
 };
 
 } // namespace VulkCore

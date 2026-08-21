@@ -28,7 +28,7 @@
 | 粒子 | 绑定对象、基础模块、纹理、CPU Billboard | 基础实现；无模块栈、GPU 模拟、Sub-emitter、碰撞 |
 | 动画 | 节点匀速欧拉旋转 | 极小子集；无骨骼、Clip、State Machine、Blend Tree |
 | 灯光 | 环境光 + 单方向光 | 基础实现；无 Light Component、Shadow、IBL、探针 |
-| 物理/碰撞 | 无 | 未实现 |
+| 物理/碰撞 | PhysX 5.6.1、地形静态三角网格、Player 动态胶囊、固定步长、重力/跳跃/CCD | 初步实现；无通用刚体组件、碰撞层、触发器和事件 |
 | 音频 | 无 | 未实现 |
 | 脚本/Gameplay | 无 | 未实现 |
 | 导航/AI | 无 | 未实现 |

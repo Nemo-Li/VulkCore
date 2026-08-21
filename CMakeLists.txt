@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 
+# Modern Apple/Windows linkers rescan static archives and do not require the
+# repeated libraries emitted for traditional Unix linkers. Enable CMake's
+# capability-aware de-duplication when the running CMake supports it.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
+if(POLICY CMP0179)
+    cmake_policy(SET CMP0179 NEW)
+endif()
+
 project(VulkCore VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -12,6 +22,74 @@ find_package(Vulkan REQUIRED)
 find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
 
 include(FetchContent)
+
+# PhysX 5.x's upstream public presets currently cover Windows and Linux only.
+# O3DE maintains the same BSD-3-Clause PhysX sources with the missing macOS,
+# iOS, and Android build definitions. Pin the exact PhysX 5.6.1-compatible
+# revision so dependency updates cannot silently change the physics ABI.
+FetchContent_Declare(
+    physx
+    GIT_REPOSITORY https://github.com/o3de/PhysX.git
+    GIT_TAG d5c964f23c3ba5553a305bbc7af3b50a5fa47a12
+    EXCLUDE_FROM_ALL
+)
+
+FetchContent_GetProperties(physx)
+if(NOT physx_POPULATED)
+    if(POLICY CMP0169)
+        cmake_policy(PUSH)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(physx)
+    if(POLICY CMP0169)
+        cmake_policy(POP)
+    endif()
+endif()
+
+set(VULKCORE_PHYSX_ROOT "${physx_SOURCE_DIR}/physx")
+set(PHYSX_ROOT_DIR "${VULKCORE_PHYSX_ROOT}" CACHE INTERNAL "PhysX source root" FORCE)
+set(PX_OUTPUT_LIB_DIR "${physx_BINARY_DIR}/output" CACHE PATH "PhysX library output" FORCE)
+set(PX_OUTPUT_BIN_DIR "${physx_BINARY_DIR}/output" CACHE PATH "PhysX binary output" FORCE)
+set(PX_GENERATE_STATIC_LIBRARIES ON CACHE BOOL "Build PhysX as static libraries" FORCE)
+set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "Disable CUDA PhysX" FORCE)
+set(PX_BUILDSNIPPETS OFF CACHE BOOL "Disable PhysX snippets" FORCE)
+set(PX_BUILDPVDRUNTIME OFF CACHE BOOL "Disable OmniPVD runtime" FORCE)
+set(PUBLIC_RELEASE 1 CACHE BOOL "Use the PhysX public API" FORCE)
+set(NV_FORCE_64BIT_SUFFIX ON CACHE BOOL "Use 64-bit PhysX library names" FORCE)
+
+if(WIN32)
+    set(TARGET_BUILD_PLATFORM windows CACHE STRING "PhysX target platform" FORCE)
+    set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
+elseif(APPLE)
+    set(TARGET_BUILD_PLATFORM mac CACHE STRING "PhysX target platform" FORCE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        set(PX_OUTPUT_ARCH arm CACHE STRING "PhysX output architecture family" FORCE)
+    else()
+        set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
+    endif()
+elseif(UNIX)
+    set(TARGET_BUILD_PLATFORM linux CACHE STRING "PhysX target platform" FORCE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        set(PX_OUTPUT_ARCH arm CACHE STRING "PhysX output architecture family" FORCE)
+    else()
+        set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
+    endif()
+else()
+    message(FATAL_ERROR "VulkCore's PhysX integration does not support this platform.")
+endif()
+
+set(VULKCORE_SAVED_CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}")
+list(APPEND CMAKE_MODULE_PATH
+    "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake"
+    "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake/modules"
+    "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake/${TARGET_BUILD_PLATFORM}"
+)
+add_subdirectory(
+    "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake"
+    "${physx_BINARY_DIR}/sdk"
+    EXCLUDE_FROM_ALL
+)
+set(CMAKE_MODULE_PATH "${VULKCORE_SAVED_CMAKE_MODULE_PATH}")
 
 # Assimp is used for importing model geometry. Prefer an installed package so
 # local package managers can provide a shared build; FetchContent keeps a fresh
@@ -172,6 +250,35 @@ target_link_libraries(vulkcore_imgui
         ${VULKCORE_GLFW_TARGET}
 )
 
+add_library(vulkcore_physics STATIC
+    src/Physics/PhysicsWorld.cpp
+)
+
+target_include_directories(vulkcore_physics
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_include_directories(vulkcore_physics SYSTEM
+    PRIVATE
+        "${VULKCORE_PHYSX_ROOT}/include"
+)
+
+target_compile_definitions(vulkcore_physics PRIVATE PX_PHYSX_STATIC_LIB)
+
+target_link_libraries(vulkcore_physics
+    PUBLIC
+        ${VULKCORE_GLM_TARGET}
+    PRIVATE
+        PhysXExtensions
+        PhysXCooking
+)
+
+if(MSVC)
+    target_compile_options(vulkcore_physics PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(vulkcore_physics PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(VulkCore
     src/main.cpp
     src/Application.cpp
@@ -218,6 +325,7 @@ target_link_libraries(VulkCore
         ${VULKCORE_GLM_TARGET}
         ${VULKCORE_ASSIMP_TARGET}
         vulkcore_imgui
+        vulkcore_physics
 )
 
 if(MSVC)
@@ -229,3 +337,12 @@ endif()
 set_target_properties(VulkCore PROPERTIES
     OUTPUT_NAME "vulkcore"
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(vulkcore_physics_smoke
+        tests/PhysicsWorldSmoke.cpp
+    )
+    target_link_libraries(vulkcore_physics_smoke PRIVATE vulkcore_physics)
+    add_test(NAME vulkcore_physics_smoke COMMAND vulkcore_physics_smoke)
+endif()
