@@ -49,7 +49,10 @@ set(VULKCORE_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/src")
 set(VULKCORE_SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(VULKCORE_DEFAULT_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/mill-scene.fbx")
 set(VULKCORE_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vulkcore.ini")
+set(VULKCORE_DEFAULT_TERRAIN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/assets/terrain")
 set(VULKCORE_MODEL_PATH "${VULKCORE_DEFAULT_MODEL_PATH}" CACHE FILEPATH "Model path; FBX files are supported")
+set(VULKCORE_TERRAIN_ROOT "${VULKCORE_DEFAULT_TERRAIN_ROOT}" CACHE PATH
+    "BOTW extraction root containing MainField.tscb and terrain/*.hght")
 if(NOT VULKCORE_MODEL_PATH)
     set(VULKCORE_MODEL_PATH "${VULKCORE_DEFAULT_MODEL_PATH}" CACHE FILEPATH "Model path; FBX files are supported" FORCE)
 endif()
@@ -188,6 +191,7 @@ add_executable(VulkCore
     src/Renderer/SwapChain.cpp
     src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
+    src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
     src/Utils/ModelLoader.cpp
     src/Utils/StbImage.cpp
@@ -206,6 +210,7 @@ target_compile_definitions(VulkCore
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
         VULKCORE_MODEL_PATH=\"${VULKCORE_MODEL_PATH}\"
         VULKCORE_CONFIG_PATH=\"${VULKCORE_CONFIG_PATH}\"
+        VULKCORE_TERRAIN_ROOT=\"${VULKCORE_TERRAIN_ROOT}\"
 )
 
 target_link_libraries(VulkCore

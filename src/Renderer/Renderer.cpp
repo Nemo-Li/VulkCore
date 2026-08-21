@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 
 #include "vulkcore/Renderer/Renderer.hpp"
+#include "vulkcore/Terrain/Terrain.hpp"
 
 #include <stdexcept>
 

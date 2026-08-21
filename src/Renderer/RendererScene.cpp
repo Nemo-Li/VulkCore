@@ -1,6 +1,19 @@
 #include "RendererImplementation.hpp"
 
+#include "vulkcore/Terrain/Terrain.hpp"
+
+#ifndef VULKCORE_TERRAIN_ROOT
+#define VULKCORE_TERRAIN_ROOT ""
+#endif
+
 namespace VulkCore {
+
+namespace {
+
+constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
+constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
+
+} // namespace
 
 void Renderer::discoverModelResources() {
     assetsDirectory_ = locateAssetsDirectory();
@@ -210,6 +223,7 @@ void Renderer::selectModelResource(const std::filesystem::path& path) {
 
 void Renderer::initializeEmptyScene() {
     meshData_ = MeshData{};
+    terrainScene_.reset();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
@@ -221,6 +235,132 @@ void Renderer::initializeEmptyScene() {
     sunVertexStart_ = 0;
     sunIndexStart_ = 0;
     sunPresent_ = false;
+
+    const std::filesystem::path terrainRoot(VULKCORE_TERRAIN_ROOT);
+    if (terrainRoot.empty()) {
+        return;
+    }
+    try {
+        auto terrain = TerrainScene::load(
+            terrainRoot / "MainField.tscb",
+            terrainRoot
+        );
+        appendTerrainToScene(*terrain);
+        terrainScene_ = std::move(terrain);
+        std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
+                  << " tiles in " << terrainScene_->chunks().size()
+                  << " chunks\n";
+    } catch (const std::exception& error) {
+        std::cerr << "warning: BOTW terrain was not loaded: " << error.what() << '\n';
+    }
+}
+
+void Renderer::appendTerrainToScene(const TerrainScene& terrain) {
+    TerrainMeshOptions meshOptions;
+    const TerrainMeshData terrainMesh = terrain.buildMesh(meshOptions);
+    if (terrainMesh.vertices.empty() || terrainMesh.indices.empty() ||
+        terrainMesh.chunks.empty()) {
+        throw std::runtime_error("BOTW terrain contains no renderable heightmap data");
+    }
+    if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
+            terrainMesh.vertices.size() ||
+        meshData_.indices.size() > std::numeric_limits<std::uint32_t>::max() -
+            terrainMesh.indices.size()) {
+        throw std::runtime_error("BOTW terrain exceeds the renderer's 32-bit mesh limits");
+    }
+
+    MaterialData terrainMaterial;
+    terrainMaterial.name = "BOTW Terrain (height only)";
+    terrainMaterial.baseColor = glm::vec4(0.76f, 0.82f, 0.70f, 1.0f);
+    terrainMaterial.roughness = 0.95f;
+    terrainMaterial.doubleSided = true;
+    const std::uint32_t terrainMaterialIndex = static_cast<std::uint32_t>(
+        meshData_.materials.size()
+    );
+    meshData_.materials.push_back(std::move(terrainMaterial));
+
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    meshData_.vertices.insert(
+        meshData_.vertices.end(),
+        terrainMesh.vertices.begin(),
+        terrainMesh.vertices.end()
+    );
+    meshData_.bindPoseVertices.insert(
+        meshData_.bindPoseVertices.end(),
+        terrainMesh.vertices.begin(),
+        terrainMesh.vertices.end()
+    );
+    meshData_.skinSourceVertices.insert(
+        meshData_.skinSourceVertices.end(),
+        terrainMesh.vertices.begin(),
+        terrainMesh.vertices.end()
+    );
+    for (const std::uint32_t index : terrainMesh.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+
+    ModelNode terrainNode;
+    terrainNode.name = "BOTW Terrain";
+    terrainNode.nodeId = kTerrainSceneNodeId;
+    terrainNode.meshCount = 0;
+    terrainNode.globalTransform = glm::mat4(1.0f);
+    terrainNode.hasBounds = false;
+
+    for (std::size_t chunkIndex = 0; chunkIndex < terrainMesh.chunks.size(); ++chunkIndex) {
+        const TerrainChunkMesh& chunkMesh = terrainMesh.chunks[chunkIndex];
+        if (chunkMesh.indexCount == 0) {
+            --terrainNode.meshCount;
+            continue;
+        }
+        if (chunkIndex > std::numeric_limits<std::uint32_t>::max() - kTerrainChunkNodeBase) {
+            throw std::runtime_error("BOTW terrain chunk node IDs overflow 32-bit storage");
+        }
+        const std::uint32_t chunkNodeId = kTerrainChunkNodeBase +
+            static_cast<std::uint32_t>(chunkIndex);
+        const std::uint32_t partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
+        meshData_.parts.push_back({
+            indexOffset + static_cast<std::uint32_t>(chunkMesh.indexOffset),
+            static_cast<std::uint32_t>(chunkMesh.indexCount),
+            terrainMaterialIndex,
+            chunkNodeId
+        });
+        ++terrainNode.meshCount;
+
+        ModelNode chunkNode;
+        chunkNode.name = "Chunk LOD" + std::to_string(chunkMesh.lod) + " (" +
+            std::to_string(chunkMesh.coordinate.x) + ", " +
+            std::to_string(chunkMesh.coordinate.y) + ")";
+        chunkNode.nodeId = chunkNodeId;
+        chunkNode.meshCount = chunkMesh.tileCount;
+        chunkNode.globalTransform = glm::mat4(1.0f);
+        chunkNode.meshPartIndices.push_back(partIndex);
+        chunkNode.hasBounds = true;
+        chunkNode.boundsMinimum = chunkMesh.boundsMinimum;
+        chunkNode.boundsMaximum = chunkMesh.boundsMaximum;
+        terrainNode.children.push_back(std::move(chunkNode));
+
+        if (!terrainNode.hasBounds) {
+            terrainNode.boundsMinimum = chunkMesh.boundsMinimum;
+            terrainNode.boundsMaximum = chunkMesh.boundsMaximum;
+            terrainNode.hasBounds = true;
+        } else {
+            terrainNode.boundsMinimum = glm::min(
+                terrainNode.boundsMinimum,
+                chunkMesh.boundsMinimum
+            );
+            terrainNode.boundsMaximum = glm::max(
+                terrainNode.boundsMaximum,
+                chunkMesh.boundsMaximum
+            );
+        }
+    }
+
+    if (terrainNode.children.empty()) {
+        throw std::runtime_error("BOTW terrain chunks contain no triangles");
+    }
+    meshData_.additionalNodes.push_back(std::move(terrainNode));
+    recalculateSceneBounds();
 }
 
 const Renderer::SceneModelResource* Renderer::sceneModelResourceForNode(
