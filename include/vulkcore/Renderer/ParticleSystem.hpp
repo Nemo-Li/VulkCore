@@ -29,6 +29,8 @@ struct ParticleSystemSettings {
         Point = 0,
         Sphere,
         Cone,
+        Tornado,
+        Ring,
     };
 
     enum class BlendMode : std::uint8_t {
@@ -95,6 +97,10 @@ private:
         float size = 0.0f;
         float rotationRadians = 0.0f;
         float rotationSpeedRadians = 0.0f;
+        float tornadoAngleRadians = 0.0f;
+        float tornadoAngularSpeed = 0.0f;
+        float tornadoHeight = 0.0f;
+        float tornadoVerticalSpeed = 0.0f;
     };
 
     float randomRange(float minimum, float maximum);

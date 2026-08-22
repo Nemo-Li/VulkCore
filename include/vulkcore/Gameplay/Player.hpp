@@ -27,6 +27,13 @@ CapsuleMeshData createCapsuleMesh(
 class TerrainScene;
 class PhysicsWorld;
 
+enum class PlayerAttack : std::uint8_t {
+    None = 0,
+    Tornado,
+    LightningSlash,
+    FlameNova,
+};
+
 class PlayerController {
 public:
     static constexpr float kBotwLinkHeight = 1.58f;
@@ -38,11 +45,17 @@ public:
         PhysicsWorld& physics,
         const std::optional<glm::vec3>& spawnPosition = std::nullopt
     );
+    bool teleport(
+        const TerrainScene& terrain,
+        PhysicsWorld& physics,
+        const glm::vec2& worldPosition
+    );
     void configureRunGait(
         float cycleDurationSeconds,
         float groundSpeed,
         std::vector<float> footTractionSamples
     );
+    void configureAttackAnimation(PlayerAttack attack, float durationSeconds);
     void update(
         GLFWwindow* window,
         float deltaSeconds,
@@ -59,6 +72,11 @@ public:
     float facingYawRadians() const { return facingYawRadians_; }
     bool moving() const { return moving_; }
     float runAnimationTimeSeconds() const { return runAnimationTimeSeconds_; }
+    bool attacking() const { return activeAttack_ != PlayerAttack::None; }
+    bool attackTriggered() const { return triggeredAttack_ != PlayerAttack::None; }
+    PlayerAttack activeAttack() const { return activeAttack_; }
+    PlayerAttack triggeredAttack() const { return triggeredAttack_; }
+    float attackAnimationTimeSeconds() const { return attackAnimationTimeSeconds_; }
     glm::vec3 cameraTargetWorld() const;
     glm::vec3 cameraPositionWorld() const;
 
@@ -70,6 +88,11 @@ private:
     bool grounded_ = true;
     bool moving_ = false;
     bool jumpWasDown_ = false;
+    bool tornadoAttackWasDown_ = false;
+    bool lightningAttackWasDown_ = false;
+    bool flameAttackWasDown_ = false;
+    PlayerAttack activeAttack_ = PlayerAttack::None;
+    PlayerAttack triggeredAttack_ = PlayerAttack::None;
     bool lookDragging_ = false;
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;
@@ -80,6 +103,10 @@ private:
     float runAnimationTimeSeconds_ = 0.0f;
     float runCycleDurationSeconds_ = 0.0f;
     float runGroundSpeed_ = 0.0f;
+    float attackAnimationTimeSeconds_ = 0.0f;
+    float tornadoAttackDurationSeconds_ = 0.85f;
+    float lightningAttackDurationSeconds_ = 0.72f;
+    float flameAttackDurationSeconds_ = 1.05f;
     std::vector<float> footTractionSamples_;
     float yawRadians_ = 0.0f;
     float pitchRadians_ = -0.2617993878f;

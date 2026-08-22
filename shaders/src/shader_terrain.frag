@@ -37,6 +37,14 @@ layout(location = 0) out vec4 outColor;
 
 const vec2 kAtlasCellSize = vec2(0.25, 0.5);
 const vec2 kAtlasInset = vec2(0.004, 0.006);
+// The painted ground layer is considerably brighter than the blade palette.
+// Keep its hue and brush detail, but bring its value close to the grass mesh
+// so exposed terrain no longer forms a luminous patch below the blades.
+const vec3 kGroundGrassColorMatch = vec3(0.72, 0.82, 0.68);
+
+vec3 matchGroundGrassColor(vec3 color) {
+    return color * kGroundGrassColorMatch;
+}
 
 vec3 sampleLandform(int index, vec2 uv) {
     int column = index % 4;
@@ -44,11 +52,13 @@ vec3 sampleLandform(int index, vec2 uv) {
     vec2 cellOrigin = vec2(float(column), float(row)) * kAtlasCellSize;
     vec2 cellUv = cellOrigin + kAtlasInset +
         fract(uv) * (kAtlasCellSize - 2.0 * kAtlasInset);
-    return texture(textureSampler, cellUv).rgb;
+    vec3 color = texture(textureSampler, cellUv).rgb;
+    return index == 0 ? matchGroundGrassColor(color) : color;
 }
 
 vec3 sampleDetailLandform(int index, vec2 uv) {
-    return texture(terrainDetailTextures[index], fract(uv)).rgb;
+    vec3 color = texture(terrainDetailTextures[index], fract(uv)).rgb;
+    return index == 0 ? matchGroundGrassColor(color) : color;
 }
 
 vec3 sampleLandformTriplanar(

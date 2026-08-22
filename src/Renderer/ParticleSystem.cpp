@@ -61,8 +61,8 @@ ParticleSystemSettings ParticleSystem::sanitizeSettings(ParticleSystemSettings s
     settings.lifetimeRandomness = std::clamp(settings.lifetimeRandomness, 0.0f, 1.0f);
     settings.startSpeed = std::clamp(settings.startSpeed, 0.0f, 20.0f);
     settings.speedRandomness = std::clamp(settings.speedRandomness, 0.0f, 1.0f);
-    settings.startSize = std::clamp(settings.startSize, 0.001f, 2.0f);
-    settings.endSize = std::clamp(settings.endSize, 0.001f, 2.0f);
+    settings.startSize = std::clamp(settings.startSize, 0.00001f, 2.0f);
+    settings.endSize = std::clamp(settings.endSize, 0.00001f, 2.0f);
     settings.rotationSpeedDegrees = std::clamp(
         settings.rotationSpeedDegrees,
         -720.0f,
@@ -177,7 +177,30 @@ void ParticleSystem::emitParticle() {
         1.0f + settings_.speedRandomness
     );
     particle.position = settings_.position;
-    if (settings_.shape == ParticleSystemSettings::Shape::Sphere) {
+    if (settings_.shape == ParticleSystemSettings::Shape::Tornado) {
+        const float heightFactor = randomRange(0.0f, 1.0f);
+        particle.tornadoAngleRadians = randomRange(0.0f, glm::two_pi<float>());
+        particle.tornadoAngularSpeed = randomRange(7.0f, 11.0f);
+        particle.tornadoHeight = settings_.shapeRadius * 2.4f * heightFactor;
+        particle.tornadoVerticalSpeed = settings_.startSpeed * randomRange(0.75f, 1.25f);
+        const float radius = settings_.shapeRadius * (0.18f + 0.82f * heightFactor);
+        particle.position += glm::vec3(
+            std::cos(particle.tornadoAngleRadians) * radius,
+            particle.tornadoHeight,
+            std::sin(particle.tornadoAngleRadians) * radius
+        );
+    } else if (settings_.shape == ParticleSystemSettings::Shape::Ring) {
+        const float angle = randomRange(0.0f, glm::two_pi<float>());
+        const float radius = settings_.shapeRadius * randomRange(0.35f, 1.0f);
+        const glm::vec3 radial(std::cos(angle), 0.0f, std::sin(angle));
+        particle.position += radial * radius;
+        particle.velocity = (
+            radial + glm::vec3(0.0f, randomRange(0.45f, 0.85f), 0.0f)
+        ) * settings_.startSpeed * randomRange(
+            1.0f - settings_.speedRandomness,
+            1.0f + settings_.speedRandomness
+        );
+    } else if (settings_.shape == ParticleSystemSettings::Shape::Sphere) {
         particle.position += randomUnitVector() * settings_.shapeRadius *
             std::cbrt(randomRange(0.0f, 1.0f));
     } else if (settings_.shape == ParticleSystemSettings::Shape::Cone) {
@@ -185,7 +208,9 @@ void ParticleSystem::emitParticle() {
             std::sqrt(randomRange(0.0f, 1.0f));
     }
     particle.rotationSpeedRadians = glm::radians(settings_.rotationSpeedDegrees);
-    particle.rotationRadians = randomRange(0.0f, glm::two_pi<float>());
+    particle.rotationRadians = settings_.shape == ParticleSystemSettings::Shape::Ring
+        ? randomRange(-0.18f, 0.18f)
+        : randomRange(0.0f, glm::two_pi<float>());
     particles_.push_back(particle);
 }
 
@@ -205,9 +230,25 @@ void ParticleSystem::update(float deltaSeconds) {
             particles_.pop_back();
             continue;
         }
-        particle.position += particle.velocity * delta;
-        particle.velocity += glm::vec3(0.0f, 0.0f, -1.0f) *
-            settings_.gravityModifier * delta;
+        if (settings_.shape == ParticleSystemSettings::Shape::Tornado) {
+            particle.tornadoAngleRadians += particle.tornadoAngularSpeed * delta;
+            particle.tornadoHeight += particle.tornadoVerticalSpeed * delta;
+            const float heightFactor = std::clamp(
+                particle.tornadoHeight / std::max(settings_.shapeRadius * 3.0f, 0.0001f),
+                0.0f,
+                1.0f
+            );
+            const float radius = settings_.shapeRadius * (0.16f + 0.84f * heightFactor);
+            particle.position = settings_.position + glm::vec3(
+                std::cos(particle.tornadoAngleRadians) * radius,
+                particle.tornadoHeight,
+                std::sin(particle.tornadoAngleRadians) * radius
+            );
+        } else {
+            particle.position += particle.velocity * delta;
+            particle.velocity += glm::vec3(0.0f, 0.0f, -1.0f) *
+                settings_.gravityModifier * delta;
+        }
         particle.rotationRadians += particle.rotationSpeedRadians * delta;
         ++index;
     }

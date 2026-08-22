@@ -471,6 +471,177 @@ void Renderer::updateParticleSystems(
     for (const ModelNode& node : meshData_.additionalNodes) {
         updateNode(updateNode, node);
     }
+
+    constexpr std::array<std::uint32_t, 3> attackEffectIds{
+        kPlayerAttackParticleNodeId,
+        kPlayerLightningParticleNodeId,
+        kPlayerFlameParticleNodeId,
+    };
+    for (const std::uint32_t effectId : attackEffectIds) {
+        const auto attackEffectIt = particleSystems_.find(effectId);
+        if (attackEffectIt == particleSystems_.end()) {
+            continue;
+        }
+        ParticleSystem& system = attackEffectIt->second;
+        system.update(deltaSeconds);
+        system.buildVertices(cameraRight, cameraUp);
+        const std::vector<ParticleVertex>& sourceVertices = system.vertices();
+        const std::size_t availableVertices = maximumVertices - particleVertices_.size();
+        std::size_t copiedVertexCount = std::min(sourceVertices.size(), availableVertices);
+        copiedVertexCount -= copiedVertexCount % ParticleSystem::kVerticesPerParticle;
+        if (copiedVertexCount > 0) {
+            particleDrawRanges_.push_back({
+                effectId,
+                static_cast<std::uint32_t>(particleVertices_.size()),
+                static_cast<std::uint32_t>(copiedVertexCount),
+                system.settings().blendMode
+            });
+            particleVertices_.insert(
+                particleVertices_.end(),
+                sourceVertices.begin(),
+                sourceVertices.begin() + static_cast<std::ptrdiff_t>(copiedVertexCount)
+            );
+        }
+    }
+}
+
+void Renderer::createPlayerAttackEffect() {
+    if (!playerController_.active()) {
+        return;
+    }
+    const float scale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
+    const std::filesystem::path assets = assetsDirectory_.empty()
+        ? locateAssetsDirectory()
+        : assetsDirectory_;
+    const auto addEffect = [this](
+                               std::uint32_t effectId,
+                               const ParticleSystemSettings& settings
+                           ) {
+        if (particleSystems_.contains(effectId) ||
+            particleSystems_.size() >= kMaximumParticleSystems) {
+            return;
+        }
+        auto [effectIt, inserted] = particleSystems_.try_emplace(effectId);
+        if (inserted) {
+            effectIt->second.setSettings(settings);
+            effectIt->second.stop();
+        }
+    };
+
+    ParticleSystemSettings tornado;
+    tornado.enabled = true;
+    tornado.playOnAwake = false;
+    tornado.looping = false;
+    tornado.maxParticles = 384;
+    tornado.duration = 0.65f;
+    tornado.emissionRate = 320.0f;
+    tornado.startLifetime = 0.82f;
+    tornado.lifetimeRandomness = 0.18f;
+    tornado.startSpeed = scale * 1.15f;
+    tornado.speedRandomness = 0.25f;
+    tornado.startSize = scale * 0.52f;
+    tornado.endSize = scale * 0.18f;
+    tornado.rotationSpeedDegrees = 220.0f;
+    tornado.gravityModifier = 0.0f;
+    tornado.spreadDegrees = 0.0f;
+    tornado.shapeRadius = scale * 0.82f;
+    tornado.shape = ParticleSystemSettings::Shape::Tornado;
+    tornado.blendMode = ParticleSystemSettings::BlendMode::Additive;
+    tornado.startColor = glm::vec4(0.72f, 0.94f, 1.0f, 0.9f);
+    tornado.endColor = glm::vec4(0.32f, 0.72f, 1.0f, 0.0f);
+    tornado.texturePath = assets / "textures" / "vfx" / "tornado_wisp.png";
+    addEffect(kPlayerAttackParticleNodeId, tornado);
+
+    ParticleSystemSettings lightning;
+    lightning.enabled = true;
+    lightning.playOnAwake = false;
+    lightning.looping = false;
+    lightning.maxParticles = 192;
+    lightning.duration = 0.16f;
+    lightning.emissionRate = 190.0f;
+    lightning.startLifetime = 0.34f;
+    lightning.lifetimeRandomness = 0.16f;
+    lightning.startSpeed = scale * 5.8f;
+    lightning.speedRandomness = 0.22f;
+    lightning.startSize = scale * 0.78f;
+    lightning.endSize = scale * 1.12f;
+    lightning.rotationSpeedDegrees = 95.0f;
+    lightning.gravityModifier = 0.0f;
+    lightning.spreadDegrees = 13.0f;
+    lightning.shapeRadius = scale * 0.14f;
+    lightning.shape = ParticleSystemSettings::Shape::Cone;
+    lightning.blendMode = ParticleSystemSettings::BlendMode::Additive;
+    lightning.startColor = glm::vec4(0.68f, 0.82f, 1.0f, 1.0f);
+    lightning.endColor = glm::vec4(0.32f, 0.08f, 1.0f, 0.0f);
+    lightning.texturePath = assets / "textures" / "vfx" / "lightning_slash.png";
+    addEffect(kPlayerLightningParticleNodeId, lightning);
+
+    ParticleSystemSettings flame;
+    flame.enabled = true;
+    flame.playOnAwake = false;
+    flame.looping = false;
+    flame.maxParticles = 320;
+    flame.duration = 0.24f;
+    flame.emissionRate = 560.0f;
+    flame.startLifetime = 0.72f;
+    flame.lifetimeRandomness = 0.22f;
+    flame.startSpeed = scale * 2.35f;
+    flame.speedRandomness = 0.3f;
+    flame.startSize = scale * 0.62f;
+    flame.endSize = scale * 0.24f;
+    flame.rotationSpeedDegrees = 18.0f;
+    flame.gravityModifier = 0.0f;
+    flame.shapeRadius = scale * 0.42f;
+    flame.shape = ParticleSystemSettings::Shape::Ring;
+    flame.blendMode = ParticleSystemSettings::BlendMode::Additive;
+    flame.startColor = glm::vec4(1.0f, 0.82f, 0.28f, 1.0f);
+    flame.endColor = glm::vec4(1.0f, 0.08f, 0.01f, 0.0f);
+    flame.texturePath = assets / "textures" / "vfx" / "flame_nova.png";
+    addEffect(kPlayerFlameParticleNodeId, flame);
+}
+
+void Renderer::updatePlayerAttackEffect() {
+    if (!playerController_.active()) {
+        return;
+    }
+    const float scale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
+    const float yaw = playerController_.facingYawRadians();
+    const glm::vec3 forward(std::sin(yaw), 0.0f, std::cos(yaw));
+    const glm::vec3 playerPosition = playerController_.position() - modelCenter_;
+    const auto tornadoIt = particleSystems_.find(kPlayerAttackParticleNodeId);
+    if (tornadoIt != particleSystems_.end()) {
+        tornadoIt->second.settings().position = scale * (
+            playerPosition + forward * 1.05f + glm::vec3(0.0f, 0.08f, 0.0f)
+        );
+    }
+    const auto lightningIt = particleSystems_.find(kPlayerLightningParticleNodeId);
+    if (lightningIt != particleSystems_.end()) {
+        lightningIt->second.settings().position = scale * (
+            playerPosition + forward * 0.82f + glm::vec3(0.0f, 0.82f, 0.0f)
+        );
+        lightningIt->second.settings().emissionDirection = glm::normalize(
+            forward + glm::vec3(0.0f, 0.06f, 0.0f)
+        );
+    }
+    const auto flameIt = particleSystems_.find(kPlayerFlameParticleNodeId);
+    if (flameIt != particleSystems_.end()) {
+        flameIt->second.settings().position = scale * (
+            playerPosition + glm::vec3(0.0f, 0.06f, 0.0f)
+        );
+    }
+    if (!playerController_.attackTriggered()) {
+        return;
+    }
+    if (playerController_.triggeredAttack() == PlayerAttack::Tornado &&
+        tornadoIt != particleSystems_.end()) {
+        tornadoIt->second.restart();
+    } else if (playerController_.triggeredAttack() == PlayerAttack::LightningSlash &&
+               lightningIt != particleSystems_.end()) {
+        lightningIt->second.restart();
+    } else if (playerController_.triggeredAttack() == PlayerAttack::FlameNova &&
+               flameIt != particleSystems_.end()) {
+        flameIt->second.restart();
+    }
 }
 
 void Renderer::createMaterialTextures() {

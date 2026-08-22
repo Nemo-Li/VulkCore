@@ -1,5 +1,7 @@
 #include "RendererImplementation.hpp"
 
+#include "vulkcore/Terrain/Terrain.hpp"
+
 namespace VulkCore {
 
 void Renderer::initializeImGui() {
@@ -286,7 +288,7 @@ void Renderer::drawParticleSystemControls(ModelNode& node, bool& shouldSaveSetti
     settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
 
     ImGui::SeparatorText("Shape");
-    const char* shapeLabels[] = {"Point", "Sphere", "Cone"};
+    const char* shapeLabels[] = {"Point", "Sphere", "Cone", "Tornado", "Ring"};
     int shape = static_cast<int>(settings.shape);
     if (ImGui::Combo("Emitter shape", &shape, shapeLabels, IM_ARRAYSIZE(shapeLabels))) {
         settings.shape = static_cast<ParticleSystemSettings::Shape>(shape);
@@ -1166,6 +1168,211 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
     ImGui::EndTable();
 }
 
+void Renderer::drawMiniMap() {
+    if (!terrainScene_ || !physicsWorld_ || !playerController_.active()) {
+        return;
+    }
+
+    const glm::vec3& worldMinimum = terrainScene_->boundsMinimum();
+    const glm::vec3& worldMaximum = terrainScene_->boundsMaximum();
+    const float worldWidth = worldMaximum.x - worldMinimum.x;
+    const float worldDepth = worldMaximum.z - worldMinimum.z;
+    if (!std::isfinite(worldWidth) || !std::isfinite(worldDepth) ||
+        worldWidth <= std::numeric_limits<float>::epsilon() ||
+        worldDepth <= std::numeric_limits<float>::epsilon()) {
+        return;
+    }
+
+    constexpr float kMapCanvasSize = 196.0f;
+    constexpr ImVec2 kMapWindowSize(216.0f, 258.0f);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(
+        ImVec2(
+            viewport->WorkPos.x + viewport->WorkSize.x - kMapWindowSize.x - 14.0f,
+            viewport->WorkPos.y + 14.0f
+        ),
+        ImGuiCond_Always
+    );
+    ImGui::SetNextWindowSize(kMapWindowSize, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+
+    constexpr ImGuiWindowFlags kMapWindowFlags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+    if (!ImGui::Begin("Mini Map", nullptr, kMapWindowFlags)) {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        return;
+    }
+
+    ImGui::TextUnformatted("Mini Map");
+    ImGui::SameLine();
+    ImGui::TextDisabled("click to travel");
+
+    const ImVec2 canvasMinimum = ImGui::GetCursorScreenPos();
+    const ImVec2 canvasSize(kMapCanvasSize, kMapCanvasSize);
+    ImGui::InvisibleButton("##MiniMapCanvas", canvasSize);
+    const bool mapHovered = ImGui::IsItemHovered();
+    const bool mapClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+
+    const float worldToMapScale = std::min(
+        canvasSize.x / worldWidth,
+        canvasSize.y / worldDepth
+    );
+    const ImVec2 mapSize(
+        worldWidth * worldToMapScale,
+        worldDepth * worldToMapScale
+    );
+    const ImVec2 mapMinimum(
+        canvasMinimum.x + (canvasSize.x - mapSize.x) * 0.5f,
+        canvasMinimum.y + (canvasSize.y - mapSize.y) * 0.5f
+    );
+    const ImVec2 mapMaximum(
+        mapMinimum.x + mapSize.x,
+        mapMinimum.y + mapSize.y
+    );
+    const auto worldToMap = [&](float worldX, float worldZ) {
+        return ImVec2(
+            mapMinimum.x + (worldX - worldMinimum.x) / worldWidth * mapSize.x,
+            mapMinimum.y + (worldZ - worldMinimum.z) / worldDepth * mapSize.y
+        );
+    };
+    const auto mixColor = [](const ImVec4& from, const ImVec4& to, float amount) {
+        amount = std::clamp(amount, 0.0f, 1.0f);
+        return ImVec4(
+            from.x + (to.x - from.x) * amount,
+            from.y + (to.y - from.y) * amount,
+            from.z + (to.z - from.z) * amount,
+            from.w + (to.w - from.w) * amount
+        );
+    };
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(
+        canvasMinimum,
+        ImVec2(canvasMinimum.x + canvasSize.x, canvasMinimum.y + canvasSize.y),
+        IM_COL32(10, 18, 18, 255),
+        5.0f
+    );
+    drawList->PushClipRect(mapMinimum, mapMaximum, true);
+    const float terrainHeightRange = std::max(
+        worldMaximum.y - worldMinimum.y,
+        0.0001f
+    );
+    const ImVec4 lowColor(0.10f, 0.27f, 0.13f, 1.0f);
+    const ImVec4 middleColor(0.33f, 0.52f, 0.19f, 1.0f);
+    const ImVec4 highColor(0.52f, 0.50f, 0.38f, 1.0f);
+    for (const TerrainChunk& chunk : terrainScene_->chunks()) {
+        for (const TerrainTile& tile : chunk.tiles()) {
+            const glm::vec3& tileMinimum = tile.boundsMinimum();
+            const glm::vec3& tileMaximum = tile.boundsMaximum();
+            const ImVec2 tileStart = worldToMap(tileMinimum.x, tileMinimum.z);
+            const ImVec2 tileEnd = worldToMap(tileMaximum.x, tileMaximum.z);
+            const float averageHeight = (tileMinimum.y + tileMaximum.y) * 0.5f;
+            const float normalizedHeight = std::clamp(
+                (averageHeight - worldMinimum.y) / terrainHeightRange,
+                0.0f,
+                1.0f
+            );
+            const ImVec4 tileColor = normalizedHeight < 0.58f
+                ? mixColor(lowColor, middleColor, normalizedHeight / 0.58f)
+                : mixColor(
+                    middleColor,
+                    highColor,
+                    (normalizedHeight - 0.58f) / 0.42f
+                );
+            drawList->AddRectFilled(
+                ImVec2(std::min(tileStart.x, tileEnd.x), std::min(tileStart.y, tileEnd.y)),
+                ImVec2(std::max(tileStart.x, tileEnd.x), std::max(tileStart.y, tileEnd.y)),
+                ImGui::ColorConvertFloat4ToU32(tileColor)
+            );
+            drawList->AddRect(
+                ImVec2(std::min(tileStart.x, tileEnd.x), std::min(tileStart.y, tileEnd.y)),
+                ImVec2(std::max(tileStart.x, tileEnd.x), std::max(tileStart.y, tileEnd.y)),
+                IM_COL32(220, 238, 191, 24)
+            );
+        }
+    }
+    drawList->PopClipRect();
+    drawList->AddRect(mapMinimum, mapMaximum, IM_COL32(223, 238, 205, 185), 3.0f, 0, 1.4f);
+
+    const glm::vec3& playerPosition = playerController_.position();
+    const ImVec2 playerMapPosition = worldToMap(playerPosition.x, playerPosition.z);
+    const glm::vec2 facingDirection(
+        std::sin(playerController_.facingYawRadians()),
+        std::cos(playerController_.facingYawRadians())
+    );
+    const ImVec2 facingScreenDirection(facingDirection.x, facingDirection.y);
+    const ImVec2 markerTip(
+        playerMapPosition.x + facingScreenDirection.x * 10.0f,
+        playerMapPosition.y + facingScreenDirection.y * 10.0f
+    );
+    const ImVec2 markerRight(-facingScreenDirection.y, facingScreenDirection.x);
+    drawList->AddTriangleFilled(
+        markerTip,
+        ImVec2(
+            playerMapPosition.x - facingScreenDirection.x * 4.0f + markerRight.x * 5.0f,
+            playerMapPosition.y - facingScreenDirection.y * 4.0f + markerRight.y * 5.0f
+        ),
+        ImVec2(
+            playerMapPosition.x - facingScreenDirection.x * 4.0f - markerRight.x * 5.0f,
+            playerMapPosition.y - facingScreenDirection.y * 4.0f - markerRight.y * 5.0f
+        ),
+        IM_COL32(255, 238, 102, 255)
+    );
+    drawList->AddCircle(playerMapPosition, 7.0f, IM_COL32(30, 42, 28, 255), 20, 2.0f);
+    drawList->AddText(
+        ImVec2(mapMinimum.x + 5.0f, mapMinimum.y + 4.0f),
+        IM_COL32(240, 244, 225, 210),
+        "N"
+    );
+
+    const ImVec2 mousePosition = ImGui::GetIO().MousePos;
+    const bool mouseInsideMap = mousePosition.x >= mapMinimum.x &&
+        mousePosition.x <= mapMaximum.x &&
+        mousePosition.y >= mapMinimum.y &&
+        mousePosition.y <= mapMaximum.y;
+    if (mapHovered && mouseInsideMap) {
+        const glm::vec2 destination(
+            worldMinimum.x + (mousePosition.x - mapMinimum.x) /
+                mapSize.x * worldWidth,
+            worldMinimum.z + (mousePosition.y - mapMinimum.y) /
+                mapSize.y * worldDepth
+        );
+        const std::optional<float> destinationHeight =
+            terrainScene_->renderedHeightAtWorld(destination);
+        if (destinationHeight.has_value()) {
+            ImGui::SetTooltip(
+                "Travel to X %.1f, Z %.1f",
+                destination.x,
+                destination.y
+            );
+            if (mapClicked && playerController_.teleport(
+                    *terrainScene_,
+                    *physicsWorld_,
+                    destination
+                )) {
+                updatePlayerCamera();
+            }
+        } else {
+            ImGui::SetTooltip("No traversable terrain here");
+        }
+    }
+
+    ImGui::Text(
+        "X %.1f   Z %.1f",
+        playerController_.position().x,
+        playerController_.position().z
+    );
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -1175,6 +1382,7 @@ void Renderer::buildImGuiFrame() {
         toolUiVisible_ = !toolUiVisible_;
     }
     if (!toolUiVisible_) {
+        drawMiniMap();
         ImGui::Render();
         return;
     }
@@ -1511,6 +1719,7 @@ void Renderer::buildImGuiFrame() {
     }
     ImGui::End();
 
+    drawMiniMap();
     ImGui::Render();
 }
 

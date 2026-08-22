@@ -237,6 +237,9 @@ void Renderer::initializeEmptyScene() {
     playerModelAutoScale_ = 1.0f;
     playerModelGroundOffset_ = 0.0f;
     playerRunAnimationClipIndex_.reset();
+    playerAttackAnimationClipIndex_.reset();
+    playerLightningAnimationClipIndex_.reset();
+    playerFlameAnimationClipIndex_.reset();
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
@@ -704,6 +707,7 @@ void Renderer::updatePlayerController(float deltaSeconds) {
         io.WantCaptureKeyboard && editingUiItem,
         io.WantCaptureMouse && (editingUiItem || hoveringUiItem)
     );
+    updatePlayerAttackEffect();
     updatePlayerCamera();
 }
 
@@ -1402,6 +1406,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
 
     currentScenePath_ = resolvedScenePath;
     loadTransformSettings();
+    createPlayerAttackEffect();
     if (!terrainPath.empty()) {
         // A game scene starts with a single continuous camera view. The
         // editor's post-process split preview is not part of gameplay.
@@ -1765,7 +1770,7 @@ void Renderer::loadTransformSettings() {
                 (enabled != 0 && enabled != 1) ||
                 (playOnAwake != 0 && playOnAwake != 1) ||
                 (looping != 0 && looping != 1) ||
-                shape < 0 || shape > static_cast<int>(ParticleSystemSettings::Shape::Cone) ||
+                shape < 0 || shape > static_cast<int>(ParticleSystemSettings::Shape::Ring) ||
                 blendMode < 0 ||
                 blendMode > static_cast<int>(ParticleSystemSettings::BlendMode::Additive)) {
                 valid = false;
