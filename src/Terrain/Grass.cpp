@@ -13,6 +13,7 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kGoldenAngle = 2.39996322972865332f;
+constexpr float kGrassHeightScale = 1.15f;
 constexpr int kNearInnerCompanionCount = 23;
 constexpr int kNearOuterCompanionCount = 17;
 
@@ -345,7 +346,9 @@ GrassPatchMesh buildBotwGrassPatch(
     builder.beginLod(GrassLod::NearMesh);
     for (const GrassPlant& plant : plants) {
         const float yaw = hash01(plant.seed + 10u) * 2.0f * kPi;
-        const float height = 0.42f + hash01(plant.seed + 11u) * 0.30f;
+        const float height = (
+            0.42f + hash01(plant.seed + 11u) * 0.30f
+        ) * kGrassHeightScale;
         const float width = 0.045f + hash01(plant.seed + 12u) * 0.038f;
         const float lean = (hash01(plant.seed + 13u) - 0.5f) * 0.22f;
         const float phase = hash01(plant.seed + 14u);
@@ -413,7 +416,9 @@ GrassPatchMesh buildBotwGrassPatch(
             continue;
         }
         const float baseYaw = hash01(plant.seed + 30u) * 2.0f * kPi;
-        const float baseHeight = 0.52f + hash01(plant.seed + 31u) * 0.28f;
+        const float baseHeight = (
+            0.52f + hash01(plant.seed + 31u) * 0.28f
+        ) * kGrassHeightScale;
         for (int card = 0; card < 3; ++card) {
             const float cardPhase = static_cast<float>(card) / 3.0f;
             builder.addTexturedCard(
@@ -436,7 +441,7 @@ GrassPatchMesh buildBotwGrassPatch(
         builder.addTexturedCard(
             plant.surface,
             hash01(plant.seed + 50u) * 2.0f * kPi,
-            0.48f + hash01(plant.seed + 51u) * 0.18f,
+            (0.48f + hash01(plant.seed + 51u) * 0.18f) * kGrassHeightScale,
             0.3f + hash01(plant.seed + 52u) * 0.12f,
             hash01(plant.seed + 53u),
             hash01(plant.seed + 54u)

@@ -165,6 +165,11 @@ void PlayerController::clear() {
     grounded_ = true;
     moving_ = false;
     jumpWasDown_ = false;
+    tornadoAttackWasDown_ = false;
+    lightningAttackWasDown_ = false;
+    flameAttackWasDown_ = false;
+    activeAttack_ = PlayerAttack::None;
+    triggeredAttack_ = PlayerAttack::None;
     lookDragging_ = false;
     spawnPosition_ = glm::vec3(0.0f);
     position_ = glm::vec3(0.0f);
@@ -208,6 +213,12 @@ void PlayerController::reset(
     grounded_ = physics.playerGrounded();
     moving_ = false;
     jumpWasDown_ = false;
+    tornadoAttackWasDown_ = false;
+    lightningAttackWasDown_ = false;
+    flameAttackWasDown_ = false;
+    activeAttack_ = PlayerAttack::None;
+    triggeredAttack_ = PlayerAttack::None;
+    attackAnimationTimeSeconds_ = 0.0f;
     lookDragging_ = false;
     // Imported player models use local +Z as forward. The initial camera
     // looks toward world -Z, so start the visual facing the same direction.
@@ -216,6 +227,41 @@ void PlayerController::reset(
     yawRadians_ = 0.0f;
     pitchRadians_ = kInitialCameraPitch;
     active_ = true;
+}
+
+bool PlayerController::teleport(
+    const TerrainScene& terrain,
+    PhysicsWorld& physics,
+    const glm::vec2& worldPosition
+) {
+    if (!active_ || !std::isfinite(worldPosition.x) ||
+        !std::isfinite(worldPosition.y)) {
+        return false;
+    }
+    const std::optional<float> groundHeight = playerGroundHeight(
+        terrain,
+        worldPosition
+    );
+    if (!groundHeight.has_value()) {
+        return false;
+    }
+
+    physics.createPlayer(
+        glm::vec3(worldPosition.x, *groundHeight, worldPosition.y),
+        kBotwLinkHeight,
+        kBotwLinkRadius
+    );
+    physics.setPlayerFootTraction(glm::vec2(0.0f), 0.0f, 1.0f);
+    position_ = physics.playerFootPosition();
+    velocity_ = physics.playerLinearVelocity();
+    grounded_ = physics.playerGrounded();
+    moving_ = false;
+    activeAttack_ = PlayerAttack::None;
+    triggeredAttack_ = PlayerAttack::None;
+    attackAnimationTimeSeconds_ = 0.0f;
+    runAnimationTimeSeconds_ = 0.0f;
+    lookDragging_ = false;
+    return true;
 }
 
 void PlayerController::configureRunGait(
@@ -239,6 +285,28 @@ void PlayerController::configureRunGait(
             : 1.0f;
     }
     runAnimationTimeSeconds_ = 0.0f;
+}
+
+void PlayerController::configureAttackAnimation(
+    PlayerAttack attack,
+    float durationSeconds
+) {
+    if (!std::isfinite(durationSeconds) || durationSeconds <= 0.0f) {
+        return;
+    }
+    switch (attack) {
+    case PlayerAttack::Tornado:
+        tornadoAttackDurationSeconds_ = durationSeconds;
+        break;
+    case PlayerAttack::LightningSlash:
+        lightningAttackDurationSeconds_ = durationSeconds;
+        break;
+    case PlayerAttack::FlameNova:
+        flameAttackDurationSeconds_ = durationSeconds;
+        break;
+    case PlayerAttack::None:
+        break;
+    }
 }
 
 float PlayerController::currentFootTraction() const {
@@ -283,6 +351,43 @@ void PlayerController::update(
     }
     deltaSeconds = std::clamp(deltaSeconds, 0.0f, 0.1f);
     grounded_ = physics.playerGrounded();
+    triggeredAttack_ = PlayerAttack::None;
+
+    const bool tornadoAttackDown = window != nullptr &&
+        glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+    const bool lightningAttackDown = window != nullptr &&
+        glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS;
+    const bool flameAttackDown = window != nullptr &&
+        glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+    if (!keyboardCaptured) {
+        if (lightningAttackDown && !lightningAttackWasDown_) {
+            triggeredAttack_ = PlayerAttack::LightningSlash;
+        } else if (flameAttackDown && !flameAttackWasDown_) {
+            triggeredAttack_ = PlayerAttack::FlameNova;
+        } else if (tornadoAttackDown && !tornadoAttackWasDown_) {
+            triggeredAttack_ = PlayerAttack::Tornado;
+        }
+    }
+    tornadoAttackWasDown_ = tornadoAttackDown;
+    lightningAttackWasDown_ = lightningAttackDown;
+    flameAttackWasDown_ = flameAttackDown;
+    if (triggeredAttack_ != PlayerAttack::None) {
+        activeAttack_ = triggeredAttack_;
+        attackAnimationTimeSeconds_ = 0.0f;
+    }
+    if (activeAttack_ != PlayerAttack::None) {
+        attackAnimationTimeSeconds_ += deltaSeconds;
+        float attackDuration = tornadoAttackDurationSeconds_;
+        if (activeAttack_ == PlayerAttack::LightningSlash) {
+            attackDuration = lightningAttackDurationSeconds_;
+        } else if (activeAttack_ == PlayerAttack::FlameNova) {
+            attackDuration = flameAttackDurationSeconds_;
+        }
+        if (attackAnimationTimeSeconds_ >= attackDuration) {
+            attackAnimationTimeSeconds_ = attackDuration;
+            activeAttack_ = PlayerAttack::None;
+        }
+    }
 
     if (window != nullptr && !mouseCaptured &&
         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
@@ -317,7 +422,7 @@ void PlayerController::update(
 
     glm::vec2 movementDirection2D(0.0f);
     moving_ = false;
-    if (!keyboardCaptured && window != nullptr) {
+    if (!attacking() && !keyboardCaptured && window != nullptr) {
         const bool moveLeft =
             glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
             glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;

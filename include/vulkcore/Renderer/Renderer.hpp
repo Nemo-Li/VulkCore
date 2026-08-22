@@ -75,6 +75,7 @@ private:
     void initializeImGui();
     void shutdownImGui();
     void buildImGuiFrame();
+    void drawMiniMap();
     void loadResourceSettings();
     void loadTransformSettings();
     bool saveTransformSettings() const;
@@ -131,6 +132,8 @@ private:
         const glm::vec3& cameraUp
     );
     void createParticleSystemObject();
+    void createPlayerAttackEffect();
+    void updatePlayerAttackEffect();
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds);
@@ -251,7 +254,13 @@ private:
     float playerModelAutoScale_ = 1.0f;
     float playerModelGroundOffset_ = 0.0f;
     std::optional<std::uint32_t> playerRunAnimationClipIndex_;
+    std::optional<std::uint32_t> playerAttackAnimationClipIndex_;
+    std::optional<std::uint32_t> playerLightningAnimationClipIndex_;
+    std::optional<std::uint32_t> playerFlameAnimationClipIndex_;
     static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
+    static constexpr std::uint32_t kPlayerAttackParticleNodeId = 0xDFFFFFF0u;
+    static constexpr std::uint32_t kPlayerLightningParticleNodeId = 0xDFFFFFF1u;
+    static constexpr std::uint32_t kPlayerFlameParticleNodeId = 0xDFFFFFF2u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
     std::unordered_set<std::uint32_t> removedSceneNodeIds_;

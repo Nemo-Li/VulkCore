@@ -231,6 +231,33 @@ int playerRunClipScore(const SkeletalAnimationClip& clip) {
     return -1;
 }
 
+int playerAttackClipScore(
+    const SkeletalAnimationClip& clip,
+    PlayerAttack attack
+) {
+    const std::string name = normalizedAnimationName(clip.name);
+    switch (attack) {
+    case PlayerAttack::Tornado:
+        if (name == "attackfirst") return 1000;
+        if (name == "attack1") return 900;
+        break;
+    case PlayerAttack::LightningSlash:
+        if (name == "attack2") return 1000;
+        if (name == "attack3") return 800;
+        break;
+    case PlayerAttack::FlameNova:
+        if (name == "attack4") return 1000;
+        if (name == "attack3") return 900;
+        break;
+    case PlayerAttack::None:
+        return -1;
+    }
+    if (name.find("attack") != std::string::npos) {
+        return 100;
+    }
+    return -1;
+}
+
 int footBoneScore(const std::string& sourceName, bool leftFoot) {
     const std::string name = normalizedAnimationName(sourceName);
     const std::string side = leftFoot ? "l" : "r";
@@ -459,6 +486,9 @@ EstimatedPlayerRunGait estimatePlayerRunGait(
 
 void Renderer::configurePlayerRunAnimation() {
     playerRunAnimationClipIndex_.reset();
+    playerAttackAnimationClipIndex_.reset();
+    playerLightningAnimationClipIndex_.reset();
+    playerFlameAnimationClipIndex_.reset();
     SkeletalAnimationInstance* playerInstance = nullptr;
     for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
         if (instance.rootNodeId == kPlayerSceneNodeId) {
@@ -487,7 +517,13 @@ void Renderer::configurePlayerRunAnimation() {
         return;
     }
     int bestScore = -1;
+    int bestAttackScore = -1;
+    int bestLightningScore = -1;
+    int bestFlameScore = -1;
     std::uint32_t bestClipIndex = 0;
+    std::uint32_t bestAttackClipIndex = 0;
+    std::uint32_t bestLightningClipIndex = 0;
+    std::uint32_t bestFlameClipIndex = 0;
     for (std::uint32_t clipIndex = 0;
          clipIndex < playerInstance->animationCount;
          ++clipIndex) {
@@ -497,6 +533,30 @@ void Renderer::configurePlayerRunAnimation() {
         if (score > bestScore) {
             bestScore = score;
             bestClipIndex = clipIndex;
+        }
+        const int attackScore = playerAttackClipScore(
+            meshData_.skeletalAnimations[animationStart + clipIndex],
+            PlayerAttack::Tornado
+        );
+        if (attackScore > bestAttackScore) {
+            bestAttackScore = attackScore;
+            bestAttackClipIndex = clipIndex;
+        }
+        const int lightningScore = playerAttackClipScore(
+            meshData_.skeletalAnimations[animationStart + clipIndex],
+            PlayerAttack::LightningSlash
+        );
+        if (lightningScore > bestLightningScore) {
+            bestLightningScore = lightningScore;
+            bestLightningClipIndex = clipIndex;
+        }
+        const int flameScore = playerAttackClipScore(
+            meshData_.skeletalAnimations[animationStart + clipIndex],
+            PlayerAttack::FlameNova
+        );
+        if (flameScore > bestFlameScore) {
+            bestFlameScore = flameScore;
+            bestFlameClipIndex = clipIndex;
         }
     }
     if (bestScore < 0) {
@@ -514,6 +574,51 @@ void Renderer::configurePlayerRunAnimation() {
         return;
     }
     playerRunAnimationClipIndex_ = bestClipIndex;
+    const auto configureAttack = [this, animationStart](
+                                     PlayerAttack attack,
+                                     int score,
+                                     std::uint32_t clipIndex,
+                                     std::optional<std::uint32_t>& destination,
+                                     const char* key
+                                 ) {
+        if (score < 0) {
+            return;
+        }
+        destination = clipIndex;
+        const SkeletalAnimationClip& attackClip = meshData_.skeletalAnimations[
+            animationStart + clipIndex
+        ];
+        const double attackTicksPerSecond = attackClip.ticksPerSecond > 0.0
+            ? attackClip.ticksPerSecond
+            : 25.0;
+        playerController_.configureAttackAnimation(
+            attack,
+            static_cast<float>(attackClip.durationTicks / attackTicksPerSecond)
+        );
+        std::cerr << "Configured Player attack clip " << attackClip.name
+                  << " (" << key << " key)\n";
+    };
+    configureAttack(
+        PlayerAttack::Tornado,
+        bestAttackScore,
+        bestAttackClipIndex,
+        playerAttackAnimationClipIndex_,
+        "R"
+    );
+    configureAttack(
+        PlayerAttack::LightningSlash,
+        bestLightningScore,
+        bestLightningClipIndex,
+        playerLightningAnimationClipIndex_,
+        "Q"
+    );
+    configureAttack(
+        PlayerAttack::FlameNova,
+        bestFlameScore,
+        bestFlameClipIndex,
+        playerFlameAnimationClipIndex_,
+        "E"
+    );
     playerInstance->activeClip = bestClipIndex;
     const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
         animationStart + bestClipIndex
@@ -565,12 +670,23 @@ void Renderer::drawSkeletalAnimationControls(
     );
     if (instance->rootNodeId == kPlayerSceneNodeId) {
         ImGui::TextWrapped(
-            "Player animation is input-driven: idle keeps the bind pose and movement keys play Run1."
+            "Player animation is input-driven: movement plays Run1; Q, E, and R play distinct attacks."
         );
+        const char* attackState = "Attack";
+        if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
+            attackState = "Lightning Slash (Q)";
+        } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
+            attackState = "Flame Nova (E)";
+        } else if (playerController_.activeAttack() == PlayerAttack::Tornado) {
+            attackState = "Tornado (R)";
+        }
         ImGui::Text(
             "State: %s / %.3f s",
-            playerController_.moving() ? "Run1" : "Bind pose",
-            playerController_.runAnimationTimeSeconds()
+            playerController_.attacking() ? attackState :
+                (playerController_.moving() ? "Run1" : "Bind pose"),
+            playerController_.attacking()
+                ? playerController_.attackAnimationTimeSeconds()
+                : playerController_.runAnimationTimeSeconds()
         );
         return;
     }
@@ -794,11 +910,26 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         if (instance.rootNodeId == kPlayerSceneNodeId) {
             const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
                 *playerRunAnimationClipIndex_ < instance.animationCount;
-            instance.enabled = hasRunClip && playerController_.moving();
+            const std::optional<std::uint32_t>* activeAttackClip = nullptr;
+            if (playerController_.activeAttack() == PlayerAttack::Tornado) {
+                activeAttackClip = &playerAttackAnimationClipIndex_;
+            } else if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
+                activeAttackClip = &playerLightningAnimationClipIndex_;
+            } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
+                activeAttackClip = &playerFlameAnimationClipIndex_;
+            }
+            const bool hasAttackClip = activeAttackClip != nullptr &&
+                activeAttackClip->has_value() &&
+                **activeAttackClip < instance.animationCount;
+            instance.enabled = (hasAttackClip && playerController_.attacking()) ||
+                (hasRunClip && playerController_.moving());
             instance.playing = false;
-            instance.looping = true;
-            instance.timeSeconds = playerController_.runAnimationTimeSeconds();
-            if (hasRunClip) {
+            instance.looping = !playerController_.attacking();
+            if (hasAttackClip && playerController_.attacking()) {
+                instance.timeSeconds = playerController_.attackAnimationTimeSeconds();
+                instance.activeClip = **activeAttackClip;
+            } else if (hasRunClip) {
+                instance.timeSeconds = playerController_.runAnimationTimeSeconds();
                 instance.activeClip = *playerRunAnimationClipIndex_;
             }
         }

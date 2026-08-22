@@ -346,4 +346,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(vulkcore_physics_smoke PRIVATE vulkcore_physics)
     add_test(NAME vulkcore_physics_smoke COMMAND vulkcore_physics_smoke)
+
+    add_executable(vulkcore_particle_smoke
+        tests/ParticleSystemSmoke.cpp
+        src/Renderer/ParticleSystem.cpp
+    )
+    target_include_directories(vulkcore_particle_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(vulkcore_particle_smoke PRIVATE Vulkan::Vulkan ${VULKCORE_GLM_TARGET})
+    add_test(NAME vulkcore_particle_smoke COMMAND vulkcore_particle_smoke)
 endif()
