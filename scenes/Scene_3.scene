@@ -1,17 +1,11 @@
 # VulkCore scene
-model_resource_path "/Users/nemo/Study/VulkCore/assets/models/taunt/taunt.fbx" 1
-sun_present 1
-camera_position 0 0 5.46000004
-ambient_color 1 1 1
-ambient_intensity 4
-sun_light_direction 0.403169602 0.541572988 0.737667263
-sun_light_color 1 1 1
-sun_light_intensity 4
-shader_demo 0 1 0.5 0.479999989 0
-node_transform 1 0 0.560000002 0 0 0 0 1
-node_transform 4026531840 0.75 0.589999974 -0.25 0 78 0 1
-material 1 "Default6" 0.400000006 0.400000006 0.400000006 1 0 0.5 1 0 1 0 "/Users/nemo/Study/VulkCore/assets/models/taunt/tex/brand_zombie_TX_CM.png" - - - - - - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0 0 0 0
-material_textures 1 "" ""
-material 2 "Sun" 1 0.550000012 0.0599999987 1 0 0.239999995 1 0 1 1 "" - - - - shader_fresnel.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 1 0.219999999 0.0149999997 3.5
-material_textures 2 "" ""
-node_material 4026531840 2
+model_resource_path "/Users/nemo/Study/VulkCore/assets/models/yasuo/high_noon_yasuo.glb" 1
+sun_present 0
+camera_position 0 0 5.80000019
+ambient_color 0.180000007 0.209999993 0.239999995
+ambient_intensity 1
+sun_light_direction 0.435540497 0.532327294 0.725900829
+sun_light_color 0.819999993 0.860000014 0.899999976
+sun_light_intensity 1
+shader_demo 0 1 0.5 0.5 0
+node_transform 1 0 0.430000007 0 0 0 0 1

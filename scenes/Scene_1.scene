@@ -1,12 +1,15 @@
 # VulkCore scene
-model_resource_path "/Users/nemo/Study/VulkCore/assets/models/taunt/taunt.fbx" 1
+model_resource_path "/Users/nemo/Study/VulkCore/assets/models/mill-scene/mill-scene.fbx" 1
 sun_present 0
-camera_position 0 0 4
+camera_position 0 0 3.05999994
 ambient_color 0.180000007 0.209999993 0.239999995
 ambient_intensity 1
-sun_light_direction 0.435540497 0.532327294 0.725900829
+sun_light_direction 0.435540557 0.532327354 0.725900888
 sun_light_color 0.819999993 0.860000014 0.899999976
 sun_light_intensity 1
 shader_demo 0 1 0.5 0.5 0
-material 1 "Default6" 0.400000006 0.400000006 0.400000006 1 0 0.5 1 0 1 0 "/Users/nemo/Study/VulkCore/assets/models/taunt/tex/brand_zombie_TX_CM.png" - - - - - - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0 0 0 0
-material_textures 1 "" ""
+node_transform 0 0.0399999991 0.0900000036 -0.289999992 15 5 -110 1
+material 13 "house" 0.800000012 0.800000012 0.800000012 1 0 0.5 1 0 1 0 "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-diffuse.png" - - - - - - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0 0 0 0
+material_textures 13 "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-normal.png" "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-specular.png"
+material 14 "house-windows" 0.800000012 0.800000012 0.800000012 1 0 0.5 1 0 1 0 "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-windows-diffuse.png" - - - - - - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0 0 0 0
+material_textures 14 "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-windows-normal.png" "/Users/nemo/Study/VulkCore/assets/models/mill-scene/tex/house-windows-specular.png"

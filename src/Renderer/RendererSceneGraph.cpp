@@ -1145,14 +1145,18 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
         if (node.objectType == SceneObjectType::Player) {
             objectTransform *= playerVisualTransform();
         }
-        glm::mat4 transform = objectTransform * nodeManualTransform(node);
-        if (node.rotationAnimationEnabled) {
+        const bool isTornadoMesh = node.nodeId == kPlayerTornadoMeshNodeId;
+        glm::mat4 transform = isTornadoMesh
+            ? tornadoMeshTransform_
+            : objectTransform * nodeManualTransform(node);
+        if (!isTornadoMesh && node.rotationAnimationEnabled) {
             // Parent animation is applied after child-local animation, so
             // transforms are accumulated in hierarchy order from root to leaf.
             transform *= nodeAnimationTransform(node, elapsedSeconds);
         }
         const bool renderEnabled = parentRenderEnabled && node.renderEnabled &&
-            !removedSceneNodeIds_.contains(node.nodeId);
+            !removedSceneNodeIds_.contains(node.nodeId) &&
+            (!isTornadoMesh || tornadoMeshVisible_);
         sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
         sceneNodeRenderEnabled_.insert_or_assign(node.nodeId, renderEnabled);
         for (const ModelNode& child : node.children) {
