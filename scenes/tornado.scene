@@ -1,0 +1,11 @@
+# VulkCore scene
+sun_present 0
+camera_position 0 0 4
+ambient_color 0.180000007 0.209999993 0.239999995
+ambient_intensity 1
+sun_light_direction 0.435540557 0.532327354 0.725900888
+sun_light_color 0.819999993 0.860000014 0.899999976
+sun_light_intensity 1
+shader_demo 0 1 0.5 0.5 0
+material 1 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "/Users/nemo/Study/VulkCore/assets/textures/vfx/tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
+material_textures 1 "/Users/nemo/Study/VulkCore/assets/textures/vfx/tornado_distortion.png" ""

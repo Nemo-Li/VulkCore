@@ -472,8 +472,7 @@ void Renderer::updateParticleSystems(
         updateNode(updateNode, node);
     }
 
-    constexpr std::array<std::uint32_t, 3> attackEffectIds{
-        kPlayerAttackParticleNodeId,
+    constexpr std::array<std::uint32_t, 2> attackEffectIds{
         kPlayerLightningParticleNodeId,
         kPlayerFlameParticleNodeId,
     };
@@ -505,10 +504,139 @@ void Renderer::updateParticleSystems(
     }
 }
 
+void Renderer::createTornadoMeshEffect(bool alwaysVisible) {
+    if (tornadoMeshPresent_) {
+        return;
+    }
+
+    const std::filesystem::path assets = assetsDirectory_.empty()
+        ? locateAssetsDirectory()
+        : assetsDirectory_;
+    const std::filesystem::path meshPath = assets / "models" / "tornado" / "tornado.obj";
+
+    MeshData tornadoMesh;
+    try {
+        tornadoMesh = loadModelMesh(meshPath);
+    } catch (const std::exception& error) {
+        std::cerr << "warning: failed to load tornado mesh '"
+                  << meshPath.string() << "': " << error.what() << '\n';
+        return;
+    }
+    if (tornadoMesh.vertices.empty() || tornadoMesh.indices.empty()) {
+        std::cerr << "warning: tornado mesh contains no renderable triangles\n";
+        return;
+    }
+    if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
+            tornadoMesh.vertices.size() ||
+        meshData_.indices.size() > std::numeric_limits<std::uint32_t>::max() -
+            tornadoMesh.indices.size()) {
+        std::cerr << "warning: tornado mesh exceeds the renderer's 32-bit mesh limits\n";
+        return;
+    }
+
+    MaterialData tornadoMaterial;
+    tornadoMaterial.name = "Tornado VFX (layered energy ribbons)";
+    tornadoMaterial.baseColor = glm::vec4(0.68f, 0.82f, 1.0f, 0.94f);
+    tornadoMaterial.roughness = 0.18f;
+    tornadoMaterial.metallic = 0.0f;
+    tornadoMaterial.opacity = 0.96f;
+    tornadoMaterial.emissionColor = glm::vec3(0.06f, 0.20f, 0.92f);
+    tornadoMaterial.emissionStrength = 3.6f;
+    tornadoMaterial.blendMode = MaterialData::BlendMode::Additive;
+    tornadoMaterial.depthWrite = false;
+    tornadoMaterial.doubleSided = true;
+    tornadoMaterial.userCreated = true;
+    tornadoMaterial.texturePath = assets / "textures" / "vfx" / "tornado_ribbon.png";
+    // The shared material descriptor's normal slot carries a seamless RG
+    // flow field. The dedicated shader combines it with the UV-encoded mesh
+    // layers instead of treating it as a surface normal map.
+    tornadoMaterial.normalTexturePath = assets / "textures" / "vfx" /
+        "tornado_distortion.png";
+    tornadoMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
+        "shader_tornado.vert";
+    tornadoMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
+        "shader_tornado.frag";
+
+    const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    tornadoMeshMaterialIndex_ = static_cast<std::uint32_t>(meshData_.materials.size());
+    meshData_.materials.push_back(std::move(tornadoMaterial));
+    meshData_.vertices.insert(
+        meshData_.vertices.end(),
+        tornadoMesh.vertices.begin(),
+        tornadoMesh.vertices.end()
+    );
+    meshData_.bindPoseVertices.insert(
+        meshData_.bindPoseVertices.end(),
+        tornadoMesh.vertices.begin(),
+        tornadoMesh.vertices.end()
+    );
+    meshData_.skinSourceVertices.insert(
+        meshData_.skinSourceVertices.end(),
+        tornadoMesh.vertices.begin(),
+        tornadoMesh.vertices.end()
+    );
+    for (const std::uint32_t index : tornadoMesh.indices) {
+        meshData_.indices.push_back(index + vertexOffset);
+    }
+
+    tornadoMeshPartIndex_ = static_cast<std::uint32_t>(meshData_.parts.size());
+    meshData_.parts.push_back({
+        indexOffset,
+        static_cast<std::uint32_t>(tornadoMesh.indices.size()),
+        tornadoMeshMaterialIndex_,
+        kPlayerTornadoMeshNodeId
+    });
+
+    ModelNode tornadoNode;
+    tornadoNode.name = "Tornado VFX (R attack)";
+    tornadoNode.nodeId = kPlayerTornadoMeshNodeId;
+    tornadoNode.objectType = SceneObjectType::ImportedMesh;
+    tornadoNode.meshCount = 1;
+    tornadoNode.globalTransform = glm::mat4(1.0f);
+    tornadoNode.renderEnabled = true;
+    tornadoNode.meshPartIndices.push_back(tornadoMeshPartIndex_);
+    tornadoNode.hasBounds = tornadoMesh.hierarchy.hasBounds;
+    tornadoNode.boundsMinimum = tornadoMesh.hierarchy.boundsMinimum;
+    tornadoNode.boundsMaximum = tornadoMesh.hierarchy.boundsMaximum;
+    meshData_.additionalNodes.push_back(std::move(tornadoNode));
+    tornadoMeshPresent_ = true;
+    tornadoMeshAlwaysVisible_ = alwaysVisible;
+    tornadoMeshVisible_ = alwaysVisible;
+    // The reference is a broad energy vortex rather than a tall weather
+    // funnel. Preserve the strong upper flare and wide impact footprint by
+    // scaling the radial axes slightly more than the vertical axis.
+    const glm::vec3 tornadoScale(0.42f, 0.34f, 0.42f);
+    if (alwaysVisible) {
+        // tornado.scene is a VFX showcase without a Player controller. Center the
+        // tornado bounds around the normalized model center rather than
+        // placing its base at the center like the gameplay attack does.
+        const float meshHeight = tornadoMesh.hierarchy.boundsMaximum.y -
+            tornadoMesh.hierarchy.boundsMinimum.y;
+        tornadoMeshTransform_ =
+            glm::translate(
+                glm::mat4(1.0f),
+                modelCenter_ - glm::vec3(0.0f, meshHeight * tornadoScale.y * 0.5f, 0.0f)
+            ) *
+            glm::scale(glm::mat4(1.0f), tornadoScale);
+    } else {
+        tornadoMeshTransform_ = glm::mat4(1.0f);
+    }
+
+    // The attack mesh is intentionally excluded from recalculateSceneBounds:
+    // it must not change the camera normalization of the playable scene.
+    rebuildSceneGeometryResources();
+}
+
 void Renderer::createPlayerAttackEffect() {
     if (!playerController_.active()) {
         return;
     }
+    // Older saved settings may still contain the previous billboard tornado.
+    // Remove it so the mesh is the only tornado render layer.
+    particleSystems_.erase(kPlayerAttackParticleNodeId);
+    particleTextures_.erase(kPlayerAttackParticleNodeId);
+    createTornadoMeshEffect();
     const float scale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
     const std::filesystem::path assets = assetsDirectory_.empty()
         ? locateAssetsDirectory()
@@ -527,30 +655,6 @@ void Renderer::createPlayerAttackEffect() {
             effectIt->second.stop();
         }
     };
-
-    ParticleSystemSettings tornado;
-    tornado.enabled = true;
-    tornado.playOnAwake = false;
-    tornado.looping = false;
-    tornado.maxParticles = 384;
-    tornado.duration = 0.65f;
-    tornado.emissionRate = 320.0f;
-    tornado.startLifetime = 0.82f;
-    tornado.lifetimeRandomness = 0.18f;
-    tornado.startSpeed = scale * 1.15f;
-    tornado.speedRandomness = 0.25f;
-    tornado.startSize = scale * 0.52f;
-    tornado.endSize = scale * 0.18f;
-    tornado.rotationSpeedDegrees = 220.0f;
-    tornado.gravityModifier = 0.0f;
-    tornado.spreadDegrees = 0.0f;
-    tornado.shapeRadius = scale * 0.82f;
-    tornado.shape = ParticleSystemSettings::Shape::Tornado;
-    tornado.blendMode = ParticleSystemSettings::BlendMode::Additive;
-    tornado.startColor = glm::vec4(0.72f, 0.94f, 1.0f, 0.9f);
-    tornado.endColor = glm::vec4(0.32f, 0.72f, 1.0f, 0.0f);
-    tornado.texturePath = assets / "textures" / "vfx" / "tornado_wisp.png";
-    addEffect(kPlayerAttackParticleNodeId, tornado);
 
     ParticleSystemSettings lightning;
     lightning.enabled = true;
@@ -602,18 +706,24 @@ void Renderer::createPlayerAttackEffect() {
 
 void Renderer::updatePlayerAttackEffect() {
     if (!playerController_.active()) {
+        tornadoMeshVisible_ = tornadoMeshAlwaysVisible_;
         return;
     }
     const float scale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
     const float yaw = playerController_.facingYawRadians();
     const glm::vec3 forward(std::sin(yaw), 0.0f, std::cos(yaw));
-    const glm::vec3 playerPosition = playerController_.position() - modelCenter_;
-    const auto tornadoIt = particleSystems_.find(kPlayerAttackParticleNodeId);
-    if (tornadoIt != particleSystems_.end()) {
-        tornadoIt->second.settings().position = scale * (
-            playerPosition + forward * 1.05f + glm::vec3(0.0f, 0.08f, 0.0f)
-        );
+    tornadoMeshVisible_ = tornadoMeshAlwaysVisible_ || (tornadoMeshPresent_ &&
+        playerController_.attacking() &&
+        playerController_.activeAttack() == PlayerAttack::Tornado);
+    if (tornadoMeshPresent_ && !tornadoMeshAlwaysVisible_) {
+        const glm::vec3 tornadoPosition = playerController_.position() +
+            forward * 1.05f + glm::vec3(0.0f, 0.08f, 0.0f);
+        tornadoMeshTransform_ =
+            glm::translate(glm::mat4(1.0f), tornadoPosition) *
+            glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
+            glm::scale(glm::mat4(1.0f), glm::vec3(0.42f, 0.34f, 0.42f));
     }
+    const glm::vec3 playerPosition = playerController_.position() - modelCenter_;
     const auto lightningIt = particleSystems_.find(kPlayerLightningParticleNodeId);
     if (lightningIt != particleSystems_.end()) {
         lightningIt->second.settings().position = scale * (
@@ -632,11 +742,8 @@ void Renderer::updatePlayerAttackEffect() {
     if (!playerController_.attackTriggered()) {
         return;
     }
-    if (playerController_.triggeredAttack() == PlayerAttack::Tornado &&
-        tornadoIt != particleSystems_.end()) {
-        tornadoIt->second.restart();
-    } else if (playerController_.triggeredAttack() == PlayerAttack::LightningSlash &&
-               lightningIt != particleSystems_.end()) {
+    if (playerController_.triggeredAttack() == PlayerAttack::LightningSlash &&
+        lightningIt != particleSystems_.end()) {
         lightningIt->second.restart();
     } else if (playerController_.triggeredAttack() == PlayerAttack::FlameNova &&
                flameIt != particleSystems_.end()) {
@@ -1209,7 +1316,7 @@ void Renderer::updateCameraBasis() {
         : 0.05f;
     glm::vec3 targetDelta = cameraTarget_ - cameraPosition_;
     if (glm::length(targetDelta) < kMinimumCameraDistance) {
-        cameraPosition_ = cameraTarget_ + glm::vec3(3.5f, 2.8f, 3.5f);
+        cameraPosition_ = cameraTarget_ + glm::vec3(0.0f, 0.0f, 4.0f);
         targetDelta = cameraTarget_ - cameraPosition_;
         cameraBasisInitialized_ = false;
     }

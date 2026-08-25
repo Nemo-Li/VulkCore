@@ -52,6 +52,7 @@ constexpr float kMaximumModelScaleFactor = 3.0f;
 // files portable across model switches.
 constexpr std::uint32_t kSunSceneNodeId = 0xF0000000u;
 constexpr std::uint32_t kParticleSceneNodeBase = 0xD0000000u;
+constexpr std::uint32_t kPlayerTornadoMeshNodeId = 0xDFFFFFF3u;
 constexpr std::uint32_t kSceneModelNodeStride = 1'000'000u;
 constexpr char kDefaultVertexShader[] = "shader_base.vert";
 constexpr char kDefaultFragmentShader[] = "shader_base.frag";

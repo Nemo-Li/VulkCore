@@ -265,8 +265,14 @@ void Renderer::recordCommandBuffer(
     sceneRenderPassInfo.framebuffer = sceneTarget.framebuffer;
     sceneRenderPassInfo.renderArea.offset = {0, 0};
     sceneRenderPassInfo.renderArea.extent = extent;
+    const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
     const std::array<VkClearValue, 2> sceneClearValues = {{
-        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
+        {{{
+            isTornadoPreview ? 0.0015f : 0.015f,
+            isTornadoPreview ? 0.0025f : 0.02f,
+            isTornadoPreview ? 0.0100f : 0.03f,
+            1.0f
+        }}},
         {{{1.0f, 0}}}
     }};
     sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
@@ -274,7 +280,10 @@ void Renderer::recordCommandBuffer(
     vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     bindViewport();
 
-    if (skyboxTexture_ != nullptr &&
+    // The skybox is a gameplay backdrop only. Effect/model showcase scenes
+    // should keep the neutral render-pass clear color instead of inheriting it.
+    if (currentScenePath_.filename() == "game.scene" &&
+        skyboxTexture_ != nullptr &&
         currentFrame_ < skyboxDescriptorSets_.size()) {
         vkCmdBindPipeline(
             commandBuffer,

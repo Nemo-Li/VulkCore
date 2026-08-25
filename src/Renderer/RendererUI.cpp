@@ -1470,6 +1470,7 @@ void Renderer::buildImGuiFrame() {
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
     ImGui::TextWrapped("The camera looks at the scene origin.");
+    const glm::vec3 defaultCameraPosition(0.0f, 0.0f, 4.0f);
     ImGui::DragFloat3(
         "Camera position (X/Y/Z)",
         &cameraPosition_.x,
@@ -1480,12 +1481,12 @@ void Renderer::buildImGuiFrame() {
     );
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         if (glm::length(cameraPosition_) < 0.05f) {
-            cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
+            cameraPosition_ = defaultCameraPosition;
         }
         shouldSaveTransformSettings = true;
     }
     if (ImGui::Button("Reset camera position")) {
-        cameraPosition_ = glm::vec3(3.5f, 3.5f, 2.8f);
+        cameraPosition_ = defaultCameraPosition;
         shouldSaveTransformSettings = true;
     }
     bool removeSelectedNodeRequested = false;

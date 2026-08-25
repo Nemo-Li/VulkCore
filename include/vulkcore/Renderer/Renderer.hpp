@@ -132,6 +132,7 @@ private:
         const glm::vec3& cameraUp
     );
     void createParticleSystemObject();
+    void createTornadoMeshEffect(bool alwaysVisible = false);
     void createPlayerAttackEffect();
     void updatePlayerAttackEffect();
     bool removeSceneNodeById(std::uint32_t nodeId);
@@ -376,6 +377,12 @@ private:
     std::unordered_map<std::uint32_t, ParticleSystem> particleSystems_;
     std::array<char, 512> particleTexturePathBuffer_{};
     std::uint32_t particleTexturePathNodeId_ = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t tornadoMeshMaterialIndex_ = 0;
+    std::uint32_t tornadoMeshPartIndex_ = 0;
+    bool tornadoMeshPresent_ = false;
+    bool tornadoMeshVisible_ = false;
+    bool tornadoMeshAlwaysVisible_ = false;
+    glm::mat4 tornadoMeshTransform_{1.0f};
     float lastFrameElapsedSeconds_ = 0.0f;
 
     static constexpr std::uint32_t kMaximumParticleSystems = 16;
