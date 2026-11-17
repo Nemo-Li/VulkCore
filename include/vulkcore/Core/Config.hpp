@@ -7,7 +7,7 @@
 #endif
 
 #ifndef VULKCORE_MODEL_PATH
-#define VULKCORE_MODEL_PATH "assets/models/mill-scene.fbx"
+#define VULKCORE_MODEL_PATH "assets/models/mill-scene/mill-scene.fbx"
 #endif
 
 #ifndef VULKCORE_CONFIG_PATH

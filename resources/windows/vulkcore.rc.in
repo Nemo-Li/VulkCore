@@ -1,0 +1,3 @@
+// GLFW loads this named resource as the window class icon on Windows.
+// The shell also uses the embedded icon for the executable and taskbar shortcuts.
+GLFW_ICON ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/icons/vulkcore.ico"

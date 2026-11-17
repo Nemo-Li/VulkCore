@@ -49,6 +49,9 @@ void Application::initWindow() {
 void Application::mainLoop() {
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+        if (glfwWindowShouldClose(window_)) {
+            break;
+        }
         renderer_->drawFrame();
     }
 }

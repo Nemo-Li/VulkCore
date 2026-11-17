@@ -17,9 +17,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Vulkan REQUIRED)
+option(BUILD_SHARED_LIBS "Build shared dependencies" OFF)
 
-find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
+find_package(Vulkan REQUIRED COMPONENTS glslc)
+
+find_program(VULKCORE_GLSLC_EXECUTABLE glslc
+    HINTS "$ENV{VULKAN_SDK}/Bin"
+)
+if(NOT VULKCORE_GLSLC_EXECUTABLE)
+    set(VULKCORE_GLSLC_EXECUTABLE "${Vulkan_GLSLC_EXECUTABLE}")
+endif()
 
 include(FetchContent)
 
@@ -58,6 +65,17 @@ set(PUBLIC_RELEASE 1 CACHE BOOL "Use the PhysX public API" FORCE)
 set(NV_FORCE_64BIT_SUFFIX ON CACHE BOOL "Use 64-bit PhysX library names" FORCE)
 
 if(WIN32)
+    # Match the application's Debug CRT and iterator ABI.
+    set(NV_USE_DEBUG_WINCRT ON CACHE BOOL "Use the Debug CRT in PhysX Debug builds" FORCE)
+    # The public CPU SDK incorrectly copies FreeGLUT DLLs even with snippets
+    # disabled. Restrict that upstream step to builds that actually use them.
+    set(VULKCORE_PHYSX_WINDOWS_CMAKE "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake/windows/CMakeLists.txt")
+    file(READ "${VULKCORE_PHYSX_WINDOWS_CMAKE}" VULKCORE_PHYSX_WINDOWS_CONTENT)
+    string(REPLACE "IF(PX_COPY_EXTERNAL_DLL OR PUBLIC_RELEASE)"
+        "IF(PX_COPY_EXTERNAL_DLL OR (PUBLIC_RELEASE AND PX_BUILDSNIPPETS))"
+        VULKCORE_PHYSX_WINDOWS_CONTENT "${VULKCORE_PHYSX_WINDOWS_CONTENT}")
+    file(CONFIGURE OUTPUT "${VULKCORE_PHYSX_WINDOWS_CMAKE}"
+        CONTENT "${VULKCORE_PHYSX_WINDOWS_CONTENT}" @ONLY)
     set(TARGET_BUILD_PLATFORM windows CACHE STRING "PhysX target platform" FORCE)
     set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
 elseif(APPLE)
@@ -84,11 +102,23 @@ list(APPEND CMAKE_MODULE_PATH
     "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake/modules"
     "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake/${TARGET_BUILD_PLATFORM}"
 )
+set(VULKCORE_SAVED_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}")
+set(VULKCORE_SAVED_CXX_STANDARD "${CMAKE_CXX_STANDARD}")
+if(MSVC)
+    # PhysX's Windows build uses C++14. Inheriting C++20 turns its enum flag
+    # operations into C5054 errors under the SDK's /WX setting.
+    set(CMAKE_CXX_STANDARD 14)
+endif()
 add_subdirectory(
     "${VULKCORE_PHYSX_ROOT}/source/compiler/cmake"
     "${physx_BINARY_DIR}/sdk"
     EXCLUDE_FROM_ALL
 )
+set(CMAKE_CXX_STANDARD "${VULKCORE_SAVED_CXX_STANDARD}")
+# PhysX replaces the parent's configuration cache with its own SDK presets.
+if(VULKCORE_SAVED_CONFIGURATION_TYPES)
+    set(CMAKE_CONFIGURATION_TYPES "${VULKCORE_SAVED_CONFIGURATION_TYPES}" CACHE STRING "Build configurations" FORCE)
+endif()
 set(CMAKE_MODULE_PATH "${VULKCORE_SAVED_CMAKE_MODULE_PATH}")
 
 # Assimp is used for importing model geometry. Prefer an installed package so
@@ -125,7 +155,7 @@ endif()
 
 set(VULKCORE_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/src")
 set(VULKCORE_SHADER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-set(VULKCORE_DEFAULT_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/mill-scene.fbx")
+set(VULKCORE_DEFAULT_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/mill-scene/mill-scene.fbx")
 set(VULKCORE_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vulkcore.ini")
 set(VULKCORE_MODEL_PATH "${VULKCORE_DEFAULT_MODEL_PATH}" CACHE FILEPATH "Model path; FBX files are supported")
 if(NOT VULKCORE_MODEL_PATH)
@@ -182,26 +212,42 @@ if(NOT VULKCORE_GLFW_TARGET OR NOT VULKCORE_GLM_TARGET)
     find_package(PkgConfig QUIET)
 endif()
 
-if(NOT VULKCORE_GLFW_TARGET)
-    if(NOT PkgConfig_FOUND)
-        message(FATAL_ERROR
-            "GLFW was not found. Install GLFW or provide a glfw3 CMake package."
-        )
+if(NOT VULKCORE_GLFW_TARGET AND PkgConfig_FOUND)
+    pkg_check_modules(GLFW3 QUIET IMPORTED_TARGET glfw3)
+    if(TARGET PkgConfig::GLFW3)
+        set(VULKCORE_GLFW_TARGET PkgConfig::GLFW3)
     endif()
-
-    pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
-    set(VULKCORE_GLFW_TARGET PkgConfig::GLFW3)
+endif()
+if(NOT VULKCORE_GLFW_TARGET)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    set(GLFW_LIBRARY_TYPE STATIC CACHE STRING "" FORCE)
+    FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(glfw)
+    set(VULKCORE_GLFW_TARGET glfw)
 endif()
 
-if(NOT VULKCORE_GLM_TARGET)
-    if(NOT PkgConfig_FOUND)
-        message(FATAL_ERROR
-            "GLM was not found. Install GLM or provide a glm CMake package."
-        )
+if(NOT VULKCORE_GLM_TARGET AND PkgConfig_FOUND)
+    pkg_check_modules(GLM QUIET IMPORTED_TARGET glm)
+    if(TARGET PkgConfig::GLM)
+        set(VULKCORE_GLM_TARGET PkgConfig::GLM)
     endif()
-
-    pkg_check_modules(GLM REQUIRED IMPORTED_TARGET glm)
-    set(VULKCORE_GLM_TARGET PkgConfig::GLM)
+endif()
+if(NOT VULKCORE_GLM_TARGET)
+    set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG 1.0.3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(glm)
+    set(VULKCORE_GLM_TARGET glm::glm)
 endif()
 
 # Dear ImGui is kept as an upstream checkout and compiled with only the
@@ -267,6 +313,7 @@ target_compile_definitions(vulkcore_physics PRIVATE PX_PHYSX_STATIC_LIB)
 
 target_link_libraries(vulkcore_physics
     PUBLIC
+        Vulkan::Headers
         ${VULKCORE_GLM_TARGET}
     PRIVATE
         PhysXExtensions
@@ -274,7 +321,8 @@ target_link_libraries(vulkcore_physics
 )
 
 if(MSVC)
-    target_compile_options(vulkcore_physics PRIVATE /W4 /permissive-)
+    target_compile_options(vulkcore_physics PRIVATE /W4 /permissive- /utf-8)
+    target_compile_definitions(vulkcore_physics PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(vulkcore_physics PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -306,6 +354,15 @@ add_executable(VulkCore
 
 add_dependencies(VulkCore VulkCoreShaders)
 
+if(WIN32)
+    enable_language(RC)
+    configure_file(resources/windows/vulkcore.rc.in "${CMAKE_CURRENT_BINARY_DIR}/vulkcore.rc" @ONLY)
+    target_sources(VulkCore PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkcore.rc")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/vulkcore.rc" APPEND PROPERTY
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/vulkcore.ico"
+    )
+endif()
+
 target_include_directories(VulkCore
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -330,7 +387,9 @@ target_link_libraries(VulkCore
 )
 
 if(MSVC)
-    target_compile_options(VulkCore PRIVATE /W4 /permissive-)
+    target_compile_options(VulkCore PRIVATE /W4 /permissive- /utf-8)
+    target_compile_definitions(VulkCore PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_property(TARGET VulkCore PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 else()
     target_compile_options(VulkCore PRIVATE -Wall -Wextra -Wpedantic)
 endif()

@@ -735,7 +735,7 @@ void Renderer::drawFrame() {
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffers_[currentFrame_];
-    const VkSemaphore signalSemaphores[] = {renderFinishedSemaphores_[currentFrame_]};
+    const VkSemaphore signalSemaphores[] = {renderFinishedSemaphores_[imageIndex]};
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -787,13 +787,17 @@ void Renderer::recreateSwapChain() {
     int height = 0;
     glfwGetFramebufferSize(context_->window(), &width, &height);
     while (width == 0 || height == 0) {
-        glfwGetFramebufferSize(context_->window(), &width, &height);
+        if (glfwWindowShouldClose(context_->window())) {
+            return;
+        }
         glfwWaitEvents();
+        glfwGetFramebufferSize(context_->window(), &width, &height);
     }
 
     context_->waitIdle();
     destroySceneRenderResources();
     swapChain_->recreate(renderPass_);
+    createPresentSemaphores();
     createSceneRenderResources();
     updateSceneTextureDescriptors();
     ImGui_ImplVulkan_SetMinImageCount(

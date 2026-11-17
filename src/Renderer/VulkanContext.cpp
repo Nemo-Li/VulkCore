@@ -137,8 +137,11 @@ void VulkanContext::waitIdle() const {
 }
 
 void VulkanContext::createInstance() {
-    if (kEnableValidationLayers && !checkValidationLayerSupport()) {
-        throw std::runtime_error("validation layers requested, but not available!");
+    if constexpr (kEnableValidationLayers) {
+        validationLayersEnabled_ = checkValidationLayerSupport();
+        if (!validationLayersEnabled_) {
+            std::cerr << "warning: Vulkan validation layers are unavailable; continuing without validation.\n";
+        }
     }
 
     VkApplicationInfo applicationInfo{};
@@ -169,7 +172,7 @@ void VulkanContext::createInstance() {
     }
 
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-    if (kEnableValidationLayers) {
+    if (validationLayersEnabled_) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(kValidationLayers.size());
         createInfo.ppEnabledLayerNames = kValidationLayers.data();
         populateDebugMessengerCreateInfo(debugCreateInfo);
@@ -196,7 +199,7 @@ void VulkanContext::populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreate
 }
 
 void VulkanContext::setupDebugMessenger() {
-    if (!kEnableValidationLayers) {
+    if (!validationLayersEnabled_) {
         return;
     }
 
@@ -344,7 +347,7 @@ std::vector<const char*> VulkanContext::getRequiredExtensions() const {
         );
     };
 
-    if (kEnableValidationLayers) {
+    if (validationLayersEnabled_) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
     if (isAvailable(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {

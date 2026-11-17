@@ -1459,7 +1459,6 @@ void Renderer::createCommandBuffers() {
 
 void Renderer::createSyncObjects() {
     imageAvailableSemaphores_.resize(kMaxFramesInFlight);
-    renderFinishedSemaphores_.resize(kMaxFramesInFlight);
     inFlightFences_.resize(kMaxFramesInFlight);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -1471,9 +1470,25 @@ void Renderer::createSyncObjects() {
 
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         if (vkCreateSemaphore(context_->device(), &semaphoreInfo, nullptr, &imageAvailableSemaphores_[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(context_->device(), &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS ||
             vkCreateFence(context_->device(), &fenceInfo, nullptr, &inFlightFences_[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create synchronization objects for a frame!");
+        }
+    }
+    createPresentSemaphores();
+}
+
+void Renderer::createPresentSemaphores() {
+    // A frame fence does not cover presentation. Reacquiring the same swap
+    // chain image guarantees its previous presentation wait has completed.
+    for (const VkSemaphore semaphore : renderFinishedSemaphores_) {
+        vkDestroySemaphore(context_->device(), semaphore, nullptr);
+    }
+    renderFinishedSemaphores_.assign(swapChain_->framebuffers().size(), VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (VkSemaphore& semaphore : renderFinishedSemaphores_) {
+        if (vkCreateSemaphore(context_->device(), &semaphoreInfo, nullptr, &semaphore) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create a presentation semaphore!");
         }
     }
 }

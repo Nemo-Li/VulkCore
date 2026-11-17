@@ -95,8 +95,10 @@ Renderer::~Renderer() {
 
     for (size_t i = 0; i < imageAvailableSemaphores_.size(); ++i) {
         vkDestroySemaphore(context_->device(), imageAvailableSemaphores_[i], nullptr);
-        vkDestroySemaphore(context_->device(), renderFinishedSemaphores_[i], nullptr);
         vkDestroyFence(context_->device(), inFlightFences_[i], nullptr);
+    }
+    for (const VkSemaphore semaphore : renderFinishedSemaphores_) {
+        vkDestroySemaphore(context_->device(), semaphore, nullptr);
     }
 
     for (const auto& [key, pipeline] : nodeGraphicsPipelines_) {
