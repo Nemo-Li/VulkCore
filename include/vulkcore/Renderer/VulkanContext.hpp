@@ -71,6 +71,7 @@ private:
         void* userData
     );
 
+    bool validationLayersEnabled_ = false;
     GLFWwindow* window_ = nullptr;
     VkInstance instance_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;

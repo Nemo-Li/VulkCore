@@ -36,6 +36,7 @@ src/                    C++ 实现
   Application.cpp        应用生命周期和 GLFW 窗口
   Renderer/              Vulkan 渲染实现
   Utils/                 工具实现
+assets/icons/            应用图标的 SVG 源文件、PNG 预览和多尺寸 Windows ICO
 assets/textures/         可选外部纹理图片
 assets/models/            模型资源
 docs/                     架构、图形管线、差距分析与演进设计
@@ -45,6 +46,53 @@ build/shaders/           CMake 自动生成的 SPIR-V 文件，不纳入源码
 ```
 
 ## 依赖
+
+### Windows（Visual Studio 2022 / x64）
+
+需要 Visual Studio 2022 的「使用 C++ 的桌面开发」工作负载（包括 Windows SDK 和
+CMake 工具）、Git，以及 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)。显卡驱动
+需要支持 Vulkan；本机 NVIDIA GeForce RTX 4060 Ti 已通过 `vulkaninfo --summary`
+检查。
+
+项目提供 Windows 专用预设和 PowerShell 入口，不需要手动配置 MSVC 的环境变量。
+GLFW、GLM、Assimp、Dear ImGui 和 PhysX 会优先使用已有依赖，缺少时由 CMake
+下载固定版本；首次配置需要网络，后续构建复用缓存。默认构建静态依赖。
+
+在项目根目录的 PowerShell 中执行：
+
+```powershell
+# 构建 Release 并执行物理、粒子测试
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows.ps1 -Test
+
+# 构建并启动编辑器（默认空场景）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows.ps1 -Run
+
+# 启动游戏场景
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows.ps1 -Run -Scene scenes/game.scene
+
+# Debug 构建及测试
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows.ps1 -Configuration Debug -Test
+```
+
+脚本自动寻找 Visual Studio 2022 附带的 CMake，以及 `VULKAN_SDK`、
+`C:/VulkanSDK`、`D:/VulkanSDK` 或项目内 `build/_tools/VulkanSDK` 中的 SDK。
+本机 SDK 位于 `build/_tools/VulkanSDK`。也可以在配置了 SDK 的终端手动执行：
+
+```powershell
+cmake --preset windows
+cmake --build --preset windows-release --parallel 8
+ctest --preset windows-release
+.\build\windows\Release\vulkcore.exe --scene scenes/game.scene
+```
+
+Windows 构建产物在 `build/windows/Release` 或 `build/windows/Debug`，与旧平台的
+`build` 缓存分开。可在 Visual Studio 中直接打开项目目录并选择 `windows` 预设。
+Debug 版本在验证层可用时启用验证；未安装验证层时输出提示并继续运行。
+
+Windows 构建会把 `assets/icons/vulkcore.ico` 嵌入可执行文件，GLFW 创建窗口时会自动
+使用该图标，供任务栏、窗口标题栏、Alt+Tab 和资源管理器显示。ICO 包含 16–256 像素的
+九种尺寸，透明背景；可编辑源文件为 `assets/icons/vulkcore.svg`，预览为
+[`assets/icons/vulkcore.png`](assets/icons/vulkcore.png)。
 
 ### macOS（Homebrew）
 
@@ -103,8 +151,9 @@ Resource Manager 导入，或通过场景文件恢复。
 会显示骨骼与动画摘要，选中场景中的模型节点后可切换 Clip、播放/暂停、循环、速度和时间。
 渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
-CMake 会优先使用 GLFW/GLM 导出的 CMake package；如果系统只提供 pkg-config
-元数据，则会自动使用 pkg-config 查找它们。构建时需要 `glslc`，CMake 会将
+CMake 会优先使用 GLFW/GLM 导出的 CMake package，其次使用 pkg-config，
+两者都不可用时自动下载 GLFW `3.4` 和 GLM `1.0.3`。构建时需要 Vulkan SDK 或
+系统提供的 `glslc`，CMake 会将
 `shaders/src` 下的 GLSL 编译到 `build/shaders`，运行时通过构建配置读取该目录，
 不依赖当前工作目录。
 

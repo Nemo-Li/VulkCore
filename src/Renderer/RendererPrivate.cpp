@@ -144,11 +144,10 @@ bool pathsEqual(const std::filesystem::path& left, const std::filesystem::path& 
 }
 
 std::filesystem::path locateAssetsDirectory() {
-    const std::filesystem::path compiledModelPath(kModelPath);
     const std::filesystem::path candidates[] = {
         std::filesystem::current_path() / "assets",
         std::filesystem::current_path().parent_path() / "assets",
-        compiledModelPath.parent_path().parent_path(),
+        std::filesystem::path(kConfigPath).parent_path() / "assets",
     };
     for (const std::filesystem::path& candidate : candidates) {
         std::error_code error;

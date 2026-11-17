@@ -169,6 +169,7 @@ private:
     void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
+    void createPresentSemaphores();
     void updateCameraBasis();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);

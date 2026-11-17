@@ -1478,6 +1478,14 @@ void Renderer::loadTransformSettings() {
         return;
     }
 
+    const auto resolveResourcePath = [&configPath](const std::string& value) {
+        std::filesystem::path resourcePath(value);
+        if (!resourcePath.empty() && resourcePath.is_relative()) {
+            resourcePath = configPath.parent_path() / resourcePath;
+        }
+        return normalizedPath(resourcePath);
+    };
+
     removedSceneNodeIds_.clear();
 
     glm::vec3 legacyTranslation(0.0f);
@@ -1670,7 +1678,7 @@ void Renderer::loadTransformSettings() {
             pending.material.blendMode = static_cast<MaterialData::BlendMode>(blendMode);
             pending.material.depthWrite = depthWrite != 0;
             pending.material.doubleSided = doubleSided != 0;
-            pending.material.texturePath = texturePath;
+            pending.material.texturePath = resolveResourcePath(texturePath);
             pending.material.userCreated = true;
             // Material lines written by the first Material implementation did
             // not contain shader/water fields. Keep those materials valid and
@@ -1722,8 +1730,8 @@ void Renderer::loadTransformSettings() {
                 valid = false;
                 break;
             }
-            pending.normalTexturePath = std::move(normalTexturePath);
-            pending.specularTexturePath = std::move(specularTexturePath);
+            pending.normalTexturePath = resolveResourcePath(normalTexturePath);
+            pending.specularTexturePath = resolveResourcePath(specularTexturePath);
             pendingMaterialTextures.push_back(std::move(pending));
         } else if (key == "node_material") {
             PendingNodeMaterial material;
@@ -1803,7 +1811,7 @@ void Renderer::loadTransformSettings() {
             }
             std::string texturePath;
             if (particleStream >> std::quoted(texturePath)) {
-                settings.texturePath = std::move(texturePath);
+                settings.texturePath = resolveResourcePath(texturePath);
             }
             settings.enabled = enabled != 0;
             settings.playOnAwake = playOnAwake != 0;
