@@ -18,6 +18,7 @@ struct Window {
     std::atomic<int> height{0};
     std::mutex inputMutex;
     std::array<bool, 13> keys{};
+    MovementInput movement;
     TouchLook touchLook;
     void* userPointer = nullptr;
     ResizeCallback resizeCallback = nullptr;

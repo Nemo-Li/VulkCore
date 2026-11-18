@@ -5,7 +5,7 @@
 
 1. 等待 OHPM 同步；首次 Native 配置会下载固定版本 PhysX、Assimp、GLM 和 Dear ImGui，需要可访问 GitHub。
 2. 工程沿用模板中的 default 签名配置，包括证书路径、密钥别名和签名密码配置。在 File > Project Structure 中确认该配置适用于当前机器与应用；证书文件仍由本机提供。
-3. 选择手机后使用 DevEco Studio 的 Run。左下方向键移动，右侧画面拖动转向，Jump 跳跃，Q/E/R 释放技能。
+3. 选择手机后使用 DevEco Studio 的 Run。左下圆盘摇杆拖动控制 360° 移动方向，松手停止；右侧画面拖动转向，Jump 跳跃，Q/E/R 释放技能。支持双手同时移动、转向，切到后台时摇杆回中。
 4. 场景、模型、纹理、地形和 SPIR-V 位于 entry/src/main/resources/rawfile/vulkcore。
    启动时解压到应用 filesDir/vulkcore，再加载 startup.txt 指定的场景。每次启动刷新资源副本。
 5. 导出后的 engine 包含运行时源码，可脱离原编辑器目录继续开发。应用启动隐藏编辑面板，保留场景模拟。

@@ -1,4 +1,5 @@
 { "string": [
   { "name": "app_name", "value": @APP_NAME_JSON@ },
-  { "name": "module_desc", "value": "VulkCore scene player" }
+  { "name": "module_desc", "value": "VulkCore scene player" },
+  { "name": "movement_joystick", "value": "Movement joystick" }
 ] }

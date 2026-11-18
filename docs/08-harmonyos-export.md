@@ -64,16 +64,18 @@ HarmonyOSGame/
 
 ## 手机运行与操作
 
-手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）比例居中等比适配；超宽手机两侧留边，较窄屏幕上下留边，保留完整画面，不裁切或拉伸。触屏按钮独立叠加在窗口上。
+手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）比例居中等比适配；超宽手机两侧留边，较窄屏幕上下留边，保留完整画面，不裁切或拉伸。圆盘摇杆与技能按钮独立叠加在窗口上。
 
 ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XComponent 触控使用组件内部的像素坐标，原点位于左上角，X 向右、Y 向下。创建或重建交换链前，将 NativeWindow 缓冲区设为 XComponent 回报的像素尺寸，避免沿用竖屏缓冲区。运行时不执行预旋转，因此交换链声明 `VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`，交由系统完成屏幕旋转；不能直接把 `currentTransform` 当作已执行的预旋转。交换链创建后启用等比 fit 呈现，并在下一帧绘制前处理尺寸变化，使场景投影与实际渲染目标的宽高比一致。
 
 | 操作 | 控制 |
 |---|---|
-| Player 移动 | 左下方向按钮 |
+| Player 移动 | 左下圆盘摇杆，按住后拖动 |
 | Player 相机转向 | 在画面右半部分拖动 |
 | 跳跃 | Jump |
 | 雷霆剑气 / 爆炎新星 / 龙卷风 | Q / E / R |
+
+左下采用固定底盘的圆盘摇杆，支持 360° 连续方向，中心设有死区，拖动超出底盘时摇杆帽保持在最大半径内。摇杆通过 `setMovement(right, forward)` 传入二维方向，角色按现有移动速度沿该方向行走；松手、触摸取消、页面离开或应用进入后台时，摇杆回中并清零移动输入。左右手指分别跟踪，可同时移动、转向和释放技能。
 
 移动、转向和技能取决于场景中是否有已激活的 Player；纯模型或特效场景使用保存的相机设置并播放场景动画。转向手势从右半场景区域按下后持续跟踪同一手指，左右拖动调整水平视角，上下拖动调整俯仰；松手或取消时结束。支持多点触控下移动与转向组合，其他手指按下或松开不会抢占转向手指。XComponent 的移动事件可能将 `isPressed` 设为 false，因此转向按事件类型和手指 ID 更新位置，不以该标志过滤 MOVE。后台暂停绘制并释放按键与转向手势；前台恢复。Surface 销毁会先结束渲染线程、释放 Vulkan 资源，再交还 NativeWindow；Surface 尺寸变化触发交换链重建。初始化或渲染失败会显示错误文字并写入 HiLog。
 
@@ -81,10 +83,16 @@ ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XCo
 
 ## 验证
 
-桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。`vulkcore_touch_smoke` 回放 XComponent 触摸事件，覆盖 `isPressed=false` 的移动事件、多个手指、跨越屏幕中线、松手、取消及后台重置。
+桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。`vulkcore_movement_smoke` 检查连续移动方向、归一化和非法输入回退。`vulkcore_touch_smoke` 回放 XComponent 触摸事件，覆盖 `isPressed=false` 的移动事件、多个手指、跨越屏幕中线、松手、取消及后台重置。
 
 ```bash
 ctest --test-dir build --output-on-failure
+```
+
+摇杆手势测试直接回放 `JoystickState.ets` 的实际实现，覆盖任意角度、死区、拖出范围、多指、松手与重置。使用本机 DevEco 附带的 TypeScript 编译器运行，无需新增 npm 依赖：
+
+```bash
+node tests/JoystickStateSmoke.cjs /path/to/typescript/lib/typescript.js
 ```
 
 可以单独配置和编译鸿蒙 Native 目标，不需要打包或签名：

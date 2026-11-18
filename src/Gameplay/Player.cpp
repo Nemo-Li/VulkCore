@@ -434,9 +434,10 @@ void PlayerController::update(
         const bool moveBackward =
             keyPressed(window, Key::S) ||
             keyPressed(window, Key::Down);
-        const float horizontalInput =
+        const MovementInput analog = analogMovement(window);
+        const float horizontalInput = analog.right +
             static_cast<float>(moveRight) - static_cast<float>(moveLeft);
-        const float forwardInput =
+        const float forwardInput = analog.forward +
             static_cast<float>(moveForward) - static_cast<float>(moveBackward);
         const glm::vec3 forward = horizontalForward();
         const glm::vec3 right = glm::vec3(-forward.z, 0.0f, forward.x);
