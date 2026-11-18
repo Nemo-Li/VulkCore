@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkcore/Platform/Window.hpp"
+#include "vulkcore/Platform/TouchLook.hpp"
 
 #include <array>
 #include <atomic>
@@ -17,9 +18,7 @@ struct Window {
     std::atomic<int> height{0};
     std::mutex inputMutex;
     std::array<bool, 13> keys{};
-    bool looking = false;
-    double cursorX = 0;
-    double cursorY = 0;
+    TouchLook touchLook;
     void* userPointer = nullptr;
     ResizeCallback resizeCallback = nullptr;
     std::chrono::steady_clock::time_point lastFrame;
