@@ -87,7 +87,9 @@ Renderer::~Renderer() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
-    terrainDetailTextures_ = {};
+    terrainAlbedoLayers_.reset();
+    terrainSurfaceLayers_.reset();
+    fallbackTerrainLayers_.reset();
     particleTextures_.clear();
     skyboxTexture_.reset();
     fallbackTexture_.reset();

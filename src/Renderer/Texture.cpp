@@ -42,6 +42,52 @@ Texture::Texture(
     uploadRgbaPixels(pixels.get(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 }
 
+Texture::Texture(
+    VulkanContext& context,
+    const std::vector<std::filesystem::path>& layerPaths,
+    TextureColorSpace colorSpace
+)
+    : context_(context),
+      arrayView_(true),
+      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
+    if (layerPaths.empty() || layerPaths.size() > properties.limits.maxImageArrayLayers) {
+        throw std::runtime_error("invalid number of texture layers");
+    }
+    arrayLayers_ = static_cast<std::uint32_t>(layerPaths.size());
+    int width = 0, height = 0;
+    std::size_t layerBytes = 0;
+    std::vector<std::uint8_t> rgba;
+    for (std::size_t index = 0; index < layerPaths.size(); ++index) {
+        const auto path = layerPaths[index].string();
+        int layerWidth = 0, layerHeight = 0;
+        std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+            stbi_load(path.c_str(), &layerWidth, &layerHeight, nullptr, STBI_rgb_alpha),
+            &stbi_image_free
+        );
+        if (!pixels || layerWidth <= 0 || layerHeight <= 0) {
+            throw std::runtime_error("failed to load texture array layer '" + path + "'");
+        }
+        if (index == 0) {
+            width = layerWidth;
+            height = layerHeight;
+            const auto bytes = 4ull * width * height;
+            if (bytes > rgba.max_size() / layerPaths.size() ||
+                static_cast<std::uint32_t>(std::max(width, height)) > properties.limits.maxImageDimension2D) {
+                throw std::runtime_error("texture array dimensions exceed device or memory limits");
+            }
+            layerBytes = static_cast<std::size_t>(bytes);
+            rgba.resize(layerBytes * layerPaths.size());
+        }
+        if (layerWidth != width || layerHeight != height) {
+            throw std::runtime_error("texture array layer has a different extent: '" + path + "'");
+        }
+        std::copy_n(pixels.get(), layerBytes, rgba.data() + index * layerBytes);
+    }
+    uploadRgbaPixels(rgba.data(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+}
+
 Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData)
     : context_(context) {
     if (encodedData.empty() || encodedData.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -76,9 +122,10 @@ Texture::Texture(
     VulkanContext& context,
     const std::vector<std::uint8_t>& rgbaPixels,
     std::uint32_t width,
-    std::uint32_t height
+    std::uint32_t height,
+    bool arrayView
 )
-    : context_(context) {
+    : context_(context), arrayView_(arrayView) {
     if (width == 0 || height == 0) {
         throw std::runtime_error("raw texture dimensions must be non-zero");
     }
@@ -101,10 +148,10 @@ void Texture::uploadRgbaPixels(
     }
 
     const std::uint64_t pixelCount = static_cast<std::uint64_t>(width) * height;
-    if (pixelCount > std::numeric_limits<VkDeviceSize>::max() / 4) {
+    if (pixelCount > std::numeric_limits<VkDeviceSize>::max() / 4 / arrayLayers_) {
         throw std::runtime_error("texture is too large");
     }
-    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(pixelCount) * 4;
+    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(pixelCount) * 4 * arrayLayers_;
 
     mipLevels_ = 1;
     for (std::uint32_t dimension = std::max(width, height);
@@ -119,8 +166,10 @@ void Texture::uploadRgbaPixels(
         format_,
         &formatProperties
     );
-    if ((formatProperties.optimalTilingFeatures &
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) == 0) {
+    constexpr VkFormatFeatureFlags mipFeatures =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    if ((formatProperties.optimalTilingFeatures & mipFeatures) != mipFeatures) {
         // Mip generation below uses a linear blit. Keeping the base level is
         // safer than rejecting otherwise valid textures on such devices.
         mipLevels_ = 1;
@@ -169,7 +218,7 @@ void Texture::createImage(uint32_t width, uint32_t height) {
     imageInfo.format = format_;
     imageInfo.extent = {width, height, 1};
     imageInfo.mipLevels = mipLevels_;
-    imageInfo.arrayLayers = 1;
+    imageInfo.arrayLayers = arrayLayers_;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -215,13 +264,13 @@ void Texture::createImageView() {
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image_;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.viewType = arrayView_ ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format_;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = mipLevels_;
     viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
+    viewInfo.subresourceRange.layerCount = arrayLayers_;
 
     if (vkCreateImageView(context_.device(), &viewInfo, nullptr, &imageView_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture image view!");
@@ -280,7 +329,7 @@ void Texture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLa
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = mipLevels_;
     barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.layerCount = arrayLayers_;
 
     VkPipelineStageFlags sourceStage = 0;
     VkPipelineStageFlags destinationStage = 0;
@@ -323,7 +372,7 @@ void Texture::copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.mipLevel = 0;
     region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
+    region.imageSubresource.layerCount = arrayLayers_;
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {width, height, 1};
 
@@ -355,7 +404,7 @@ void Texture::generateMipmaps(uint32_t width, uint32_t height) {
     barrier.image = image_;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.layerCount = arrayLayers_;
     barrier.subresourceRange.levelCount = 1;
 
     std::int32_t sourceWidth = static_cast<std::int32_t>(width);
@@ -385,12 +434,12 @@ void Texture::generateMipmaps(uint32_t width, uint32_t height) {
         blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         blit.srcSubresource.mipLevel = level - 1;
         blit.srcSubresource.baseArrayLayer = 0;
-        blit.srcSubresource.layerCount = 1;
+        blit.srcSubresource.layerCount = arrayLayers_;
         blit.srcOffsets[1] = {sourceWidth, sourceHeight, 1};
         blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         blit.dstSubresource.mipLevel = level;
         blit.dstSubresource.baseArrayLayer = 0;
-        blit.dstSubresource.layerCount = 1;
+        blit.dstSubresource.layerCount = arrayLayers_;
         blit.dstOffsets[1] = {targetWidth, targetHeight, 1};
         vkCmdBlitImage(
             commandBuffer,

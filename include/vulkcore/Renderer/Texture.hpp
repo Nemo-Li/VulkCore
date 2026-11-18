@@ -21,12 +21,19 @@ public:
         VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         TextureColorSpace colorSpace = TextureColorSpace::Srgb
     );
+    // All layers must have the same extent. Layer indices follow path order.
+    Texture(
+        VulkanContext& context,
+        const std::vector<std::filesystem::path>& layerPaths,
+        TextureColorSpace colorSpace
+    );
     Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData);
     Texture(
         VulkanContext& context,
         const std::vector<std::uint8_t>& rgbaPixels,
         std::uint32_t width,
-        std::uint32_t height
+        std::uint32_t height,
+        bool arrayView = false
     );
     ~Texture();
 
@@ -52,6 +59,8 @@ private:
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
     std::uint32_t mipLevels_ = 1;
+    std::uint32_t arrayLayers_ = 1;
+    bool arrayView_ = false;
     VkFormat format_ = VK_FORMAT_R8G8B8A8_SRGB;
     VkSamplerAddressMode addressModeU_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VkSamplerAddressMode addressModeV_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
