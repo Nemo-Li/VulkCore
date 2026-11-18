@@ -34,6 +34,11 @@ enum class PlayerAttack : std::uint8_t {
     FlameNova,
 };
 
+struct PlayerCameraView {
+    glm::vec3 position;
+    glm::vec3 target;
+};
+
 class PlayerController {
 public:
     static constexpr float kBotwLinkHeight = 1.58f;
@@ -77,8 +82,7 @@ public:
     PlayerAttack activeAttack() const { return activeAttack_; }
     PlayerAttack triggeredAttack() const { return triggeredAttack_; }
     float attackAnimationTimeSeconds() const { return attackAnimationTimeSeconds_; }
-    glm::vec3 cameraTargetWorld() const;
-    glm::vec3 cameraPositionWorld() const;
+    PlayerCameraView cameraView(const PhysicsWorld& physics) const;
 
 private:
     glm::vec3 horizontalForward() const;
@@ -93,6 +97,7 @@ private:
     bool flameAttackWasDown_ = false;
     PlayerAttack activeAttack_ = PlayerAttack::None;
     PlayerAttack triggeredAttack_ = PlayerAttack::None;
+    bool lookWasDown_ = false;
     bool lookDragging_ = false;
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;
@@ -109,7 +114,7 @@ private:
     float flameAttackDurationSeconds_ = 1.05f;
     std::vector<float> footTractionSamples_;
     float yawRadians_ = 0.0f;
-    float pitchRadians_ = -0.2617993878f;
+    float cameraElevationRadians_ = 0.0f;
 };
 
 } // namespace VulkCore

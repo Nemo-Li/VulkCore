@@ -1322,6 +1322,16 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
             mesh
         );
     }
+    // All chunks address the same macro texture in terrain space.
+    const glm::vec2 minimum(boundsMinimum_.x, boundsMinimum_.z);
+    const glm::vec2 extent = glm::max(
+        glm::vec2(boundsMaximum_.x, boundsMaximum_.z) - minimum, glm::vec2(0.0001f)
+    );
+    for (Vertex& vertex : mesh.vertices) {
+        const glm::vec2 uv = (glm::vec2(vertex.position.x, vertex.position.z) - minimum) / extent;
+        vertex.terrainMapping.z = uv.x;
+        vertex.terrainMapping.w = uv.y;
+    }
     stitchTerrainMesh(mesh);
     return mesh;
 }

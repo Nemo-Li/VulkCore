@@ -824,9 +824,26 @@ void Renderer::createMaterialTextures() {
 
     for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
         const MaterialData& material = meshData_.materials[materialIndex];
-        // Only upload the atlas if this terrain pack cannot use texture arrays.
-        materialTextures_[materialIndex] = terrainAlbedoLayers_ && &material == &*terrain
-            ? nullptr : loadTexture(material.embeddedTexture, material.texturePath, "base color", materialIndex);
+        if (terrainAlbedoLayers_ && &material == &*terrain) {
+            // The texture arrays carry the detail layers. The base-color slot
+            // can carry the optional full-map control texture instead.
+            materialTextures_[materialIndex].reset();
+            const auto macroPath = material.texturePath.parent_path() / "terrain_macro.png";
+            if (std::filesystem::is_regular_file(macroPath)) {
+                try {
+                    materialTextures_[materialIndex] = std::make_unique<Texture>(
+                        *context_, macroPath, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, TextureColorSpace::Linear
+                    );
+                } catch (const std::exception& error) {
+                    std::cerr << "warning: failed to load terrain macro texture: " << error.what() << '\n';
+                }
+            }
+        } else {
+            materialTextures_[materialIndex] = loadTexture(
+                material.embeddedTexture, material.texturePath, "base color", materialIndex
+            );
+        }
         normalTextures_[materialIndex] = loadTexture(
             material.embeddedNormalTexture,
             material.normalTexturePath,

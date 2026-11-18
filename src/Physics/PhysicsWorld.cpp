@@ -453,6 +453,28 @@ void PhysicsWorld::setTerrain(const TerrainMeshData& mesh) {
     impl_->updateGroundedState();
 }
 
+float PhysicsWorld::terrainSweepDistance(
+    const glm::vec3& origin,
+    const glm::vec3& direction,
+    float maxDistance,
+    float radius
+) const {
+    // Terrain is static. Excluding dynamic bodies keeps the player capsule
+    // from blocking a sweep that starts at the camera pivot inside it.
+    const physx::PxQueryFilterData filter(physx::PxQueryFlag::eSTATIC);
+    physx::PxSweepBuffer hit;
+    impl_->scene->sweep(
+        physx::PxSphereGeometry(radius),
+        physx::PxTransform(toPhysX(origin)),
+        toPhysX(direction),
+        maxDistance,
+        hit,
+        physx::PxHitFlag::eDEFAULT,
+        filter
+    );
+    return hit.hasBlock ? hit.block.distance : maxDistance;
+}
+
 void PhysicsWorld::createPlayer(
     const glm::vec3& footPosition,
     float height,

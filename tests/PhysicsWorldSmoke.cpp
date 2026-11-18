@@ -54,6 +54,35 @@ int main() {
         return 1;
     }
 
+    // The camera sweep should stop before its center reaches the rising slope.
+    constexpr float kCameraSweepDistance = 5.0f;
+    constexpr float kCameraRadius = 0.25f;
+    const float slopeDistance = physics.terrainSweepDistance(
+        glm::vec3(0.0f, 0.92f, 0.0f),
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        kCameraSweepDistance,
+        kCameraRadius
+    );
+    const float unobstructedDistance = physics.terrainSweepDistance(
+        restingPosition + glm::vec3(0.0f, 0.92f, 0.0f),
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        kCameraSweepDistance,
+        kCameraRadius
+    );
+    const float initialOverlapDistance = physics.terrainSweepDistance(
+        glm::vec3(-2.0f, 0.125f, 0.0f),
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        kCameraSweepDistance,
+        kCameraRadius
+    );
+    if (std::abs(slopeDistance - 3.325f) > 0.02f ||
+        unobstructedDistance != kCameraSweepDistance || initialOverlapDistance != 0.0f) {
+        std::cerr << "unexpected camera clearance: slope=" << slopeDistance
+                  << ", clear=" << unobstructedDistance
+                  << ", overlap=" << initialOverlapDistance << '\n';
+        return 8;
+    }
+
     physics.setPlayerFootTraction(glm::vec2(1.0f, 0.0f), 2.0f, 1.0f);
     physics.simulate(1.0f / 60.0f);
     const float firstTractionStepSpeed = physics.playerLinearVelocity().x;

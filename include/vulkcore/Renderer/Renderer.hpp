@@ -80,7 +80,7 @@ private:
 
     void initializeImGui();
     void shutdownImGui();
-    void buildImGuiFrame();
+    bool buildImGuiFrame();
     void drawMiniMap();
     void loadResourceSettings();
     void loadTransformSettings();
@@ -93,7 +93,7 @@ private:
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
     void appendGrassToScene(const TerrainScene& terrain, const glm::vec3& center);
-    void updatePlayerController(float deltaSeconds);
+    void updatePlayerController(float deltaSeconds, bool viewportHovered);
     void updatePlayerCamera();
     void clearSceneData();
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;

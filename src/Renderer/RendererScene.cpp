@@ -287,7 +287,6 @@ void Renderer::appendTerrainToScene(
     terrainMaterial.name = "BOTW Terrain (TSCB landform atlas)";
     terrainMaterial.baseColor = glm::vec4(1.0f);
     terrainMaterial.roughness = 0.95f;
-    terrainMaterial.doubleSided = true;
     terrainMaterial.texturePath = terrainRoot / "textures" / "terrain_atlas.png";
     terrainMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
         "shader_terrain.vert";
@@ -698,20 +697,22 @@ void Renderer::appendGrassToScene(
               << " triangles\n";
 }
 
-void Renderer::updatePlayerController(float deltaSeconds) {
+void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) {
     if (!terrainScene_ || !playerController_.active()) {
         return;
     }
     postProcessSplitView_ = false;
     const ImGuiIO& io = ImGui::GetIO();
-    const bool editingUiItem = ImGui::IsAnyItemActive();
-    const bool hoveringUiItem = ImGui::IsAnyItemHovered();
+#ifdef VULKCORE_OHOS
+    // Touch look is routed to the player separately from ImGui's pointer.
+    viewportHovered = true;
+#endif
     playerController_.update(
         window_,
         deltaSeconds,
         *physicsWorld_,
-        io.WantCaptureKeyboard && editingUiItem,
-        io.WantCaptureMouse && (editingUiItem || hoveringUiItem)
+        io.WantCaptureKeyboard && ImGui::IsAnyItemActive(),
+        !viewportHovered
     );
     updatePlayerAttackEffect();
     updatePlayerCamera();
@@ -723,12 +724,9 @@ void Renderer::updatePlayerCamera() {
         return;
     }
     const float safeScale = std::max(modelScale_, std::numeric_limits<float>::epsilon());
-    cameraTarget_ = safeScale * (
-        playerController_.cameraTargetWorld() - modelCenter_
-    );
-    cameraPosition_ = safeScale * (
-        playerController_.cameraPositionWorld() - modelCenter_
-    );
+    const PlayerCameraView view = playerController_.cameraView(*physicsWorld_);
+    cameraTarget_ = safeScale * (view.target - modelCenter_);
+    cameraPosition_ = safeScale * (view.position - modelCenter_);
     cameraBasisInitialized_ = false;
 }
 
