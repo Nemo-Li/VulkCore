@@ -329,6 +329,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
     src/Renderer/RendererFrame.cpp
+    src/Renderer/HdrComposition.cpp
     src/Renderer/RendererPipelines.cpp
     src/Renderer/RendererPrivate.cpp
     src/Renderer/RendererResources.cpp
@@ -357,7 +358,9 @@ if(VULKCORE_OHOS)
     set(VULKCORE_SHADER_BINARY_DIR "shaders")
     set(VULKCORE_MODEL_PATH "assets/models/mill-scene.fbx")
     set(VULKCORE_CONFIG_PATH "vulkcore.ini")
+    set(VULKCORE_ASSET_DIR "assets")
 else()
+    set(VULKCORE_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
     add_library(vulkcore_export STATIC src/Export/OhosExporter.cpp)
     target_include_directories(vulkcore_export PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_compile_definitions(vulkcore_export PRIVATE
@@ -378,6 +381,7 @@ target_include_directories(VulkCore
 target_compile_definitions(VulkCore
     PRIVATE
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
+        VULKCORE_ASSET_DIR=\"${VULKCORE_ASSET_DIR}\"
         VULKCORE_MODEL_PATH=\"${VULKCORE_MODEL_PATH}\"
         VULKCORE_CONFIG_PATH=\"${VULKCORE_CONFIG_PATH}\"
 )

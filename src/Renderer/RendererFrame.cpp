@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "HdrComposition.hpp"
 
 #include <ctime>
 
@@ -99,7 +100,7 @@ void Renderer::recordScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imag
     );
 }
 
-void Renderer::saveScreenshot() {
+void Renderer::saveScreenshot(const std::filesystem::path& output) {
     if (screenshotBuffer_ == nullptr) {
         throw std::runtime_error("screenshot buffer has not been initialized");
     }
@@ -133,6 +134,10 @@ void Renderer::saveScreenshot() {
         }
     }
 
+    if (!output.empty()) {
+        writeRgbaPng(output, extent.width, extent.height, rgbaPixels);
+        return;
+    }
     const std::filesystem::path directory =
         std::filesystem::current_path() / "screenshots";
     std::filesystem::create_directories(directory);
@@ -155,178 +160,9 @@ void Renderer::saveScreenshot() {
     std::cerr << screenshotStatus_ << '\n';
 }
 
-void Renderer::recordCommandBuffer(
-    VkCommandBuffer commandBuffer,
-    uint32_t imageIndex,
-    bool captureScreenshot
-) {
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        throw std::runtime_error("failed to begin recording command buffer!");
-    }
-
-    const VkExtent2D extent = swapChain_->extent();
-    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
-
-    VkViewport viewport{};
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor{};
-    scissor.extent = extent;
-
-    const VkBuffer buffers[] = {vertexBuffers_[currentFrame_]->handle()};
-    const VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
-
-    const auto bindViewport = [&]() {
-        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-    };
-
-    const auto drawPart = [&](const MeshPart& part) {
-        if (!isSceneNodeRenderEnabled(part.nodeId)) {
-            return;
-        }
-        const std::uint32_t materialIndex = materialIndexForPart(part);
-        if (materialIndex >= materialCount || materialIndex >= materialTextures_.size()) {
-            return;
-        }
-        const MaterialData& material = meshData_.materials[materialIndex];
-        const VkPipeline materialPipeline = graphicsPipelineForMaterial(material);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, materialPipeline);
-
-        const std::size_t descriptorSetIndex =
-            static_cast<std::size_t>(currentFrame_) * materialCount + materialIndex;
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout_,
-            0,
-            1,
-            &descriptorSets_[descriptorSetIndex],
-            0,
-            nullptr
-        );
-
-        MaterialPushConstants materialPushConstants{};
-        materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
-        materialPushConstants.baseColor = material.baseColor;
-        materialPushConstants.textureFlags =
-            (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
-            (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
-            (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
-            ((terrainDetailTexturesReady_ &&
-              material.shaderConfiguration.shader(ShaderStage::Fragment) ==
-                  "shader_terrain.frag") ? 8u : 0u);
-        materialPushConstants.metallic = material.metallic;
-        materialPushConstants.roughness = material.roughness;
-        materialPushConstants.opacity = material.opacity;
-        const WaterShaderSettings& waterSettings = material.waterShaderSettings;
-        materialPushConstants.waterFlow = glm::vec4(
-            waterSettings.flowDirection,
-            waterSettings.flowSpeed,
-            waterSettings.flowStrength
-        );
-        materialPushConstants.waterSurface = glm::vec4(
-            waterSettings.flowTurbulence,
-            waterSettings.waveScale,
-            waterSettings.waveHeight,
-            0.0f
-        );
-        if (!isWaterShaderConfiguration(material.shaderConfiguration)) {
-            // The default shader uses this slot for emission. Water shaders
-            // keep the same 128-byte push-constant layout for compatibility
-            // with Vulkan devices that only expose the guaranteed minimum.
-            materialPushConstants.waterSurface = glm::vec4(
-                material.emissionColor,
-                material.emissionStrength
-            );
-        }
-        vkCmdPushConstants(
-            commandBuffer,
-            pipelineLayout_,
-            kMaterialPushConstantStageFlags,
-            0,
-            sizeof(MaterialPushConstants),
-            &materialPushConstants
-        );
-        vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
-    };
-
-    const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
-    VkRenderPassBeginInfo sceneRenderPassInfo{};
-    sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    sceneRenderPassInfo.renderPass = sceneRenderPass_;
-    sceneRenderPassInfo.framebuffer = sceneTarget.framebuffer;
-    sceneRenderPassInfo.renderArea.offset = {0, 0};
-    sceneRenderPassInfo.renderArea.extent = extent;
-    const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
-    const std::array<VkClearValue, 2> sceneClearValues = {{
-        {{{
-            isTornadoPreview ? 0.0015f : 0.015f,
-            isTornadoPreview ? 0.0025f : 0.02f,
-            isTornadoPreview ? 0.0100f : 0.03f,
-            1.0f
-        }}},
-        {{{1.0f, 0}}}
-    }};
-    sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
-    sceneRenderPassInfo.pClearValues = sceneClearValues.data();
-    vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    bindViewport();
-
-    // The skybox is a gameplay backdrop only. Effect/model showcase scenes
-    // should keep the neutral render-pass clear color instead of inheriting it.
-    if (currentScenePath_.filename() == "game.scene" &&
-        skyboxTexture_ != nullptr &&
-        currentFrame_ < skyboxDescriptorSets_.size()) {
-        vkCmdBindPipeline(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            skyboxPipeline_
-        );
-        const VkDescriptorSet& skyboxDescriptorSet =
-            skyboxDescriptorSets_[currentFrame_];
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout_,
-            0,
-            1,
-            &skyboxDescriptorSet,
-            0,
-            nullptr
-        );
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    }
-
-    // Render the opaque scene into a sampled color/depth pair first. Water
-    // parts are intentionally excluded: they need this color/depth as their
-    // reflection and refraction source in the second pass.
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline_);
-    for (const MeshPart& part : meshData_.parts) {
-        const std::uint32_t materialIndex = materialIndexForPart(part);
-        if (materialIndex >= materialCount || part.indexCount == 0) {
-            continue;
-        }
-        if (!isSceneNodeRenderEnabled(part.nodeId)) {
-            continue;
-        }
-        const MaterialData& material = meshData_.materials[materialIndex];
-        const ModelNode* node = findSceneNodeById(meshData_, part.nodeId);
-        const bool isWater = node != nullptr &&
-            isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
-        if (!isWater && !isTransparentMaterial(material)) {
-            drawPart(part);
-        }
-    }
-    vkCmdEndRenderPass(commandBuffer);
-
+void Renderer::recordLegacySceneTransfer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    const auto& sceneTarget = sceneRenderTargets_[currentFrame_];
+    const auto extent = swapChain_->extent();
     VkImageMemoryBarrier sceneColorToTransfer{};
     sceneColorToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     sceneColorToTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -356,6 +192,7 @@ void Renderer::recordCommandBuffer(
     vkCmdPipelineBarrier(
         commandBuffer,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0,
@@ -386,14 +223,16 @@ void Renderer::recordCommandBuffer(
     swapDepthToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     swapDepthToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     swapDepthToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    swapDepthToTransfer.image = swapChain_->depthImage();
+    swapDepthToTransfer.image = swapChain_->depthImage(imageIndex);
     swapDepthToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     swapDepthToTransfer.subresourceRange.levelCount = 1;
     swapDepthToTransfer.subresourceRange.layerCount = 1;
 
     vkCmdPipelineBarrier(
         commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        // The swap-chain acquire semaphore is waited at TRANSFER. Chain
+        // the destination layout transitions to that wait as well.
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0,
         0,
@@ -430,7 +269,7 @@ void Renderer::recordCommandBuffer(
         commandBuffer,
         sceneTarget.depthImage,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        swapChain_->depthImage(),
+        swapChain_->depthImage(imageIndex),
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1,
         &depthCopy
@@ -465,7 +304,8 @@ void Renderer::recordCommandBuffer(
     VkImageMemoryBarrier swapColorToAttachment{};
     swapColorToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     swapColorToAttachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    swapColorToAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    swapColorToAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     swapColorToAttachment.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     swapColorToAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     swapColorToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -485,7 +325,7 @@ void Renderer::recordCommandBuffer(
     swapDepthToAttachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     swapDepthToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     swapDepthToAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    swapDepthToAttachment.image = swapChain_->depthImage();
+    swapDepthToAttachment.image = swapChain_->depthImage(imageIndex);
     swapDepthToAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     swapDepthToAttachment.subresourceRange.levelCount = 1;
     swapDepthToAttachment.subresourceRange.layerCount = 1;
@@ -509,116 +349,327 @@ void Renderer::recordCommandBuffer(
             swapDepthToAttachment
         }.data()
     );
+}
 
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = renderPass_;
-    renderPassInfo.framebuffer = swapChain_->framebuffers()[imageIndex];
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = extent;
-    const std::array<VkClearValue, 2> clearValues = {{
-        {{{0.015f, 0.02f, 0.03f, 1.0f}}},
-        {{{1.0f, 0}}}
-    }};
-    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassInfo.pClearValues = clearValues.data();
-    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    bindViewport();
-
-    // The demo is a regular full-screen pass over the off-screen scene. It
-    // uses the same descriptor set and push-constant ABI as material shaders,
-    // so no special render target or model-dependent path is introduced.
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipeline_);
-    const VkDescriptorSet& postProcessDescriptorSet =
-        descriptorSets_[static_cast<std::size_t>(currentFrame_) * materialCount];
-    vkCmdBindDescriptorSets(
-        commandBuffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipelineLayout_,
-        0,
-        1,
-        &postProcessDescriptorSet,
-        0,
-        nullptr
-    );
-    MaterialPushConstants postProcessConstants{};
-    postProcessConstants.textureFlags = postProcessEffect_;
-    postProcessConstants.metallic = postProcessStrength_;
-    postProcessConstants.roughness = postProcessParameter_;
-    postProcessConstants.opacity = postProcessSplitView_ ? 1.0f : 0.0f;
-    postProcessConstants.waterFlow = glm::vec4(postProcessSplitPosition_, 0.0f, 0.0f, 0.0f);
-    vkCmdPushConstants(
-        commandBuffer,
-        pipelineLayout_,
-        kMaterialPushConstantStageFlags,
-        0,
-        sizeof(MaterialPushConstants),
-        &postProcessConstants
-    );
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
-    // The opaque scene is already in the swap-chain color attachment. Only
-    // water is rendered here so it can blend over and sample that scene.
-    for (const MeshPart& part : meshData_.parts) {
-        const std::uint32_t materialIndex = materialIndexForPart(part);
-        if (materialIndex >= materialCount || part.indexCount == 0) {
-            continue;
-        }
-        if (!isSceneNodeRenderEnabled(part.nodeId)) {
-            continue;
-        }
-        const MaterialData& material = meshData_.materials[materialIndex];
-        const ModelNode* node = findSceneNodeById(meshData_, part.nodeId);
-        const bool isWater = node != nullptr &&
-            isWaterShaderConfiguration(meshData_.materials[materialIndex].shaderConfiguration);
-        if (isWater || isTransparentMaterial(material)) {
-            drawPart(part);
-        }
+void Renderer::recordCommandBuffer(
+    VkCommandBuffer commandBuffer,
+    uint32_t imageIndex,
+    bool captureScreenshot
+) {
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-    if (!particleDrawRanges_.empty()) {
-        const VkBuffer particleBuffer = particleVertexBuffers_[currentFrame_]->handle();
-        const VkDeviceSize particleOffset = 0;
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
-        for (const ParticleDrawRange& range : particleDrawRanges_) {
-            const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
-            if (descriptorIt == particleDescriptorSets_.end()) {
-                continue;
+    const VkExtent2D extent = swapChain_->extent();
+    const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.extent = extent;
+
+    const VkBuffer buffers[] = {vertexBuffers_[currentFrame_]->handle()};
+    const VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
+
+    const auto bindViewport = [&]() {
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    };
+
+    struct DrawItem {
+        const MeshPart* part;
+        std::uint32_t materialIndex;
+    };
+    std::vector<DrawItem> opaque;
+    std::vector<DrawItem> transparent;
+    bool needsOpaqueSnapshot = false;
+    for (const MeshPart& part : meshData_.parts) {
+        if (part.indexCount == 0 || !isSceneNodeRenderEnabled(part.nodeId)) continue;
+        const std::uint32_t index = materialIndexForPart(part);
+        if (index >= materialCount || index >= materialTextures_.size()) continue;
+        const MaterialData& material = meshData_.materials[index];
+        if (material.transitionOpacity && transitionSettings_.enabled &&
+            (transitionPlayer_.progress < material.transitionVisibleFrom ||
+             transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
+        const bool readsOpaque = material.samplesOpaqueScene ||
+            isWaterShaderConfiguration(material.shaderConfiguration);
+        needsOpaqueSnapshot |= readsOpaque;
+        auto& queue = readsOpaque || isTransparentMaterial(material) ? transparent : opaque;
+        queue.push_back({&part, index});
+    }
+
+    VkPipeline boundPipeline = VK_NULL_HANDLE;
+    VkDescriptorSet boundSet = VK_NULL_HANDLE;
+    const auto drawPart = [&](const DrawItem& item, bool hdr) {
+        const MeshPart& part = *item.part;
+        const std::uint32_t materialIndex = item.materialIndex;
+        const MaterialData& material = meshData_.materials[materialIndex];
+        const VkDescriptorSet set = descriptorSets_[currentFrame_ * materialCount + materialIndex];
+        if (set != boundSet) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout_, 0, 1, &set, 0, nullptr);
+            boundSet = set;
+        }
+
+        MaterialPushConstants materialPushConstants{};
+        materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
+        materialPushConstants.baseColor = material.baseColor;
+        materialPushConstants.textureFlags =
+            (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
+            (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
+            (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
+            ((terrainDetailTexturesReady_ &&
+              material.shaderConfiguration.shader(ShaderStage::Fragment) ==
+                  "shader_terrain.frag") ? 8u : 0u);
+        materialPushConstants.metallic = material.metallic;
+        materialPushConstants.roughness = material.roughness;
+        materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled
+            ? material.opacity * transitionPlayer_.progress : material.opacity;
+        const WaterShaderSettings& waterSettings = material.waterShaderSettings;
+        materialPushConstants.waterFlow = glm::vec4(
+            waterSettings.flowDirection,
+            waterSettings.flowSpeed,
+            waterSettings.flowStrength
+        );
+        materialPushConstants.waterSurface = glm::vec4(
+            waterSettings.flowTurbulence,
+            waterSettings.waveScale,
+            waterSettings.waveHeight,
+            0.0f
+        );
+        if (!isWaterShaderConfiguration(material.shaderConfiguration)) {
+            // The default shader uses this slot for emission. Water shaders
+            // keep the same 128-byte push-constant layout for compatibility
+            // with Vulkan devices that only expose the guaranteed minimum.
+            materialPushConstants.waterSurface = glm::vec4(
+                material.emissionColor,
+                material.emissionStrength
+            );
+        }
+        if (material.customParameters) {
+            materialPushConstants.waterFlow = material.shaderParameters0;
+            materialPushConstants.waterSurface = material.shaderParameters1;
+        }
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            kMaterialPushConstantStageFlags,
+            0,
+            sizeof(MaterialPushConstants),
+            &materialPushConstants
+        );
+        const auto drawFaces = [&](VkCullModeFlags cullMode) {
+            const VkPipeline pipeline = graphicsPipelineForMaterial(material, hdr, cullMode);
+            if (pipeline == VK_NULL_HANDLE) return;
+            if (pipeline != boundPipeline) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                boundPipeline = pipeline;
             }
-            const VkPipeline particlePipeline =
-                range.blendMode == ParticleSystemSettings::BlendMode::Additive
-                    ? particleAdditivePipeline_
-                    : particleAlphaPipeline_;
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
-            const VkDescriptorSet& particleDescriptorSet =
-                descriptorIt->second[currentFrame_];
+            vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+        };
+        if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
+            drawFaces(VK_CULL_MODE_FRONT_BIT);
+            drawFaces(VK_CULL_MODE_BACK_BIT);
+        } else {
+            drawFaces(material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+        }
+    };
+
+    const auto drawOpaque = [&](bool hdr) {
+        // The skybox is a gameplay backdrop only. Effect/model showcase scenes
+        // should keep the neutral render-pass clear color instead of inheriting it.
+        if (currentScenePath_.filename() == "game.scene" &&
+            skyboxTexture_ != nullptr &&
+            currentFrame_ < skyboxDescriptorSets_.size()) {
+            vkCmdBindPipeline(
+                commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                hdr ? hdrSkyboxPipeline_ : skyboxPipeline_
+            );
+            const VkDescriptorSet& skyboxDescriptorSet =
+                skyboxDescriptorSets_[currentFrame_];
             vkCmdBindDescriptorSets(
                 commandBuffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                 pipelineLayout_,
                 0,
                 1,
-                &particleDescriptorSet,
+                &skyboxDescriptorSet,
                 0,
                 nullptr
             );
-            MaterialPushConstants particlePushConstants{};
-            particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
-                ? 1u
-                : 0u;
-            vkCmdPushConstants(
-                commandBuffer,
-                pipelineLayout_,
-                kMaterialPushConstantStageFlags,
-                0,
-                sizeof(MaterialPushConstants),
-                &particlePushConstants
-            );
-            vkCmdDraw(commandBuffer, range.vertexCount, 1, range.firstVertex, 0);
+            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
         }
+
+        boundPipeline = VK_NULL_HANDLE;
+        boundSet = VK_NULL_HANDLE;
+        for (const DrawItem& item : opaque) drawPart(item, hdr);
+    };
+
+    const auto drawParticles = [&](bool hdr) {
+        if (!particleDrawRanges_.empty()) {
+            const VkBuffer particleBuffer = particleVertexBuffers_[currentFrame_]->handle();
+            const VkDeviceSize particleOffset = 0;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
+            for (const ParticleDrawRange& range : particleDrawRanges_) {
+                const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
+                if (descriptorIt == particleDescriptorSets_.end()) {
+                    continue;
+                }
+                const VkPipeline particlePipeline =
+                    range.blendMode == ParticleSystemSettings::BlendMode::Additive
+                        ? (hdr ? hdrParticleAdditivePipeline_ : particleAdditivePipeline_)
+                        : (hdr ? hdrParticleAlphaPipeline_ : particleAlphaPipeline_);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+                const VkDescriptorSet& particleDescriptorSet =
+                    descriptorIt->second[currentFrame_];
+                vkCmdBindDescriptorSets(
+                    commandBuffer,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelineLayout_,
+                    0,
+                    1,
+                    &particleDescriptorSet,
+                    0,
+                    nullptr
+                );
+                MaterialPushConstants particlePushConstants{};
+                particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
+                    ? 1u
+                    : 0u;
+                vkCmdPushConstants(
+                    commandBuffer,
+                    pipelineLayout_,
+                    kMaterialPushConstantStageFlags,
+                    0,
+                    sizeof(MaterialPushConstants),
+                    &particlePushConstants
+                );
+                vkCmdDraw(commandBuffer, range.vertexCount, 1, range.firstVertex, 0);
+            }
+        }
+    };
+
+    const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
+    const bool hdr = hdrComposition_ != nullptr;
+    if (!hdr || needsOpaqueSnapshot) {
+        VkRenderPassBeginInfo sceneRenderPassInfo{};
+        sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        sceneRenderPassInfo.renderPass = sceneRenderPass_;
+        sceneRenderPassInfo.framebuffer = sceneTarget.framebuffer;
+        sceneRenderPassInfo.renderArea.offset = {0, 0};
+        sceneRenderPassInfo.renderArea.extent = extent;
+        const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
+        const glm::vec3 background = hdr ? hdrSettings_.clearColor
+            : (isTornadoPreview ? glm::vec3(0.0015f, 0.0025f, 0.0100f)
+                                : glm::vec3(0.015f, 0.02f, 0.03f));
+        std::array<VkClearValue, 2> sceneClearValues{};
+        sceneClearValues[0].color = {{background.r, background.g, background.b, 1.0f}};
+        sceneClearValues[1].depthStencil = {1.0f, 0};
+        sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
+        sceneRenderPassInfo.pClearValues = sceneClearValues.data();
+        vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        bindViewport();
+
+        drawOpaque(false);
+        vkCmdEndRenderPass(commandBuffer);
     }
 
-    if (selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
+    if (hdr) {
+        if (needsOpaqueSnapshot) {
+            // Expose the opaque snapshot only to materials that request it.
+            VkImageMemoryBarrier depth{};
+            depth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            depth.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            depth.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            depth.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depth.srcQueueFamilyIndex = depth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depth.image = sceneTarget.depthImage;
+            depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+            VkImageMemoryBarrier color = depth;
+            color.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            color.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            color.image = sceneTarget.colorImage;
+            color.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            const std::array barriers{color, depth};
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+                uint32_t(barriers.size()), barriers.data());
+        }
+        hdrComposition_->beginGeometry(commandBuffer, currentFrame_, hdrSettings_.clearColor);
+        bindViewport();
+        drawOpaque(true);
+        for (const DrawItem& item : transparent) drawPart(item, true);
+        drawParticles(true);
+        vkCmdEndRenderPass(commandBuffer);
+        hdrComposition_->beginPresentation(commandBuffer, currentFrame_,
+            swapChain_->framebuffers()[imageIndex], hdrSettings_);
+    } else {
+        recordLegacySceneTransfer(commandBuffer, imageIndex);
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = renderPass_;
+        renderPassInfo.framebuffer = swapChain_->framebuffers()[imageIndex];
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = extent;
+        const std::array<VkClearValue, 2> clearValues = {{
+            {{{0.015f, 0.02f, 0.03f, 1.0f}}},
+            {{{1.0f, 0}}}
+        }};
+        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        renderPassInfo.pClearValues = clearValues.data();
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        bindViewport();
+
+        // The demo is a regular full-screen pass over the off-screen scene. It
+        // uses the same descriptor set and push-constant ABI as material shaders,
+        // so no special render target or model-dependent path is introduced.
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipeline_);
+        const VkDescriptorSet& postProcessDescriptorSet =
+            descriptorSets_[static_cast<std::size_t>(currentFrame_) * materialCount];
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_,
+            0,
+            1,
+            &postProcessDescriptorSet,
+            0,
+            nullptr
+        );
+        MaterialPushConstants postProcessConstants{};
+        postProcessConstants.textureFlags = postProcessEffect_;
+        postProcessConstants.metallic = postProcessStrength_;
+        postProcessConstants.roughness = postProcessParameter_;
+        postProcessConstants.opacity = postProcessSplitView_ ? 1.0f : 0.0f;
+        postProcessConstants.waterFlow = glm::vec4(postProcessSplitPosition_, 0.0f, 0.0f, 0.0f);
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_,
+            kMaterialPushConstantStageFlags,
+            0,
+            sizeof(MaterialPushConstants),
+            &postProcessConstants
+        );
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+        boundPipeline = VK_NULL_HANDLE;
+        boundSet = VK_NULL_HANDLE;
+        for (const DrawItem& item : transparent) drawPart(item, false);
+        drawParticles(false);
+    }
+
+    if (!hdr && selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, boundingBoxPipeline_);
 
         const VkBuffer boundingBoxBuffer = boundingBoxVertexBuffers_[currentFrame_]->handle();
@@ -659,6 +710,17 @@ void Renderer::recordCommandBuffer(
     }
 }
 
+void Renderer::captureTransitionFrame(float progress, float time, const std::filesystem::path& output) {
+    fixedFrameOutput_ = output;
+    ImGui::GetIO().IniFilename = nullptr;
+    if (!swapChain_->supportsTransferSource()) {
+        throw std::runtime_error("capture requires swap-chain image readback");
+    }
+    transitionPlayer_.seek(progress);
+    transitionPlayer_.flowTime = time;
+    if (!drawFrame()) throw std::runtime_error("failed to present the captured frame");
+}
+
 bool Renderer::drawFrame() {
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a
@@ -697,7 +759,7 @@ bool Renderer::drawFrame() {
     }
 
     const bool screenshotPressed = keyPressed(context_->window(), Key::Screenshot);
-    const bool screenshotRequested = screenshotPressed && !screenshotKeyDown_;
+    const bool screenshotRequested = !fixedFrameOutput_.empty() || (screenshotPressed && !screenshotKeyDown_);
     screenshotKeyDown_ = screenshotPressed;
     const bool captureScreenshot = screenshotRequested && swapChain_->supportsTransferSource();
     if (screenshotRequested && !swapChain_->supportsTransferSource()) {
@@ -717,6 +779,7 @@ bool Renderer::drawFrame() {
         0.1f
     );
     updatePlayerController(particleDeltaSeconds);
+    updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
     updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
     lastFrameElapsedSeconds_ = elapsedSeconds;
     updateCameraBasis();
@@ -737,13 +800,16 @@ bool Renderer::drawFrame() {
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     const VkSemaphore waitSemaphores[] = {imageAvailableSemaphores_[currentFrame_]};
-    const VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    const VkPipelineStageFlags waitStages[] = {
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+    };
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffers_[currentFrame_];
-    const VkSemaphore signalSemaphores[] = {renderFinishedSemaphores_[currentFrame_]};
+    const VkSemaphore signalSemaphores[] = {renderFinishedSemaphores_[imageIndex]};
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -772,8 +838,9 @@ bool Renderer::drawFrame() {
             throw std::runtime_error("failed to wait for screenshot frame fence!");
         }
         try {
-            saveScreenshot();
+            saveScreenshot(fixedFrameOutput_);
         } catch (const std::exception& error) {
+            if (!fixedFrameOutput_.empty()) throw;
             screenshotStatus_ = "Screenshot failed: " + std::string(error.what());
             std::cerr << "Warning: " << screenshotStatus_ << '\n';
         }
@@ -807,8 +874,11 @@ void Renderer::recreateSwapChain() {
 
     context_->waitIdle();
     destroySceneRenderResources();
+    hdrComposition_.reset();
     swapChain_->recreate(renderPass_);
+    recreatePresentSemaphores();
     createSceneRenderResources();
+    configureHdrComposition();
     updateSceneTextureDescriptors();
     ImGui_ImplVulkan_SetMinImageCount(
         std::max(2u, static_cast<uint32_t>(swapChain_->framebuffers().size()))

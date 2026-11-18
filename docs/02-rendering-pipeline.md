@@ -2,7 +2,7 @@
 
 ## 1. 总览
 
-当前渲染器采用“两阶段 Raster + 显式图像拷贝”的前向渲染路径：先把不透明且非水面的网格绘制到逐帧离屏颜色/深度目标，再把结果复制到交换链颜色和共享深度图；随后开启一个以 `LOAD` 为加载操作的最终 Render Pass，按原始 MeshPart 顺序绘制水面及其他透明材质，再绘制粒子、选中包围盒和 ImGui。
+默认前向渲染路径先将不透明网格绘制到逐帧离屏颜色和深度目标，然后把结果复制到交换链颜色和对应深度图。最终 Render Pass 加载这对附件，按 MeshPart 顺序绘制水面和透明材质，再绘制粒子、选中包围盒和 ImGui。
 
 ```mermaid
 flowchart LR
@@ -17,6 +17,38 @@ flowchart LR
 ```
 
 这条管线能让水面采样“水面之前的不透明场景颜色”，但并没有采样离屏深度。当前 Descriptor Layout 的 binding 2 仅绑定场景颜色，水 Shader 也是纯屏幕空间颜色扰动与镜像采样；因此它不具备基于场景深度的岸线泡沫、水深吸收、真实厚度或遮挡判断。
+
+## 场景可选的 HDR 合成
+
+旧前向路径在旧版后处理完成后才提交透明网格和粒子，离屏颜色格式还跟随交换链。材质已经支持加法混合和自定义着色器，但发光线条无法进入那条路径的 Bloom，超出显示范围的光强也会提前截断。
+
+场景声明 `hdr_composition` 后，渲染器按帧分配 FP16 颜色和深度目标。不透明网格、透明网格和粒子共享目标及深度测试。颜色先进行亮度提取、多级下采样和升采样，再以加法合成 Bloom。SMAA Medium 从原场景颜色计算边缘及权重，在最终合成中执行邻域混合。输出到 sRGB 交换链时由硬件编码，UNORM 交换链由全屏着色器编码。ImGui 最后绘制。
+
+HDR 路径直接合成到交换链，省掉旧路径的整屏颜色和深度拷贝。有材质采样不透明场景时，HDR 路径会额外生成一份兼容现有水面着色器的 LDR 颜色和深度快照。场景参数只决定是否分配相应的后处理资源以及各级参数。HDR 回退到旧路径时，材质动画仍可播放，效果受旧目标格式和绘制顺序约束。
+
+### 可复用的场景记录
+
+| 记录 | 参数顺序 |
+|---|---|
+| `hdr_composition` | Bloom 级数、阈值、阈值平滑宽度、强度、升采样半径、材质曝光、SMAA 开关、线性背景 RGB。级数为 0 时跳过 Bloom。 |
+| `authored_view` | 相机目标 XYZ、向上向量 XYZ、垂直 FOV、最小构图宽高比。启用时按模型的原始场景单位绘制，位置由 `camera_position` 指定。 |
+| `material_transition` | 正向延迟、时长、循环停留时长、启动时循环开关、激活 FOV、激活机位距离偏移。时间单位为秒，FOV 为 0 时跳过相机过渡。 |
+| `material_effect` | 材质索引、透明背面优先双绘制、深度比较 LessEqual、采样不透明快照、绑定进度、可见起止进度、自定义向量开关、两个 `vec4`。 |
+
+材质绑定使用已有的 128 字节 Push Constants ABI。绑定进度时，`opacity` 是材质不透明度乘场景进度。自定义向量占用末尾两个 `vec4`，供自定义 shader 解释。帧 UBO 的 `time.y` 提供独立流动时钟，`time.z` 提供曝光。透明队列按场景顺序绘制，透明双面材质可配置先绘背面再绘正面。场景资产、shader 选择和通道参数由场景声明。`material` 的基础色纹理字段可以使用 `"@embedded"`，在覆盖材质参数时继续使用模型内嵌贴图。
+
+### 实体到线条车示例
+
+`scenes/solid_to_wireframe.scene` 使用 SU7 体验页发布的实体车 GLB 和参考示例的线条网格。GLSL 沿实体长轴裁切，发光带宽为 0.06 个场景单位。原始线条材质整体随进度显现，保留原 UV、顶点色和流动噪声。正向延迟 0.2 秒，正反向各 1 秒，使用 cubic ease-in-out。中途反向时以当前进度为起点。
+
+```bash
+./build/vulkcore --scene scenes/solid_to_wireframe.scene
+./build/vulkcore --scene scenes/solid_to_wireframe.scene --capture-frame 1 2.4 640 400 /tmp/linecar.png
+```
+
+按住空格显现线条，松开恢复实体。编辑器面板支持拖动进度、正放、反放、循环和暂停线条流动。固定帧截图使用初始机位，分别传入进度和流动时间。
+
+与 Three.js 参考示例同机位、同进度和同流动时间对照时，过渡和后处理顺序一致，网格线栅格化、噪声数值以及细线覆盖存在像素差异。
 
 ## 2. Vulkan 初始化链路
 
@@ -54,7 +86,7 @@ Command Pool 绑定 Graphics Queue Family，支持重置 Command Buffer。正式
 | Sharing | Graphics/Present 家族不同则 Concurrent，否则 Exclusive |
 | MSAA | 1 sample |
 
-交换链图像不能作为采样源；本项目只把离屏颜色复制进去。Color View 按交换链图像独立创建。
+交换链图像作为最终颜色附件及旧路径的拷贝目标。Color View 按交换链图像独立创建。
 
 ### 3.2 Frame in Flight
 
@@ -62,7 +94,6 @@ Command Pool 绑定 Graphics Queue Family，支持重置 Command Buffer。正式
 
 - 一条主 Command Buffer；
 - Image Available Semaphore；
-- Render Finished Semaphore；
 - In-flight Fence；
 - 一份 Uniform Buffer；
 - 一份动态粒子 Vertex Buffer；
@@ -70,7 +101,7 @@ Command Pool 绑定 Graphics Queue Family，支持重置 Command Buffer。正式
 - 一组离屏 Scene Color/Depth/Framebuffer；
 - 每材质及每粒子对象对应的 Descriptor Set。
 
-交换链最终深度图不按帧或交换链图像拆分，而由所有最终 Framebuffer 共用。当前每帧 Fence 和单队列执行降低了冲突概率，但它不是可扩展的帧资源模型。若未来 CPU 同时准备更多帧、异步队列并行或同一深度资源跨图像重叠，必须明确其所有权与 Hazard。
+交换链的最终深度图和 Render Finished Semaphore 按交换链图像分别分配。重新取得该图像后，对应的呈现信号量可复用。
 
 ## 4. CPU 到 GPU 的数据接口
 

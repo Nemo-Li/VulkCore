@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "HdrComposition.hpp"
 
 namespace VulkCore {
 
@@ -454,7 +455,7 @@ VkShaderModule Renderer::shaderModule(const std::string& shaderName) {
 
 std::string Renderer::graphicsPipelineKey(
     const ShaderConfiguration& configuration,
-    const MaterialData& material
+    const MaterialData& material, bool hdr, VkCullModeFlags cullMode
 ) const {
     std::string key;
     for (const ShaderStage stage : {
@@ -469,13 +470,17 @@ std::string Renderer::graphicsPipelineKey(
     }
     key += "blend=" + std::to_string(static_cast<int>(material.blendMode));
     key += ";depthWrite=" + std::to_string(material.depthWrite ? 1 : 0);
-    key += ";doubleSided=" + std::to_string(material.doubleSided ? 1 : 0);
+    key += ";cull=" + std::to_string(cullMode);
+    key += ";lessEqual=" + std::to_string(material.depthLessEqual);
+    key += ";hdr=" + std::to_string(hdr);
     return key;
 }
 
 VkPipeline Renderer::createMaterialGraphicsPipeline(
     const ShaderConfiguration& configuration,
-    const MaterialData& material
+    const MaterialData& material,
+    VkRenderPass pass,
+    VkCullModeFlags cullMode
 ) {
     const bool hasTessellationControl =
         !configuration.shader(ShaderStage::TessellationControl).empty();
@@ -549,7 +554,7 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    rasterizer.cullMode = cullMode;
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -564,7 +569,7 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     depthStencil.depthWriteEnable = isWaterShader
         ? VK_FALSE
         : (material.depthWrite ? VK_TRUE : VK_FALSE);
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthCompareOp = material.depthLessEqual ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
@@ -623,7 +628,7 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout_;
-    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.renderPass = pass;
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -640,33 +645,39 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     return pipeline;
 }
 
-VkPipeline Renderer::graphicsPipelineForMaterial(const MaterialData& material) {
-    const bool isDefaultMaterialState =
-        material.blendMode == MaterialData::BlendMode::Opaque &&
-        material.depthWrite &&
-        !material.doubleSided;
-    if (!material.shaderConfiguration.hasGraphicsOverride() && isDefaultMaterialState) {
+VkPipeline Renderer::graphicsPipelineForMaterial(
+    const MaterialData& material, bool hdr, VkCullModeFlags cullMode
+) {
+    const bool isDefaultState = material.blendMode == MaterialData::BlendMode::Opaque &&
+        material.depthWrite && !material.depthLessEqual &&
+        cullMode == VK_CULL_MODE_BACK_BIT && !isTransparentMaterial(material);
+    if (!hdr && !material.shaderConfiguration.hasGraphicsOverride() && isDefaultState) {
         return graphicsPipeline_;
     }
 
-    const std::string key = graphicsPipelineKey(material.shaderConfiguration, material);
-    const auto existing = nodeGraphicsPipelines_.find(key);
-    if (existing != nodeGraphicsPipelines_.end()) {
+    const std::string key = graphicsPipelineKey(material.shaderConfiguration, material, hdr, cullMode);
+    if (const auto existing = nodeGraphicsPipelines_.find(key); existing != nodeGraphicsPipelines_.end()) {
         return existing->second;
     }
     if (failedNodeGraphicsPipelineKeys_.contains(key)) {
-        return graphicsPipeline_;
+        return hdr ? VK_NULL_HANDLE : graphicsPipeline_;
     }
 
+    const VkRenderPass pass = hdr ? hdrComposition_->geometryPass() : renderPass_;
     try {
-        const VkPipeline pipeline = createMaterialGraphicsPipeline(material.shaderConfiguration, material);
+        const VkPipeline pipeline = createMaterialGraphicsPipeline(
+            material.shaderConfiguration, material, pass, cullMode
+        );
         nodeGraphicsPipelines_.emplace(key, pipeline);
         return pipeline;
     } catch (const std::exception& error) {
         failedNodeGraphicsPipelineKeys_.insert(key);
         std::cerr << "warning: material '" << material.name
-                  << "' shader pipeline failed, using default shaders: " << error.what() << '\n';
-        return graphicsPipeline_;
+                  << "' shader pipeline failed: " << error.what() << '\n';
+        if (!hdr) return graphicsPipeline_;
+        const VkPipeline fallback = createMaterialGraphicsPipeline({}, material, pass, cullMode);
+        nodeGraphicsPipelines_.emplace(key, fallback);
+        return fallback;
     }
 }
 
@@ -747,12 +758,12 @@ void Renderer::createGraphicsPipeline() {
         throw std::runtime_error("failed to create pipeline layout!");
     }
 
-    graphicsPipeline_ = createMaterialGraphicsPipeline(ShaderConfiguration{}, MaterialData{});
+    graphicsPipeline_ = createMaterialGraphicsPipeline({}, {}, renderPass_, VK_CULL_MODE_BACK_BIT);
 }
 
 void Renderer::createParticlePipelines() {
-    particleAlphaPipeline_ = createParticlePipeline(false);
-    particleAdditivePipeline_ = createParticlePipeline(true);
+    particleAlphaPipeline_ = createParticlePipeline(false, renderPass_);
+    particleAdditivePipeline_ = createParticlePipeline(true, renderPass_);
 }
 
 void Renderer::createPostProcessPipeline() {
@@ -846,7 +857,7 @@ void Renderer::createPostProcessPipeline() {
     }
 }
 
-void Renderer::createSkyboxPipeline() {
+VkPipeline Renderer::createSkyboxPipeline(VkRenderPass pass) {
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -925,18 +936,20 @@ void Renderer::createSkyboxPipeline() {
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout_;
-    pipelineInfo.renderPass = sceneRenderPass_;
+    pipelineInfo.renderPass = pass;
     pipelineInfo.subpass = 0;
 
+    VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(
             context_->device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-            &skyboxPipeline_
+            &pipeline
         ) != VK_SUCCESS) {
         throw std::runtime_error("failed to create skybox graphics pipeline");
     }
+    return pipeline;
 }
 
-VkPipeline Renderer::createParticlePipeline(bool additiveBlending) {
+VkPipeline Renderer::createParticlePipeline(bool additiveBlending, VkRenderPass pass) {
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1041,7 +1054,7 @@ VkPipeline Renderer::createParticlePipeline(bool additiveBlending) {
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout_;
-    pipelineInfo.renderPass = renderPass_;
+    pipelineInfo.renderPass = pass;
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;

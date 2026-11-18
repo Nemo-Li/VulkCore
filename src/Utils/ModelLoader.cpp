@@ -497,6 +497,29 @@ VulkCore::MaterialData readMaterial(
         }
     }
 
+    const auto extension = modelPath.extension().string();
+    const bool isGltf = extension == ".glb" || extension == ".gltf" ||
+                        extension == ".GLB" || extension == ".GLTF";
+    if (isGltf) {
+        const auto fallback = defaultDiffuseTexturePath(modelPath, textureMaterialName);
+        const auto useExisting = [](const std::filesystem::path& texture) {
+            std::error_code error;
+            return std::filesystem::is_regular_file(texture, error) ? texture : std::filesystem::path{};
+        };
+        if (!hasEmbeddedBaseTexture) {
+            materialData.texturePath = externalDiffuseTexturePath.empty()
+                ? useExisting(fallback) : externalDiffuseTexturePath;
+        }
+        const auto& diffuse = externalDiffuseTexturePath.empty() ? fallback : externalDiffuseTexturePath;
+        if (!hasEmbeddedNormalTexture && materialData.normalTexturePath.empty()) {
+            materialData.normalTexturePath = useExisting(replaceDiffuseTextureName(diffuse, "normal"));
+        }
+        if (!hasEmbeddedSpecularTexture && materialData.specularTexturePath.empty()) {
+            materialData.specularTexturePath = useExisting(replaceDiffuseTextureName(diffuse, "specular"));
+        }
+        return materialData;
+    }
+
     if (!hasEmbeddedBaseTexture) {
         materialData.texturePath = defaultDiffuseTexturePath(modelPath, textureMaterialName);
         std::cerr << "[VulkCore][FBX]   "

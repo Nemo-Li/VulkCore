@@ -10,13 +10,16 @@ namespace VulkCore {
 
 class VulkanContext;
 
+enum class TextureColorSpace { Srgb, Linear };
+
 class Texture {
 public:
     Texture(
         VulkanContext& context,
         const std::filesystem::path& path,
         VkSamplerAddressMode addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT
+        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb
     );
     Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData);
     Texture(
@@ -49,6 +52,7 @@ private:
     VkImageView imageView_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
     std::uint32_t mipLevels_ = 1;
+    VkFormat format_ = VK_FORMAT_R8G8B8A8_SRGB;
     VkSamplerAddressMode addressModeU_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VkSamplerAddressMode addressModeV_ = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 };

@@ -1,5 +1,7 @@
 #include "vulkcore/Platform/Window.hpp"
 
+#include "HdrComposition.hpp"
+
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
@@ -36,7 +38,7 @@ Renderer::Renderer(
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createPostProcessPipeline();
-    createSkyboxPipeline();
+    skyboxPipeline_ = createSkyboxPipeline(sceneRenderPass_);
     createBoundingBoxPipeline();
     createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
@@ -74,9 +76,10 @@ Renderer::~Renderer() {
         return;
     }
 
-    saveTransformSettings();
+    if (fixedFrameOutput_.empty()) saveTransformSettings();
     context_->waitIdle();
     shutdownImGui();
+    hdrComposition_.reset();
     swapChain_->cleanupFramebuffers();
     destroySceneRenderResources();
     screenshotBuffer_.reset();
@@ -96,8 +99,11 @@ Renderer::~Renderer() {
 
     for (size_t i = 0; i < imageAvailableSemaphores_.size(); ++i) {
         vkDestroySemaphore(context_->device(), imageAvailableSemaphores_[i], nullptr);
-        vkDestroySemaphore(context_->device(), renderFinishedSemaphores_[i], nullptr);
         vkDestroyFence(context_->device(), inFlightFences_[i], nullptr);
+    }
+
+    for (const auto semaphore : renderFinishedSemaphores_) {
+        vkDestroySemaphore(context_->device(), semaphore, nullptr);
     }
 
     for (const auto& [key, pipeline] : nodeGraphicsPipelines_) {
@@ -126,6 +132,11 @@ Renderer::~Renderer() {
     }
     if (postProcessPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), postProcessPipeline_, nullptr);
+    }
+    for (VkPipeline pipeline : {
+             hdrSkyboxPipeline_, hdrParticleAlphaPipeline_, hdrParticleAdditivePipeline_
+         }) {
+        vkDestroyPipeline(context_->device(), pipeline, nullptr);
     }
     if (skyboxPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), skyboxPipeline_, nullptr);

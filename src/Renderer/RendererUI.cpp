@@ -1404,6 +1404,25 @@ void Renderer::drawMiniMap() {
     ImGui::PopStyleVar(2);
 }
 
+void Renderer::updateTransition(float seconds) {
+    if (!transitionSettings_.enabled || !fixedFrameOutput_.empty()) return;
+    transitionPlayer_.update(seconds, transitionSettings_);
+    if (!authoredView_.enabled || transitionSettings_.activeFov <= 0.0f) return;
+
+    const float amount = std::min(seconds, 0.1f) * 1.5f;
+    transitionCameraFov_ = std::lerp(transitionCameraFov_,
+        transitionPlayer_.active ? transitionSettings_.activeFov : authoredView_.fov, amount);
+    transitionCameraOffset_ = std::lerp(transitionCameraOffset_,
+        transitionPlayer_.active ? transitionSettings_.distanceOffset : 0.0f, amount);
+    transitionCameraDistance_ = std::lerp(transitionCameraDistance_,
+        transitionCameraBaseDistance_ + transitionCameraOffset_, 0.048f);
+    const glm::vec3 direction = cameraPosition_ - cameraTarget_;
+    if (glm::length(direction) > 0.001f) {
+        cameraPosition_ = cameraTarget_ + glm::normalize(direction) *
+            std::max(0.05f, transitionCameraDistance_);
+    }
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     newWindowImGuiFrame(context_->window(), swapChain_->extent());
@@ -1411,6 +1430,14 @@ void Renderer::buildImGuiFrame() {
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         toolUiVisible_ = !toolUiVisible_;
+    }
+    if (transitionSettings_.enabled) {
+        const bool held = ImGui::IsKeyDown(ImGuiKey_Space) && !ImGui::IsAnyItemActive();
+        if (held != transitionHeld_) {
+            transitionHeld_ = held;
+            transitionPlayer_.loop = false;
+            transitionPlayer_.play(held, transitionSettings_);
+        }
     }
     if (!toolUiVisible_) {
         drawMiniMap();
@@ -1500,8 +1527,8 @@ void Renderer::buildImGuiFrame() {
     ImGui::TextWrapped("%s", screenshotStatus_.c_str());
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
-    ImGui::TextWrapped("The camera looks at the scene origin.");
-    const glm::vec3 defaultCameraPosition(0.0f, 0.0f, 4.0f);
+    const glm::vec3 defaultCameraPosition = transitionSettings_.enabled
+        ? transitionCameraStart_ : glm::vec3(0.0f, 0.0f, 4.0f);
     ImGui::DragFloat3(
         "Camera position (X/Y/Z)",
         &cameraPosition_.x,
@@ -1514,11 +1541,37 @@ void Renderer::buildImGuiFrame() {
         if (glm::length(cameraPosition_) < 0.05f) {
             cameraPosition_ = defaultCameraPosition;
         }
+        if (transitionSettings_.enabled) {
+            transitionCameraStart_ = cameraPosition_;
+            transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
+            transitionCameraBaseDistance_ = transitionCameraDistance_ - transitionCameraOffset_;
+        }
         shouldSaveTransformSettings = true;
     }
     if (ImGui::Button("Reset camera position")) {
         cameraPosition_ = defaultCameraPosition;
+        transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
+        transitionCameraBaseDistance_ = transitionCameraDistance_;
         shouldSaveTransformSettings = true;
+    }
+    if (transitionSettings_.enabled) {
+        ImGui::SeparatorText("Material transition");
+        float progress = transitionPlayer_.progress;
+        if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f)) transitionPlayer_.seek(progress);
+        if (ImGui::Button("Play forward")) {
+            transitionPlayer_.loop = false;
+            if (transitionPlayer_.progress >= 0.999999f) transitionPlayer_.seek(0.0f);
+            transitionPlayer_.play(true, transitionSettings_);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reverse")) {
+            transitionPlayer_.loop = false;
+            transitionPlayer_.play(false, transitionSettings_);
+        }
+        ImGui::Checkbox("Loop", &transitionPlayer_.loop);
+        ImGui::SameLine();
+        ImGui::Checkbox("Flow", &transitionPlayer_.flow);
+        ImGui::TextDisabled("Hold Space to reveal");
     }
     bool removeSelectedNodeRequested = false;
     std::uint32_t selectedNodeIdToRemove = std::numeric_limits<std::uint32_t>::max();
@@ -1635,7 +1688,7 @@ void Renderer::buildImGuiFrame() {
     } else {
         ImGui::TextWrapped("Select a scene object to edit its transform.");
     }
-    drawShaderDemoControls(shouldSaveTransformSettings);
+    if (!hdrSettings_.enabled) drawShaderDemoControls(shouldSaveTransformSettings);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
     ImGui::SeparatorText("Environment Light");

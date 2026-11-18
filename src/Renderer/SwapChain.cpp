@@ -34,7 +34,7 @@ void SwapChain::createFramebuffers(VkRenderPass renderPass) {
     framebuffers_.resize(imageViews_.size());
 
     for (size_t i = 0; i < imageViews_.size(); ++i) {
-        VkImageView attachments[] = {imageViews_[i], depthImageView_};
+        VkImageView attachments[] = {imageViews_[i], depthTargets_[i].view};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -90,8 +90,8 @@ bool SwapChain::supportsTransferSource() const {
     return transferSourceSupported_;
 }
 
-VkImage SwapChain::depthImage() const {
-    return depthImage_;
+VkImage SwapChain::depthImage(uint32_t imageIndex) const {
+    return depthTargets_.at(imageIndex).image;
 }
 
 const std::vector<VkFramebuffer>& SwapChain::framebuffers() const {
@@ -227,42 +227,44 @@ void SwapChain::createDepthResources() {
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(context_.device(), &imageInfo, nullptr, &depthImage_) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create depth image!");
-    }
-
+    depthTargets_.resize(images_.size());
     try {
-        VkMemoryRequirements memoryRequirements{};
-        vkGetImageMemoryRequirements(context_.device(), depthImage_, &memoryRequirements);
+        for (auto& target : depthTargets_) {
+            if (vkCreateImage(context_.device(), &imageInfo, nullptr, &target.image) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create depth image!");
+            }
+            VkMemoryRequirements memoryRequirements{};
+            vkGetImageMemoryRequirements(context_.device(), target.image, &memoryRequirements);
 
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memoryRequirements.size;
-        allocInfo.memoryTypeIndex = context_.findMemoryType(
-            memoryRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-        );
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = memoryRequirements.size;
+            allocInfo.memoryTypeIndex = context_.findMemoryType(
+                memoryRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            );
 
-        if (vkAllocateMemory(context_.device(), &allocInfo, nullptr, &depthImageMemory_) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate depth image memory!");
-        }
-        if (vkBindImageMemory(context_.device(), depthImage_, depthImageMemory_, 0) != VK_SUCCESS) {
-            throw std::runtime_error("failed to bind depth image memory!");
-        }
+            if (vkAllocateMemory(context_.device(), &allocInfo, nullptr, &target.memory) != VK_SUCCESS) {
+                throw std::runtime_error("failed to allocate depth image memory!");
+            }
+            if (vkBindImageMemory(context_.device(), target.image, target.memory, 0) != VK_SUCCESS) {
+                throw std::runtime_error("failed to bind depth image memory!");
+            }
 
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depthImage_;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = depthFormat_;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = target.image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = depthFormat_;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
 
-        if (vkCreateImageView(context_.device(), &viewInfo, nullptr, &depthImageView_) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create depth image view!");
+            if (vkCreateImageView(context_.device(), &viewInfo, nullptr, &target.view) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create depth image view!");
+            }
         }
     } catch (...) {
         cleanupDepthResources();
@@ -271,18 +273,12 @@ void SwapChain::createDepthResources() {
 }
 
 void SwapChain::cleanupDepthResources() {
-    if (depthImageView_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(context_.device(), depthImageView_, nullptr);
-        depthImageView_ = VK_NULL_HANDLE;
+    for (const auto& target : depthTargets_) {
+        vkDestroyImageView(context_.device(), target.view, nullptr);
+        vkDestroyImage(context_.device(), target.image, nullptr);
+        vkFreeMemory(context_.device(), target.memory, nullptr);
     }
-    if (depthImage_ != VK_NULL_HANDLE) {
-        vkDestroyImage(context_.device(), depthImage_, nullptr);
-        depthImage_ = VK_NULL_HANDLE;
-    }
-    if (depthImageMemory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(context_.device(), depthImageMemory_, nullptr);
-        depthImageMemory_ = VK_NULL_HANDLE;
-    }
+    depthTargets_.clear();
     depthFormat_ = VK_FORMAT_UNDEFINED;
 }
 

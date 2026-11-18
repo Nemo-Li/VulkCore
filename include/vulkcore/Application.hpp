@@ -21,9 +21,11 @@ public:
     Application& operator=(const Application&) = delete;
 
     void run();
+    void captureFrame(float progress, float time, int width, int height,
+                      const std::filesystem::path& output);
 
 private:
-    void initWindow();
+    void initWindow(int width, int height, bool hidden);
     void mainLoop();
 
     GLFWwindow* window_ = nullptr;

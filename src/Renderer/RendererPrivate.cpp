@@ -377,7 +377,7 @@ void saveUserMaterials(
              << static_cast<int>(material.blendMode) << ' '
              << (material.depthWrite ? 1 : 0) << ' '
              << (material.doubleSided ? 1 : 0) << ' '
-             << std::quoted(material.texturePath.string());
+             << std::quoted(material.embeddedTexture.empty() ? material.texturePath.string() : "@embedded");
         for (const std::string& shaderName : material.shaderConfiguration.shaderNames) {
             file << ' ' << (shaderName.empty() ? "-" : shaderName);
         }
