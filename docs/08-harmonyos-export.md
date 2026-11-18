@@ -75,13 +75,13 @@ ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XCo
 | 跳跃 | Jump |
 | 雷霆剑气 / 爆炎新星 / 龙卷风 | Q / E / R |
 
-移动、转向和技能取决于场景中是否有已激活的 Player；纯模型或特效场景使用保存的相机设置并播放场景动画。支持多点触控下移动与转向组合。后台暂停绘制并释放按键；前台恢复。Surface 销毁会先结束渲染线程、释放 Vulkan 资源，再交还 NativeWindow；Surface 尺寸变化触发交换链重建。初始化或渲染失败会显示错误文字并写入 HiLog。
+移动、转向和技能取决于场景中是否有已激活的 Player；纯模型或特效场景使用保存的相机设置并播放场景动画。转向手势从右半场景区域按下后持续跟踪同一手指，左右拖动调整水平视角，上下拖动调整俯仰；松手或取消时结束。支持多点触控下移动与转向组合，其他手指按下或松开不会抢占转向手指。XComponent 的移动事件可能将 `isPressed` 设为 false，因此转向按事件类型和手指 ID 更新位置，不以该标志过滤 MOVE。后台暂停绘制并释放按键与转向手势；前台恢复。Surface 销毁会先结束渲染线程、释放 Vulkan 资源，再交还 NativeWindow；Surface 尺寸变化触发交换链重建。初始化或渲染失败会显示错误文字并写入 HiLog。
 
 手机 GPU 的可用 Vulkan 特性和性能仍决定自定义材质与大型场景的运行效果。当前沿用桌面的地形、草地密度、CPU 蒙皮和渲染流程，未加入专门的手机画质档位。自定义 geometry/tessellation shader 也仍受现有设备特性启用逻辑限制。
 
 ## 验证
 
-桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。
+桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。`vulkcore_touch_smoke` 回放 XComponent 触摸事件，覆盖 `isPressed=false` 的移动事件、多个手指、跨越屏幕中线、松手、取消及后台重置。
 
 ```bash
 ctest --test-dir build --output-on-failure

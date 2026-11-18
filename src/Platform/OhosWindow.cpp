@@ -15,12 +15,12 @@ bool keyPressed(Window* window, Key key) {
 bool lookPressed(Window* window) {
     if (!window) return false;
     std::lock_guard lock(window->inputMutex);
-    return window->looking;
+    return window->touchLook.active();
 }
 void cursorPosition(Window* window, double* x, double* y) {
     std::lock_guard lock(window->inputMutex);
-    *x = window->cursorX;
-    *y = window->cursorY;
+    *x = window->touchLook.x();
+    *y = window->touchLook.y();
 }
 void framebufferSize(Window* window, int* width, int* height) {
     *width = window->width.load();

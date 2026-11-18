@@ -32,14 +32,12 @@ struct Runtime {
     fs::path startup;
     std::string error;
     bool prepared = false;
-    int lookFinger = -1;
 
     ~Runtime() { stop(); }
     void clearInput() {
         std::lock_guard lock(window.inputMutex);
         window.keys.fill(false);
-        window.looking = false;
-        lookFinger = -1;
+        window.touchLook.reset();
     }
     void stop() {
         running = false;
@@ -246,25 +244,16 @@ void surfaceDestroyed(OH_NativeXComponent*, void*) {
 void touch(OH_NativeXComponent* component, void* native) {
     OH_NativeXComponent_TouchEvent event{};
     if (OH_NativeXComponent_GetTouchEvent(component, native, &event) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) return;
+    VulkCore::TouchPhase phase;
+    switch (event.type) {
+    case OH_NATIVEXCOMPONENT_DOWN: phase = VulkCore::TouchPhase::Down; break;
+    case OH_NATIVEXCOMPONENT_UP: phase = VulkCore::TouchPhase::Up; break;
+    case OH_NATIVEXCOMPONENT_MOVE: phase = VulkCore::TouchPhase::Move; break;
+    case OH_NATIVEXCOMPONENT_CANCEL: phase = VulkCore::TouchPhase::Cancel; break;
+    default: return;
+    }
     std::lock_guard lock(runtime.window.inputMutex);
-    if (event.type == OH_NATIVEXCOMPONENT_CANCEL ||
-        (event.type == OH_NATIVEXCOMPONENT_UP && event.id == runtime.lookFinger)) {
-        runtime.lookFinger = -1;
-        runtime.window.looking = false;
-    } else if (event.type == OH_NATIVEXCOMPONENT_DOWN && runtime.lookFinger == -1 &&
-        event.x > runtime.window.width.load() * 0.5f) {
-        runtime.lookFinger = event.id;
-        runtime.window.cursorX = event.x;
-        runtime.window.cursorY = event.y;
-        runtime.window.looking = true;
-    }
-    for (unsigned index = 0; index < std::min(event.numPoints, static_cast<unsigned>(OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER)); ++index) {
-        const auto& point = event.touchPoints[index];
-        if (point.id == runtime.lookFinger && point.isPressed) {
-            runtime.window.cursorX = point.x;
-            runtime.window.cursorY = point.y;
-        }
-    }
+    runtime.window.touchLook.handle(phase, event, runtime.window.width.load());
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
