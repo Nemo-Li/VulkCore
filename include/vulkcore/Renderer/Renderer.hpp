@@ -19,22 +19,22 @@
 #include "vulkcore/Gameplay/Player.hpp"
 #include "vulkcore/Renderer/Mesh.hpp"
 #include "vulkcore/Renderer/ParticleSystem.hpp"
+#include "vulkcore/Renderer/Texture.hpp"
 
-struct GLFWwindow;
+#include "vulkcore/Platform/Window.hpp"
 
 namespace VulkCore {
 
 class Buffer;
 class PhysicsWorld;
 class SwapChain;
-class Texture;
 class VulkanContext;
 class TerrainScene;
 
 class Renderer {
 public:
     explicit Renderer(
-        GLFWwindow* window,
+        Window* window,
         const std::filesystem::path& startupScene = {},
         bool hideTools = false
     );
@@ -220,9 +220,9 @@ private:
 
     VkShaderModule createShaderModule(const std::vector<char>& code) const;
 
-    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    static void framebufferResizeCallback(Window* window, int width, int height);
 
-    GLFWwindow* window_ = nullptr;
+    Window* window_ = nullptr;
     std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;
@@ -366,6 +366,9 @@ private:
     std::vector<std::filesystem::path> sceneResourcePaths_;
     std::filesystem::path currentScenePath_;
     std::array<char, 512> scenePathBuffer_{};
+    std::array<char, 512> ohosExportPathBuffer_{};
+    std::string ohosExportStatus_;
+    bool ohosExportFailed_ = false;
     std::string sceneStatus_;
     bool sceneStatusFailed_ = false;
     ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;

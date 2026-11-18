@@ -10,6 +10,8 @@
 4. [高扩展性引擎目标架构](04-scalable-engine-architecture.md)：给出模块化、数据驱动、Render Graph、资源系统、ECS、插件与工具链的目标设计和渐进迁移方法。
 5. [BOTW 风格草地技术方案与实现](07-botw-grass.md)：说明三层草地 LOD、程序化种植、风场、Player 踩踏和当前性能边界。
 
+6. [鸿蒙手机工程导出](08-harmonyos-export.md)：说明 DevEco 工程导出、资源路径迁移、XComponent 原生运行与手机触屏控制。
+
 ## 状态约定
 
 | 标记 | 含义 |

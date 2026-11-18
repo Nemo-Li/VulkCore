@@ -8,11 +8,13 @@
 #include <utility>
 
 #include "vulkcore/Application.hpp"
+#include "vulkcore/Export/OhosExporter.hpp"
 
 int main(int argc, char** argv) {
     try {
         std::filesystem::path startupScene;
         bool hideTools = false;
+        VulkCore::OhosExportOptions exportOptions;
         for (int index = 1; index < argc; ++index) {
             const std::string_view argument(argv[index]);
             if (argument == "--scene") {
@@ -20,12 +22,29 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("--scene requires a scene file path");
                 }
                 startupScene = argv[++index];
+            } else if (argument == "--export-ohos" || argument == "--app-name" || argument == "--bundle-name") {
+                if (index + 1 >= argc) throw std::invalid_argument(std::string(argument) + " requires a value");
+                const std::string value(argv[++index]);
+                if (argument == "--export-ohos") exportOptions.outputDirectory = value;
+                else if (argument == "--app-name") exportOptions.appName = value;
+                else exportOptions.bundleName = value;
+            } else if (argument == "--help") {
+                std::cout << "Usage: vulkcore [--scene path.scene] [--hide-ui]\n"
+                    "       vulkcore --scene path.scene --export-ohos output-directory\n"
+                    "                [--app-name name] [--bundle-name com.example.game]\n";
+                return EXIT_SUCCESS;
             } else if (argument == "--hide-ui") {
                 hideTools = true;
             } else {
                 throw std::invalid_argument("unknown command-line argument: " +
                     std::string(argument));
             }
+        }
+        if (!exportOptions.outputDirectory.empty()) {
+            exportOptions.scene = startupScene;
+            const auto output = VulkCore::exportOhosProject(exportOptions);
+            std::cout << "Exported HarmonyOS project: " << output.string() << '\n';
+            return EXIT_SUCCESS;
         }
         VulkCore::Application application(std::move(startupScene), hideTools);
         application.run();

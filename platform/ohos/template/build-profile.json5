@@ -1,0 +1,56 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.0.2(22)",
+        "compatibleSdkVersion": "6.0.2(22)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/nemo/.ohos/config/default_HarmonyOSGame_xpuFqzrELrSWuXl49upSNW7v7qJl4wgv7tqi_mw8EsQ=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001BA0FA0E0C08D25304CFEA5DFFBB4C79709F6C49936667EB743E2030C821A3E1DD8F77243FD4F735",
+          "profile": "/Users/nemo/.ohos/config/default_HarmonyOSGame_xpuFqzrELrSWuXl49upSNW7v7qJl4wgv7tqi_mw8EsQ=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/nemo/.ohos/config/default_HarmonyOSGame_xpuFqzrELrSWuXl49upSNW7v7qJl4wgv7tqi_mw8EsQ=.p12",
+          "storePassword": "0000001B65421F15A32A298ADB5DBC0D1D2CB4E51DBF1EEB4DFD9055D37271FD1D8FB1F2116F746021D91D"
+        }
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

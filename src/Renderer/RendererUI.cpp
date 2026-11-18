@@ -1,6 +1,9 @@
 #include "RendererImplementation.hpp"
 
 #include "vulkcore/Terrain/Terrain.hpp"
+#ifndef VULKCORE_OHOS
+#include "vulkcore/Export/OhosExporter.hpp"
+#endif
 
 namespace VulkCore {
 
@@ -12,9 +15,9 @@ void Renderer::initializeImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
 
-    if (!ImGui_ImplGlfw_InitForVulkan(context_->window(), true)) {
+    if (!initializeWindowImGui(context_->window())) {
         ImGui::DestroyContext();
-        throw std::runtime_error("failed to initialize Dear ImGui GLFW backend!");
+        throw std::runtime_error("failed to initialize Dear ImGui platform backend!");
     }
 
     const QueueFamilyIndices queueFamilies =
@@ -38,7 +41,7 @@ void Renderer::initializeImGui() {
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
-        ImGui_ImplGlfw_Shutdown();
+        shutdownWindowImGui();
         ImGui::DestroyContext();
         throw std::runtime_error("failed to initialize Dear ImGui Vulkan backend!");
     }
@@ -52,7 +55,7 @@ void Renderer::shutdownImGui() {
     }
 
     ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    shutdownWindowImGui();
     ImGui::DestroyContext();
     imguiInitialized_ = false;
 }
@@ -431,6 +434,34 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
         ImGui::PopStyleColor();
     }
+
+#ifndef VULKCORE_OHOS
+    ImGui::SetNextItemWidth(std::max(180.0f, ImGui::GetContentRegionAvail().x - 180.0f));
+    ImGui::InputTextWithHint("##OhosExportPath", "New HarmonyOS project directory",
+        ohosExportPathBuffer_.data(), ohosExportPathBuffer_.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Export HarmonyOS")) {
+        ohosExportFailed_ = false;
+        try {
+            const std::filesystem::path scenePath(scenePathBuffer_.data());
+            if (!saveSceneResource(scenePath)) throw std::runtime_error(sceneStatus_);
+            OhosExportOptions options;
+            options.scene = currentScenePath_;
+            options.outputDirectory = ohosExportPathBuffer_.data();
+            const auto output = exportOhosProject(options);
+            ohosExportStatus_ = "Exported HarmonyOS project: " + output.string();
+        } catch (const std::exception& exception) {
+            ohosExportFailed_ = true;
+            ohosExportStatus_ = exception.what();
+        }
+    }
+    if (!ohosExportStatus_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ohosExportFailed_
+            ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f) : ImVec4(0.42f, 0.88f, 0.56f, 1.0f));
+        ImGui::TextWrapped("%s", ohosExportStatus_.c_str());
+        ImGui::PopStyleColor();
+    }
+#endif
 
     ImGui::Separator();
     constexpr ImGuiTableFlags kWorkspaceFlags =
@@ -1375,7 +1406,7 @@ void Renderer::drawMiniMap() {
 
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    newWindowImGuiFrame(context_->window(), swapChain_->extent());
     ImGui::NewFrame();
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {

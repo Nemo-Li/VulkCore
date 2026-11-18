@@ -1,7 +1,6 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Renderer/Renderer.hpp"
 
@@ -31,7 +30,6 @@
 #include "vulkcore/Utils/ModelLoader.hpp"
 
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
 #ifndef GLM_ENABLE_EXPERIMENTAL

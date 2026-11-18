@@ -1,13 +1,12 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Renderer/SwapChain.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 
 #include "vulkcore/Renderer/VulkanContext.hpp"
+#include "vulkcore/Renderer/SurfacePresentation.hpp"
 
 namespace VulkCore {
 
@@ -100,10 +99,21 @@ const std::vector<VkFramebuffer>& SwapChain::framebuffers() const {
 }
 
 void SwapChain::createSwapChain() {
+    prepareWindowSurface(context_.window());
     const SwapChainSupportDetails support = context_.querySwapChainSupport(context_.physicalDevice());
     const VkSurfaceFormatKHR surfaceFormat = chooseSurfaceFormat(support.formats);
     const VkPresentModeKHR presentMode = choosePresentMode(support.presentModes);
-    const VkExtent2D selectedExtent = chooseExtent(support.capabilities);
+    int width = 0, height = 0;
+    framebufferSize(context_.window(), &width, &height);
+#ifdef VULKCORE_OHOS
+    constexpr bool renderInWindowCoordinates = true;
+#else
+    constexpr bool renderInWindowCoordinates = false;
+#endif
+    const auto presentation = chooseSurfacePresentation(support.capabilities,
+        {static_cast<uint32_t>(std::max(width, 0)), static_cast<uint32_t>(std::max(height, 0))},
+        renderInWindowCoordinates);
+    const VkExtent2D selectedExtent = presentation.extent;
 
     uint32_t imageCount = support.capabilities.minImageCount + 1;
     if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount) {
@@ -141,8 +151,16 @@ void SwapChain::createSwapChain() {
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
-    createInfo.preTransform = support.capabilities.currentTransform;
-    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    createInfo.preTransform = presentation.transform;
+    for (const auto alpha : {VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+             VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+             VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+             VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR}) {
+        if ((support.capabilities.supportedCompositeAlpha & alpha) != 0) {
+            createInfo.compositeAlpha = alpha;
+            break;
+        }
+    }
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
 
@@ -156,6 +174,7 @@ void SwapChain::createSwapChain() {
 
     imageFormat_ = surfaceFormat.format;
     extent_ = selectedExtent;
+    configureWindowPresentation(context_.window());
 }
 
 void SwapChain::createImageViews() {
@@ -327,32 +346,6 @@ VkPresentModeKHR SwapChain::choosePresentMode(const std::vector<VkPresentModeKHR
         }
     }
     return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-VkExtent2D SwapChain::chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities) const {
-    if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-        return capabilities.currentExtent;
-    }
-
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(context_.window(), &width, &height);
-
-    VkExtent2D actualExtent{
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height)
-    };
-    actualExtent.width = std::clamp(
-        actualExtent.width,
-        capabilities.minImageExtent.width,
-        capabilities.maxImageExtent.width
-    );
-    actualExtent.height = std::clamp(
-        actualExtent.height,
-        capabilities.minImageExtent.height,
-        capabilities.maxImageExtent.height
-    );
-    return actualExtent;
 }
 
 } // namespace VulkCore

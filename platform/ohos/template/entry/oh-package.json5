@@ -1,0 +1,4 @@
+{
+  "name": "entry", "version": "1.0.0",
+  "dependencies": { "libvulkcore.so": "file:./src/main/cpp/types/libvulkcore" }
+}

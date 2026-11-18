@@ -1,7 +1,6 @@
 #include "vulkcore/Gameplay/Player.hpp"
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
@@ -340,7 +339,7 @@ glm::vec3 PlayerController::horizontalForward() const {
 }
 
 void PlayerController::update(
-    GLFWwindow* window,
+    Window* window,
     float deltaSeconds,
     PhysicsWorld& physics,
     bool keyboardCaptured,
@@ -354,11 +353,11 @@ void PlayerController::update(
     triggeredAttack_ = PlayerAttack::None;
 
     const bool tornadoAttackDown = window != nullptr &&
-        glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+        keyPressed(window, Key::Tornado);
     const bool lightningAttackDown = window != nullptr &&
-        glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS;
+        keyPressed(window, Key::Lightning);
     const bool flameAttackDown = window != nullptr &&
-        glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+        keyPressed(window, Key::Flame);
     if (!keyboardCaptured) {
         if (lightningAttackDown && !lightningAttackWasDown_) {
             triggeredAttack_ = PlayerAttack::LightningSlash;
@@ -390,10 +389,10 @@ void PlayerController::update(
     }
 
     if (window != nullptr && !mouseCaptured &&
-        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+        lookPressed(window)) {
         double cursorX = 0.0;
         double cursorY = 0.0;
-        glfwGetCursorPos(window, &cursorX, &cursorY);
+        cursorPosition(window, &cursorX, &cursorY);
         if (!lookDragging_) {
             lookDragging_ = true;
         } else {
@@ -412,7 +411,7 @@ void PlayerController::update(
     }
 
     const bool jumpDown = window != nullptr &&
-        glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        keyPressed(window, Key::Jump);
     if (!keyboardCaptured && jumpDown && !jumpWasDown_ && grounded_) {
         if (physics.jump(kJumpSpeed)) {
             grounded_ = false;
@@ -424,17 +423,17 @@ void PlayerController::update(
     moving_ = false;
     if (!attacking() && !keyboardCaptured && window != nullptr) {
         const bool moveLeft =
-            glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
-            glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
+            keyPressed(window, Key::A) ||
+            keyPressed(window, Key::Left);
         const bool moveRight =
-            glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
-            glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+            keyPressed(window, Key::D) ||
+            keyPressed(window, Key::Right);
         const bool moveForward =
-            glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ||
-            glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+            keyPressed(window, Key::W) ||
+            keyPressed(window, Key::Up);
         const bool moveBackward =
-            glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
-            glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+            keyPressed(window, Key::S) ||
+            keyPressed(window, Key::Down);
         const float horizontalInput =
             static_cast<float>(moveRight) - static_cast<float>(moveLeft);
         const float forwardInput =
