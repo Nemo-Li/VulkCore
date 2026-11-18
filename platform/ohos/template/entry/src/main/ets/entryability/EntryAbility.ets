@@ -23,6 +23,12 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
-  onForeground(): void { player.setPaused(false); }
-  onBackground(): void { player.setPaused(true); }
+  onForeground(): void {
+    AppStorage.setOrCreate('vulkcoreForeground', true);
+    player.setPaused(false);
+  }
+  onBackground(): void {
+    AppStorage.setOrCreate('vulkcoreForeground', false);
+    player.setPaused(true);
+  }
 }

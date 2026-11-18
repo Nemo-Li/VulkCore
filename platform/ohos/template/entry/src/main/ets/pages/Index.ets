@@ -1,9 +1,11 @@
 import { common } from '@kit.AbilityKit';
 import player from 'libvulkcore.so';
+import { VirtualJoystick } from '../components/VirtualJoystick';
 
 @Entry
 @Component
 struct Index {
+  @StorageLink('vulkcoreForeground') private foreground: boolean = true;
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private sceneWidth: number = 0;
@@ -60,21 +62,19 @@ struct Index {
               .width(this.sceneWidth).height(this.sceneHeight)
           }
         }.width('100%').height('100%')
-        Column({ space: 6 }) {
-          this.control('↑', 2)
-          Row({ space: 6 }) {
-            this.control('←', 0)
-            this.control('↓', 3)
-            this.control('→', 1)
+        VirtualJoystick({
+          inputEnabled: this.foreground,
+          onMove: (right: number, forward: number): void => {
+            player.setMovement(right, forward);
           }
-        }.margin({ left: 24, bottom: 24 })
+        }).margin({ left: 24, bottom: 24 })
         Row({ space: 10 }) {
           this.control('Q', 9)
           this.control('E', 10)
           this.control('R', 11)
           this.control('Jump', 8)
         }.position({ right: 24, bottom: 24 })
-        Text('Move: arrows   Look: drag right side   Skills: Q / E / R')
+        Text('Move: joystick   Look: drag right side   Skills: Q / E / R')
           .fontSize(14).fontColor('#ffffff').position({ left: 24, top: 12 })
           .hitTestBehavior(HitTestMode.None)
       }

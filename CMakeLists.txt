@@ -404,6 +404,10 @@ set_target_properties(VulkCore PROPERTIES
 
 include(CTest)
 if(BUILD_TESTING AND NOT VULKCORE_OHOS)
+    add_executable(vulkcore_movement_smoke tests/MovementInputSmoke.cpp)
+    target_include_directories(vulkcore_movement_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vulkcore_movement_smoke COMMAND vulkcore_movement_smoke)
+
     add_executable(vulkcore_touch_smoke tests/TouchLookSmoke.cpp)
     target_include_directories(vulkcore_touch_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vulkcore_touch_smoke COMMAND vulkcore_touch_smoke)

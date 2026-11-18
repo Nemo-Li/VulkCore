@@ -12,6 +12,7 @@ bool keyPressed(Window* window, Key key) {
         GLFW_KEY_Q, GLFW_KEY_E, GLFW_KEY_R, GLFW_KEY_F12};
     return window && glfwGetKey(window, keys[static_cast<unsigned>(key)]) == GLFW_PRESS;
 }
+MovementInput analogMovement(Window*) { return {}; }
 bool lookPressed(Window* window) {
     return window && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 }

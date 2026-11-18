@@ -37,6 +37,7 @@ struct Runtime {
     void clearInput() {
         std::lock_guard lock(window.inputMutex);
         window.keys.fill(false);
+        window.movement = {};
         window.touchLook.reset();
     }
     void stop() {
@@ -201,6 +202,20 @@ napi_value setKey(napi_env env, napi_callback_info info) {
     }
     return nullptr;
 }
+napi_value setMovement(napi_env env, napi_callback_info info) {
+    std::size_t argc = 2;
+    napi_value args[2]{};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    double right = 0, forward = 0;
+    VulkCore::MovementInput movement;
+    if (argc == 2 && napi_get_value_double(env, args[0], &right) == napi_ok &&
+        napi_get_value_double(env, args[1], &forward) == napi_ok) {
+        movement = VulkCore::clampMovementInput(right, forward);
+    }
+    std::lock_guard lock(runtime.window.inputMutex);
+    runtime.window.movement = runtime.paused ? VulkCore::MovementInput{} : movement;
+    return nullptr;
+}
 napi_value setPaused(napi_env env, napi_callback_info info) {
     std::size_t argc = 1;
     napi_value arg{};
@@ -260,6 +275,7 @@ napi_value initialize(napi_env env, napi_value exports) {
     const napi_property_descriptor methods[] = {
         {"prepare", nullptr, prepare, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setKey", nullptr, setKey, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setMovement", nullptr, setMovement, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPaused", nullptr, setPaused, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getError", nullptr, getError, nullptr, nullptr, nullptr, napi_default, nullptr}
     };

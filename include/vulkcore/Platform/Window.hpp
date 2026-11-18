@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vulkcore/Platform/MovementInput.hpp"
+
 #include <cstdint>
 #include <vulkan/vulkan.h>
 
@@ -19,6 +21,7 @@ enum class Key { A, D, W, S, Left, Right, Up, Down, Jump, Lightning, Flame, Torn
 using ResizeCallback = void (*)(Window*, int, int);
 
 bool keyPressed(Window* window, Key key);
+MovementInput analogMovement(Window* window);
 bool lookPressed(Window* window);
 void cursorPosition(Window* window, double* x, double* y);
 void framebufferSize(Window* window, int* width, int* height);

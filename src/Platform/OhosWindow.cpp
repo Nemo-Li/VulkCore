@@ -12,6 +12,11 @@ bool keyPressed(Window* window, Key key) {
     std::lock_guard lock(window->inputMutex);
     return window->keys[static_cast<unsigned>(key)];
 }
+MovementInput analogMovement(Window* window) {
+    if (!window) return {};
+    std::lock_guard lock(window->inputMutex);
+    return window->movement;
+}
 bool lookPressed(Window* window) {
     if (!window) return false;
     std::lock_guard lock(window->inputMutex);
