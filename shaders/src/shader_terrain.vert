@@ -33,7 +33,7 @@ layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec4 fragVertexColor;
 layout(location = 3) out vec3 fragWorldPosition;
-layout(location = 4) out float fragTerrainHeight;
+layout(location = 4) out vec3 fragTerrainPosition;
 layout(location = 5) out vec2 fragTerrainTileSize;
 
 void main() {
@@ -45,6 +45,6 @@ void main() {
     fragNormal = normalize(normalMatrix * inNormal);
     fragVertexColor = inColor;
     fragWorldPosition = worldPosition;
-    fragTerrainHeight = clamp(inPosition.y / 800.0, 0.0, 1.0);
+    fragTerrainPosition = inPosition;
     fragTerrainTileSize = max(inTerrainMapping.xy, vec2(0.0001));
 }
