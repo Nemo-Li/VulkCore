@@ -9,7 +9,7 @@
 4. 场景、模型、纹理、地形和 SPIR-V 位于 entry/src/main/resources/rawfile/vulkcore。
    启动时解压到应用 filesDir/vulkcore，再加载 startup.txt 指定的场景。每次启动刷新资源副本。
 5. 导出后的 engine 包含运行时源码，可脱离原编辑器目录继续开发。应用启动隐藏编辑面板，保留场景模拟。
-6. 场景以默认编辑器的 16:9 比例居中等比显示，屏幕比例不同时留边，不裁切、不拉伸。窗口在页面创建前切到横屏，支持两个横屏方向；场景和触控共用 XComponent 的像素坐标系。
+6. 场景全屏显示，以默认编辑器的 16:9 画面为基准居中等比放大，裁切超出屏幕的部分以铺满屏幕，物体比例保持一致。窗口在页面创建前切到横屏并隐藏状态栏、导航栏，支持两个横屏方向；摇杆、技能按钮与小地图使用实际全屏坐标。
 
 导出工程不包含预编译的第三方库。Native 代码和依赖会由鸿蒙 SDK 为 arm64-v8a 编译。
 PhysX 采用 Android CPU 分支（`PX_ANDROID=1`、`PX_LINUX=0`），通过鸿蒙 SDK 编译为 OHOS ABI；日志和 CPU 查询分别适配到 HiLog 与 sysconf，无需 Android NDK。

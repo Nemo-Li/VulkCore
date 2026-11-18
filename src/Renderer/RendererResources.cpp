@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "vulkcore/Renderer/SceneProjection.hpp"
 
 namespace VulkCore {
 
@@ -1396,14 +1397,17 @@ void Renderer::updateUniformBuffer() {
     const float nearPlane = playerController_.active()
         ? std::max(0.00001f, modelScale_ * 0.02f)
         : 0.01f;
-    ubo.projection = glm::perspective(
-        glm::radians(45.0f),
+#ifdef VULKCORE_OHOS
+    constexpr bool coverReferenceViewport = true;
+#else
+    constexpr bool coverReferenceViewport = false;
+#endif
+    ubo.projection = sceneProjection(
         static_cast<float>(extent.width) / static_cast<float>(extent.height),
         nearPlane,
-        100.0f
+        100.0f,
+        coverReferenceViewport
     );
-    // GLM follows OpenGL's Y direction; Vulkan's viewport uses the opposite one.
-    ubo.projection[1][1] *= -1.0f;
 
     const glm::vec3 normalizedSunDirection = glm::length(sunLightDirection_) < 0.001f
         ? glm::vec3(0.45f, 0.55f, 0.75f)
