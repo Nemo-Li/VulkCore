@@ -424,12 +424,15 @@ void Renderer::recordCommandBuffer(
         materialPushConstants.baseColor = material.baseColor;
         const bool terrainMaterial =
             material.shaderConfiguration.shader(ShaderStage::Fragment) == "shader_terrain.frag";
+        const bool terrainMacro = terrainMaterial && terrainAlbedoLayers_ &&
+            material.texturePath.filename() == "terrain_atlas.png" && materialTextures_[materialIndex];
         materialPushConstants.textureFlags =
             (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
             (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
             (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
             (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
-            (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u);
+            (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u) |
+            (terrainMacro ? 32u : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled

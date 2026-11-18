@@ -707,11 +707,12 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
     // Touch look is routed to the player separately from ImGui's pointer.
     viewportHovered = true;
 #endif
+    // A mouse drag can make an ImGui item active without requiring text input.
     playerController_.update(
         window_,
         deltaSeconds,
         *physicsWorld_,
-        io.WantCaptureKeyboard && ImGui::IsAnyItemActive(),
+        io.WantTextInput,
         !viewportHovered
     );
     updatePlayerAttackEffect();

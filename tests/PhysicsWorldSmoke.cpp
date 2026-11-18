@@ -130,5 +130,44 @@ int main() {
         return 7;
     }
 
+    physics.createPlayer(glm::vec3(-8.0f, 0.025f, 0.0f), 1.58f, 0.27f);
+    const glm::vec3 debugStart = physics.playerFootPosition();
+    physics.setPlayerDebugMovement(glm::vec2(8.0f, 0.0f), 6.0f);
+    for (int step = 0; step < 120; ++step) {
+        physics.simulate(1.0f / 60.0f);
+    }
+    const glm::vec3 debugApex = physics.playerFootPosition();
+    if (debugApex.x - debugStart.x < 15.0f || debugApex.y - debugStart.y < 11.0f ||
+        physics.playerGrounded()) {
+        std::cerr << "debug movement did not sustain fast travel and ascent\n";
+        return 9;
+    }
+
+    physics.setPlayerDebugMovement(glm::vec2(-8.0f, 0.0f), 0.0f);
+    for (int step = 0; step < 45; ++step) {
+        physics.simulate(1.0f / 60.0f);
+    }
+    const glm::vec3 fallingPosition = physics.playerFootPosition();
+    if (physics.playerLinearVelocity().y >= 0.0f || fallingPosition.y >= debugApex.y ||
+        debugApex.x - fallingPosition.x < 5.5f) {
+        std::cerr << "releasing debug ascent did not restore falling and air steering\n";
+        return 10;
+    }
+
+    physics.setPlayerFootTraction(glm::vec2(0.0f), 0.0f, 1.0f);
+    physics.simulate(1.0f / 60.0f);
+    if (std::abs(physics.playerLinearVelocity().x) > 0.1f) {
+        std::cerr << "exiting debug movement left horizontal momentum in the air\n";
+        return 11;
+    }
+    for (int step = 0; step < 120; ++step) {
+        physics.simulate(1.0f / 60.0f);
+    }
+    if (!physics.playerGrounded()) {
+        std::cerr << "player did not land after exiting debug movement: y="
+                  << physics.playerFootPosition().y << '\n';
+        return 12;
+    }
+
     return 0;
 }

@@ -5,7 +5,7 @@ player_spawn_position 937.5 0 -937.5
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
 sun_present 0
-camera_position 0.0924428925 -0.0648921505 0.0469480343
+camera_position 0.0588222966 -0.0682054386 0.281371772
 ambient_color 0.639999986 0.75999999 0.899999976
 ambient_intensity 0.579999983
 sun_light_direction 0.435540557 0.532327354 0.725900888

@@ -5,7 +5,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 layout(location = 4) in vec3 fragTerrainPosition;
-layout(location = 5) in vec2 fragTerrainTileSize;
+layout(location = 5) in vec4 fragTerrainMapping;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 model;
@@ -39,6 +39,14 @@ layout(location = 0) out vec4 outColor;
 const int kLandformCount = 8;
 const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
+const uint kMacroTexture = 32u;
+// Linear RGB averages of the generated albedo layers in array order.
+const vec3 kLandformAverages[kLandformCount] = vec3[kLandformCount](
+    vec3(0.239, 0.358, 0.101), vec3(0.423, 0.276, 0.115),
+    vec3(0.246, 0.261, 0.226), vec3(0.634, 0.436, 0.179),
+    vec3(0.627, 0.731, 0.765), vec3(0.170, 0.130, 0.063),
+    vec3(0.316, 0.283, 0.191), vec3(0.173, 0.125, 0.102)
+);
 
 float hash21(vec2 cell) {
     vec3 p = fract(vec3(cell.xyx) * 0.1031);
@@ -69,8 +77,14 @@ vec3 sampleLegacyAtlas(int layer, Projection projection) {
     const vec2 inset = vec2(0.004, 0.006);
     vec2 cellOrigin = vec2(layer % 4, layer / 4) * cellSize;
     vec2 span = cellSize - 2.0 * inset;
+    vec2 dx = projection.dx * span;
+    vec2 dy = projection.dy * span;
+    vec2 texels = vec2(textureSize(textureSampler, 0));
+    float footprint = max(length(dx * texels), length(dy * texels));
+    // Keep the fallback atlas mip within the cell's narrowest inset.
+    float limit = min(1.0, 8.0 / max(footprint, 0.001));
     return textureGrad(textureSampler, cellOrigin + inset + fract(projection.uv) * span,
-                       projection.dx * span, projection.dy * span).rgb;
+                       dx * limit, dy * limit).rgb;
 }
 
 struct TerrainSample {
@@ -94,10 +108,14 @@ TerrainSample sampleTerrain(int layer, Projection p, bool hasAlbedo, bool hasSur
     return result;
 }
 
-TerrainSample sampleStochasticTerrain(int layer, int axis, Projection p, vec2 gridWarp,
-                                      bool hasAlbedo, bool hasSurface, float mipBias) {
-    // Skew the sampling plane into a triangular lattice. Adjacent triangles
-    // share the same samples along an edge because the third weight vanishes.
+struct TerrainPatch {
+    Projection projection;
+    mat2 transform;
+    float weight;
+};
+
+void makeTerrainPatches(int axis, Projection p, vec2 gridWarp, out TerrainPatch patches[3]) {
+    // The two triangles sharing an edge also share its two weighted samples.
     const mat2 toLattice = mat2(1.0, 0.0, -0.57735027, 1.15470054);
     vec2 grid = toLattice * (p.uv * 0.9 + gridWarp);
     vec2 cell = floor(grid);
@@ -107,26 +125,35 @@ TerrainSample sampleStochasticTerrain(int layer, int axis, Projection p, vec2 gr
     vec2 vertices[3] = vec2[3](cell + vec2(lowerTriangle ? 0.0 : 1.0),
                                 cell + vec2(1.0, 0.0), cell + vec2(0.0, 1.0));
     vec3 weights = lowerTriangle ? vec3(diagonal, f) : vec3(-diagonal, 1.0 - f.yx);
-    weights *= weights;
+    weights = max(weights * weights - 0.01, vec3(0.0));
     weights /= dot(weights, vec3(1.0));
 
-    TerrainSample result = TerrainSample(vec3(0.0), vec2(0.0), 0.0);
+    // Reuse the same transformed projections for every landform on this axis.
     for (int corner = 0; corner < 3; ++corner) {
-        vec2 seed = vertices[corner] + float(axis) * vec2(37.0, -19.0) + float(layer) * vec2(-13.0, 29.0);
+        vec2 seed = vertices[corner] + float(axis) * vec2(37.0, -19.0);
         vec2 offset = vec2(hash21(seed + vec2(5.4, 13.7)), hash21(seed + vec2(-9.8, 3.1)));
         float angle = mix(-0.68, 0.68, hash21(seed + vec2(8.2, -12.3)));
         float scale = mix(0.75, 1.35, hash21(seed + vec2(19.8, 2.6)));
         float c = cos(angle);
         float s = sin(angle);
         mat2 transform = scale * mat2(c, s, -s, c);
-        // Explicit gradients stay valid when neighboring pixels choose
-        // different triangles. All channels use the same transform and blend.
-        Projection patchProjection = Projection(transform * p.uv + offset, transform * p.dx, transform * p.dy);
-        TerrainSample sampleValue = sampleTerrain(layer, patchProjection, hasAlbedo, hasSurface, mipBias);
-        float weight = weights[corner];
-        result.albedo += sampleValue.albedo * weight;
-        result.gradient += transpose(transform) * sampleValue.gradient * weight;
-        result.occlusion += sampleValue.occlusion * weight;
+        // Transform gradients explicitly so mip selection stays continuous
+        // when neighboring pixels select different triangles.
+        Projection projection = Projection(transform * p.uv + offset, transform * p.dx, transform * p.dy);
+        patches[corner] = TerrainPatch(projection, transform, weights[corner]);
+    }
+}
+
+TerrainSample sampleStochasticTerrain(int layer, TerrainPatch patches[3],
+                                      bool hasAlbedo, bool hasSurface, float mipBias) {
+    TerrainSample result = TerrainSample(vec3(0.0), vec2(0.0), 0.0);
+    for (int corner = 0; corner < 3; ++corner) {
+        TerrainPatch region = patches[corner];
+        if (region.weight == 0.0) continue;
+        TerrainSample surface = sampleTerrain(layer, region.projection, hasAlbedo, hasSurface, mipBias);
+        result.albedo += surface.albedo * region.weight;
+        result.gradient += transpose(region.transform) * surface.gradient * region.weight;
+        result.occlusion += surface.occlusion * region.weight;
     }
     return result;
 }
@@ -144,59 +171,67 @@ void main() {
     // Texture scales come from the terrain records. Keep the projected
     // pattern broad enough that it reads as paint at player eye height.
     vec2 frequency = 0.68 * textureScale;
-    float distanceFade = smoothstep(140.0, 720.0, distanceWorld);
-    // The gradients already select the mip for the pixel footprint. Add only
-    // a small bias at long range to preserve broad rock layers and grass cover.
-    float gradientScale = mix(1.0, 1.5, distanceFade);
+    float distanceFade = smoothstep(150.0, 520.0, distanceWorld);
+    float footprint = length(fwidth(terrainPosition));
+    float detailWeight = (1.0 - distanceFade) * (1.0 - smoothstep(0.7, 3.0, footprint));
+    float gradientScale = mix(1.0, 2.2, distanceFade);
+    bool hasAlbedo = (material.textureFlags & kAlbedoLayers) != 0u;
+    // Binding 1 is the traditional atlas when arrays are unavailable. When
+    // the layers are present it can carry the terrain-wide control map.
+    bool hasMacro = (material.textureFlags & kMacroTexture) != 0u;
     Projection projections[3] = Projection[3](
         projectUv(terrainPosition.zy * frequency),
         projectUv(terrainPosition.xz * frequency),
         projectUv(terrainPosition.xy * frequency)
     );
 
-    vec2 atlasFrequency = 12.0 / fragTerrainTileSize;
+    vec2 atlasFrequency = 12.0 / fragTerrainMapping.xy;
     float verticalFrequency = sqrt(atlasFrequency.x * atlasFrequency.y);
     vec3 atlasPosition = terrainPosition * vec3(atlasFrequency.x, verticalFrequency, atlasFrequency.y);
     Projection legacy[3] = Projection[3](
         projectUv(atlasPosition.zy * textureScale),
-        projectUv(fragTexCoord * textureScale * 12.0),
+        projectUv(atlasPosition.xz * textureScale),
         projectUv(atlasPosition.xy * textureScale)
     );
 
     // Sample the slope face as well as its footprint. Samples along a steep
     // cliff can otherwise share nearly identical XZ and form vertical streaks.
     vec2 groundPosition = terrainPosition.xz;
-    float region = valueNoise(groundPosition / 190.0);
+    float region = valueNoise(groundPosition / 180.0);
+    vec4 controls = vec4(region, valueNoise(groundPosition / 760.0 + 2.7), region, 0.5);
+    if (hasMacro) {
+        controls = texture(textureSampler, fragTerrainMapping.zw);
+    }
     vec2 facePosition = groundPosition + elevation * vec2(0.51, -0.67);
     float ledge = valueNoise(facePosition * vec2(1.0 / 92.0, 1.0 / 65.0));
-    float patchNoise = mix(valueNoise(facePosition / 18.0), 0.5, distanceFade * 0.7);
-    float brush = mix(valueNoise(facePosition / 4.8), 0.5, distanceFade);
-    float contrast = mix(0.76, 1.22, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
-    float cover = 0.5 + (0.43 * region + 0.29 * ledge + 0.20 * patchNoise + 0.08 * brush - 0.5) * contrast +
-                  (clamp(fragVertexColor.z, 0.0, 1.0) - 0.5) * 0.12;
+    float patchNoise = mix(valueNoise(facePosition / 23.0), ledge, distanceFade * 0.86);
+    float brush = mix(0.5, valueNoise(facePosition / 5.3), detailWeight);
+    float contrast = mix(0.92, 1.10, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
+    float cover = 0.5 + (0.46 * controls.r + 0.21 * controls.b + 0.24 * patchNoise + 0.09 * brush - 0.5) *
+                  contrast + (clamp(fragVertexColor.z, 0.0, 1.0) - 0.5) * 0.05;
     float lowland = 1.0 - smoothstep(80.0, 200.0, elevation);
     float highland = smoothstep(305.0, 510.0, elevation);
     float brokenSlope = slope + (ledge - 0.5) * 0.14 + (patchNoise - 0.5) * 0.09 + (brush - 0.5) * 0.04;
     // Snow collects on upper shelves. Regional variation breaks up the snow
     // line, and the steepest faces retain exposed rock even at high elevation.
-    float snowElevation = elevation + (region - 0.5) * 170.0 + (ledge - 0.5) * 80.0;
-    float snow = smoothstep(560.0, 735.0, snowElevation) * (1.0 - smoothstep(0.12, 0.45, brokenSlope));
-    // Let vegetation run farther down favorable slopes while leaving nearly
-    // vertical faces exposed. Transition thresholds vary over broad patches.
-    float vegetation = smoothstep(0.36, 0.64, cover);
-    float rock = (1.0 - snow) * smoothstep(0.19 + 0.14 * vegetation, 0.57 + 0.14 * vegetation, brokenSlope);
+    float snowElevation = elevation + (controls.r - 0.5) * 120.0 + (ledge - 0.5) * 88.0;
+    float snow = smoothstep(600.0, 760.0, snowElevation) * (1.0 - smoothstep(0.10, 0.37, brokenSlope));
+    // Moist slopes hold grass farther down while nearly vertical faces expose stone.
+    float vegetation = smoothstep(0.31, 0.61, cover);
+    float rock = (1.0 - snow) * smoothstep(0.18 + 0.15 * vegetation, 0.52 + 0.15 * vegetation, brokenSlope);
     float ground = max(0.0, 1.0 - snow - rock);
-    float ash = ground * highland * smoothstep(0.52, 0.76, region) *
-                smoothstep(0.10, 0.25, brokenSlope);
+    float ash = ground * highland * smoothstep(0.65, 0.84, controls.g) *
+                smoothstep(0.10, 0.25, brokenSlope) * 0.66;
     ground -= ash;
-    float sand = ground * lowland * smoothstep(0.54, 0.74, cover);
+    float sand = ground * lowland * smoothstep(0.64, 0.85, controls.b) * (1.0 - 0.65 * vegetation);
     ground -= sand;
-    float mud = ground * lowland * (1.0 - smoothstep(0.25, 0.47, cover));
+    float mud = ground * lowland * smoothstep(0.65, 0.88, controls.r) * (1.0 - vegetation * 0.65);
     ground -= mud;
-    float gravel = ground * smoothstep(0.11, 0.34, brokenSlope) *
-                   smoothstep(0.36, 0.63, cover) * 0.78;
+    float gravel = ground * smoothstep(0.13, 0.39, brokenSlope) *
+                   smoothstep(0.25, 0.64, controls.b) * (1.0 - 0.52 * vegetation);
     ground -= gravel;
-    float dirt = ground * smoothstep(0.48, 0.69, cover + brokenSlope * 0.37);
+    float erosion = 0.27 * controls.b + 0.24 * patchNoise + 0.27 * (1.0 - controls.r) + 0.54 * brokenSlope;
+    float dirt = ground * smoothstep(0.40, 0.66, erosion) * 0.86;
     float grass = ground - dirt;
     float landforms[kLandformCount] = float[kLandformCount](
         grass, dirt, rock, sand, snow, mud, gravel, ash
@@ -204,83 +239,75 @@ void main() {
 
     const int grassLayer = 0;
     const int rockLayer = 2;
-    const int gravelLayer = 6;
-    // Warp the rock layers on the slope face and modulate the stone with
-    // broad mineral patches and finer weathering in terrain units.
+    // Medium-scale deposits follow the slope and extend beyond the close-up textures.
     const mat2 turnRock = mat2(0.8, 0.6, -0.6, 0.8);
     vec2 mineralPosition = turnRock * facePosition;
     vec2 mineralWarp = vec2(ledge, valueNoise(mineralPosition / 53.0 + vec2(13.6, 24.8))) - 0.5;
-    vec2 rockGridWarp = mineralWarp * 1.1;
-    float mineral = valueNoise(mineralPosition / 23.0 + mineralWarp * 1.8);
-    float grain = valueNoise(mineralPosition / 6.2 + mineralWarp * 2.4);
-    float grainFade = 1.0 - smoothstep(1.0, 5.0, length(fwidth(mineralPosition)));
-    float warmStone = smoothstep(0.26, 0.74, 0.40 * region + 0.34 * mineral + 0.26 * highland);
-    vec3 rockTint = mix(vec3(0.90, 1.04, 0.95), vec3(1.58, 0.99, 0.72), warmStone);
-    float bedHeight = (elevation + (region - 0.5) * 50.0 + mineralWarp.y * 37.0) / 29.0;
+    float mineral = valueNoise(mineralPosition / 34.0 + mineralWarp * 1.8);
+    float warmStone = smoothstep(0.36, 0.71, 0.72 * controls.g + 0.15 * mineral + 0.13 * highland);
+    vec3 rockTint = mix(vec3(0.88, 0.99, 1.06), vec3(1.72, 0.78, 0.69), warmStone);
+    float bedHeight = (elevation + (region - 0.5) * 50.0 + mineralWarp.y * 37.0) / 32.0;
     float bed = valueNoise(vec2(bedHeight, mineralPosition.x / 130.0 + mineralWarp.x));
-    float weathering = 0.31 * (mineral - 0.5) + 0.17 * (grain - 0.5) * grainFade;
-    rockTint *= mix(0.88, 1.13, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
-    vec3 grassTint = mix(vec3(0.96, 1.03, 0.91), vec3(1.09, 1.25, 0.93), vegetation);
+    float weathering = 0.22 * (mineral - 0.5) + 0.13 * (brush - 0.5);
+    rockTint *= mix(0.91, 1.10, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
+    vec3 grassTint = mix(vec3(1.08, 1.01, 0.89), vec3(0.99, 1.16, 0.97), vegetation);
 
-    vec3 axes = pow(abs(geometryNormal), vec3(4.0));
-    // Negligible axes fall out gradually and do not incur texture reads.
-    axes *= smoothstep(vec3(0.0005), vec3(0.008), axes);
-    axes /= dot(axes, vec3(1.0));
-
-    bool hasAlbedo = (material.textureFlags & kAlbedoLayers) != 0u;
-    float surfaceFade = 1.0 - smoothstep(34.0, 115.0, distanceWorld);
-    bool hasSurface = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo && surfaceFade > 0.0;
-    // Each column is a UV axis expressed in world space. Normal XY is a
-    // height gradient on that plane. Reorient gradients before mixing axes,
-    // then remove the component parallel to the geometric normal.
-    const mat2x3 bases[3] = mat2x3[3](
-        mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
-        mat2x3(vec3(1, 0, 0), vec3(0, 0, 1)),
-        mat2x3(vec3(1, 0, 0), vec3(0, 1, 0))
-    );
-    vec3 albedo = vec3(0.0);
-    vec3 normalOffset = vec3(0.0);
-    float occlusion = 0.0;
-    float sampledWeight = 0.0;
+    vec3 tints[kLandformCount];
+    vec3 macroAlbedo = vec3(0.0);
     for (int layer = 0; layer < kLandformCount; ++layer) {
-        vec3 layerTint = layer == rockLayer ? rockTint : layer == grassLayer ? grassTint : vec3(1.0);
-        for (int axis = 0; axis < 3; ++axis) {
-            float weight = landforms[layer] * axes[axis];
-            weight *= smoothstep(0.001, 0.012, weight);
-            if (weight <= 0.0) continue;
-
-            Projection p = hasAlbedo ? projections[axis] : legacy[axis];
-            TerrainSample surface;
-            if (layer == rockLayer || layer == gravelLayer) {
-                surface = sampleStochasticTerrain(layer, axis, p, rockGridWarp, hasAlbedo, hasSurface, gradientScale);
-            } else {
-                surface = sampleTerrain(layer, p, hasAlbedo, hasSurface, gradientScale);
-            }
-            albedo += surface.albedo * layerTint * weight;
-            normalOffset += bases[axis] * surface.gradient * weight;
-            occlusion += surface.occlusion * weight;
-            sampledWeight += weight;
-        }
+        tints[layer] = layer == rockLayer ? rockTint : layer == grassLayer ? grassTint : vec3(1.0);
+        macroAlbedo += landforms[layer] * tints[layer] * kLandformAverages[layer];
     }
-    float inverseWeight = 1.0 / max(sampledWeight, 0.0001);
-    albedo *= inverseWeight;
-    // Low-frequency color variation survives minification without amplifying
-    // fine detail or imprinting a grid on distant hills.
-    float tint = (0.55 * region + 0.45 * patchNoise - 0.5) * (0.25 + 0.1 * grass);
-    albedo *= vec3(1.0 + tint, 1.0 + tint * 0.84, 1.0 + tint * 0.62);
 
-    vec3 offset = normalOffset * inverseWeight;
-    offset -= geometryNormal * dot(geometryNormal, offset);
-    vec3 normal = normalize(geometryNormal + offset * (surfaceFade * 0.78));
-    float ao = hasSurface ? mix(1.0, occlusion * inverseWeight, surfaceFade) : 1.0;
+    float surfaceFade = (1.0 - smoothstep(28.0, 110.0, distanceWorld)) * detailWeight;
+    bool hasSurface = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo && surfaceFade > 0.0;
+    vec3 albedo = macroAlbedo;
+    vec3 normalOffset = vec3(0.0);
+    float ao = 1.0;
+    if (detailWeight > 0.0) {
+        vec3 axes = pow(abs(geometryNormal), vec3(4.0));
+        axes *= smoothstep(vec3(0.001), vec3(0.017), axes);
+        axes /= dot(axes, vec3(1.0));
+        const mat2x3 bases[3] = mat2x3[3](
+            mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
+            mat2x3(vec3(1, 0, 0), vec3(0, 0, 1)),
+            mat2x3(vec3(1, 0, 0), vec3(0, 1, 0))
+        );
+        vec3 detailAlbedo = vec3(0.0);
+        float occlusion = 0.0;
+        float sampledWeight = 0.0;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (axes[axis] <= 0.006) continue;
+            Projection p = hasAlbedo ? projections[axis] : legacy[axis];
+            TerrainPatch patches[3];
+            makeTerrainPatches(axis, p, mineralWarp * 1.1, patches);
+            for (int layer = 0; layer < kLandformCount; ++layer) {
+                float weight = landforms[layer] * axes[axis];
+                weight *= smoothstep(0.006, 0.028, weight);
+                if (weight <= 0.0) continue;
+                TerrainSample surface = sampleStochasticTerrain(layer, patches, hasAlbedo, hasSurface, gradientScale);
+                detailAlbedo += surface.albedo * tints[layer] * weight;
+                normalOffset += bases[axis] * surface.gradient * weight;
+                occlusion += surface.occlusion * weight;
+                sampledWeight += weight;
+            }
+        }
+        float inverseWeight = 1.0 / max(sampledWeight, 0.0001);
+        albedo = mix(macroAlbedo, detailAlbedo * inverseWeight, detailWeight);
+        normalOffset *= inverseWeight;
+        if (hasSurface) ao = mix(1.0, occlusion * inverseWeight, surfaceFade);
+    }
+    albedo *= mix(0.85, 1.15, controls.a);
+    normalOffset -= geometryNormal * dot(geometryNormal, normalOffset);
+    vec3 normal = normalize(geometryNormal + normalOffset * (surfaceFade * 0.78));
 
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     // Smooth wrapped diffuse keeps broad painterly light shapes and soft
     // shadow transitions as the small-scale normal detail fades out.
     float diffuse = smoothstep(-0.38, 0.89, dot(normal, lightDirection));
-    float skyVisibility = mix(0.70, 1.0, up);
+    float skyVisibility = mix(0.66, 1.0, up);
     vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao;
-    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse;
+    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse * mix(0.85, 1.04, controls.a);
     vec3 litTerrain = albedo * (ambient + sunlight) * material.baseColor.rgb;
 
     // Aerial perspective lifts the shadows of distant ridges toward the sky.
@@ -289,6 +316,6 @@ void main() {
     float viewElevation = cameraRay.y / max(distanceWorld, 0.001);
     float haze = 1.0 - exp2(-max(distanceWorld - 125.0, 0.0) / 1350.0);
     haze *= mix(0.58, 0.34, smoothstep(0.02, 0.48, viewElevation));
-    vec3 hazeColor = vec3(0.27, 0.46, 0.62);
+    vec3 hazeColor = vec3(0.19, 0.34, 0.48);
     outColor = vec4(mix(litTerrain, hazeColor, haze), material.opacity);
 }

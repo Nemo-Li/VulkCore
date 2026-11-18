@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -73,6 +74,7 @@ struct PhysicsWorld::Impl {
     glm::vec2 playerMovementDirection{0.0f};
     float playerTargetSpeed = 0.0f;
     float playerFootContactStrength = 1.0f;
+    std::optional<physx::PxVec3> playerDebugVelocity;
 
     Impl() {
         try {
@@ -187,6 +189,7 @@ struct PhysicsWorld::Impl {
         playerMovementDirection = glm::vec2(0.0f);
         playerTargetSpeed = 0.0f;
         playerFootContactStrength = 1.0f;
+        playerDebugVelocity.reset();
     }
 
     glm::vec3 rawPlayerFootPosition() const {
@@ -249,6 +252,20 @@ struct PhysicsWorld::Impl {
                 grounded = true;
                 return;
             }
+        }
+    }
+
+    void applyPlayerDebugMovement(physx::PxVec3 desiredVelocity) {
+        if (playerActor == nullptr) {
+            return;
+        }
+
+        const physx::PxVec3 currentVelocity = playerActor->getLinearVelocity();
+        if (desiredVelocity.y == 0.0f) {
+            desiredVelocity.y = currentVelocity.y;
+        }
+        if (desiredVelocity != currentVelocity) {
+            playerActor->setLinearVelocity(desiredVelocity, true);
         }
     }
 
@@ -547,6 +564,12 @@ void PhysicsWorld::setPlayerFootTraction(
     float targetSpeed,
     float contactStrength
 ) {
+    if (impl_->playerDebugVelocity && impl_->playerActor != nullptr) {
+        // Clear debug horizontal momentum before returning to normal locomotion.
+        const float verticalSpeed = impl_->playerActor->getLinearVelocity().y;
+        impl_->playerActor->setLinearVelocity(physx::PxVec3(0.0f, verticalSpeed, 0.0f), true);
+    }
+    impl_->playerDebugVelocity.reset();
     if (!std::isfinite(targetSpeed) || targetSpeed <= 0.0f ||
         !std::isfinite(direction.x) || !std::isfinite(direction.y) ||
         glm::length(direction) <= std::numeric_limits<float>::epsilon()) {
@@ -560,6 +583,14 @@ void PhysicsWorld::setPlayerFootTraction(
     impl_->playerFootContactStrength = std::isfinite(contactStrength)
         ? std::clamp(contactStrength, 0.0f, 1.0f)
         : 1.0f;
+}
+
+void PhysicsWorld::setPlayerDebugMovement(const glm::vec2& horizontalVelocity, float ascentSpeed) {
+    impl_->playerDebugVelocity.emplace(
+        std::isfinite(horizontalVelocity.x) ? horizontalVelocity.x : 0.0f,
+        std::isfinite(ascentSpeed) ? std::max(0.0f, ascentSpeed) : 0.0f,
+        std::isfinite(horizontalVelocity.y) ? horizontalVelocity.y : 0.0f
+    );
 }
 
 bool PhysicsWorld::jump(float verticalSpeed) {
@@ -583,7 +614,11 @@ void PhysicsWorld::simulate(float deltaSeconds) {
         kMaximumAccumulatedTime
     );
     while (impl_->accumulator >= kFixedTimeStep) {
-        impl_->applyPlayerFootTraction();
+        if (impl_->playerDebugVelocity) {
+            impl_->applyPlayerDebugMovement(*impl_->playerDebugVelocity);
+        } else {
+            impl_->applyPlayerFootTraction();
+        }
         if (impl_->playerPoseInitialized) {
             impl_->previousPlayerFootPosition = impl_->currentPlayerFootPosition;
         }
