@@ -1,0 +1,6 @@
+.hvigor/
+oh_modules/
+local.properties
+**/build/
+**/.cxx/
+.idea/

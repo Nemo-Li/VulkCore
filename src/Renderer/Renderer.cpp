@@ -1,5 +1,6 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
+
+#include "HdrComposition.hpp"
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
@@ -15,17 +16,18 @@
 namespace VulkCore {
 
 Renderer::Renderer(
-    GLFWwindow* window,
+    Window* window,
     const std::filesystem::path& startupScene,
-    bool hideTools
+    bool hideTools,
+    const std::function<void()>& onSceneLoading
 )
     : window_(window), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
-        throw std::invalid_argument("Renderer requires a valid GLFW window!");
+        throw std::invalid_argument("Renderer requires a valid platform window!");
     }
 
-    glfwSetWindowUserPointer(window, this);
-    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    setWindowUserPointer(window, this);
+    setResizeCallback(window, framebufferResizeCallback);
 
     physicsWorld_ = std::make_unique<PhysicsWorld>();
     context_ = std::make_unique<VulkanContext>(window);
@@ -36,7 +38,7 @@ Renderer::Renderer(
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createPostProcessPipeline();
-    createSkyboxPipeline();
+    skyboxPipeline_ = createSkyboxPipeline(sceneRenderPass_);
     createBoundingBoxPipeline();
     createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
@@ -59,6 +61,7 @@ Renderer::Renderer(
     createSyncObjects();
     initializeImGui();
     toolUiVisible_ = !hideTools;
+    if (onSceneLoading) onSceneLoading();
     if (!startupScene.empty() && !loadSceneResource(startupScene)) {
         throw std::runtime_error(
             sceneStatus_.empty()
@@ -73,9 +76,10 @@ Renderer::~Renderer() {
         return;
     }
 
-    saveTransformSettings();
+    if (fixedFrameOutput_.empty()) saveTransformSettings();
     context_->waitIdle();
     shutdownImGui();
+    hdrComposition_.reset();
     swapChain_->cleanupFramebuffers();
     destroySceneRenderResources();
     screenshotBuffer_.reset();
@@ -83,7 +87,9 @@ Renderer::~Renderer() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
-    terrainDetailTextures_ = {};
+    terrainAlbedoLayers_.reset();
+    terrainSurfaceLayers_.reset();
+    fallbackTerrainLayers_.reset();
     particleTextures_.clear();
     skyboxTexture_.reset();
     fallbackTexture_.reset();
@@ -128,6 +134,11 @@ Renderer::~Renderer() {
     if (postProcessPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), postProcessPipeline_, nullptr);
     }
+    for (VkPipeline pipeline : {
+             hdrSkyboxPipeline_, hdrParticleAlphaPipeline_, hdrParticleAdditivePipeline_
+         }) {
+        vkDestroyPipeline(context_->device(), pipeline, nullptr);
+    }
     if (skyboxPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), skyboxPipeline_, nullptr);
     }
@@ -155,10 +166,10 @@ Renderer::~Renderer() {
     physicsWorld_.reset();
 }
 
-void Renderer::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+void Renderer::framebufferResizeCallback(Window* window, int width, int height) {
     (void)width;
     (void)height;
-    auto* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    auto* renderer = static_cast<Renderer*>(windowUserPointer(window));
     if (renderer != nullptr) {
         renderer->framebufferResized_ = true;
     }

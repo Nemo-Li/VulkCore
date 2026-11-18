@@ -1,4 +1,5 @@
 /build/
+/exports/
 /cmake-build-*/
 .DS_Store
 build

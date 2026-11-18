@@ -5,7 +5,7 @@
 
 #include <vulkan/vulkan.h>
 
-struct GLFWwindow;
+#include "vulkcore/Platform/Window.hpp"
 
 namespace VulkCore {
 
@@ -24,7 +24,7 @@ struct SwapChainSupportDetails {
 
 class VulkanContext {
 public:
-    explicit VulkanContext(GLFWwindow* window);
+    explicit VulkanContext(Window* window);
     ~VulkanContext();
 
     VulkanContext(const VulkanContext&) = delete;
@@ -37,7 +37,7 @@ public:
     VkQueue graphicsQueue() const;
     VkQueue presentQueue() const;
     VkCommandPool commandPool() const;
-    GLFWwindow* window() const;
+    Window* window() const;
 
     void waitIdle() const;
 
@@ -72,7 +72,7 @@ private:
     );
 
     bool validationLayersEnabled_ = false;
-    GLFWwindow* window_ = nullptr;
+    Window* window_ = nullptr;
     VkInstance instance_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;

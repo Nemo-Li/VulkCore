@@ -1,6 +1,9 @@
 #include "RendererImplementation.hpp"
 
 #include "vulkcore/Terrain/Terrain.hpp"
+#ifndef VULKCORE_OHOS
+#include "vulkcore/Export/OhosExporter.hpp"
+#endif
 
 namespace VulkCore {
 
@@ -12,9 +15,9 @@ void Renderer::initializeImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
 
-    if (!ImGui_ImplGlfw_InitForVulkan(context_->window(), true)) {
+    if (!initializeWindowImGui(context_->window())) {
         ImGui::DestroyContext();
-        throw std::runtime_error("failed to initialize Dear ImGui GLFW backend!");
+        throw std::runtime_error("failed to initialize Dear ImGui platform backend!");
     }
 
     const QueueFamilyIndices queueFamilies =
@@ -38,7 +41,7 @@ void Renderer::initializeImGui() {
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
-        ImGui_ImplGlfw_Shutdown();
+        shutdownWindowImGui();
         ImGui::DestroyContext();
         throw std::runtime_error("failed to initialize Dear ImGui Vulkan backend!");
     }
@@ -52,7 +55,7 @@ void Renderer::shutdownImGui() {
     }
 
     ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    shutdownWindowImGui();
     ImGui::DestroyContext();
     imguiInitialized_ = false;
 }
@@ -431,6 +434,34 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
         ImGui::PopStyleColor();
     }
+
+#ifndef VULKCORE_OHOS
+    ImGui::SetNextItemWidth(std::max(180.0f, ImGui::GetContentRegionAvail().x - 180.0f));
+    ImGui::InputTextWithHint("##OhosExportPath", "New HarmonyOS project directory",
+        ohosExportPathBuffer_.data(), ohosExportPathBuffer_.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Export HarmonyOS")) {
+        ohosExportFailed_ = false;
+        try {
+            const std::filesystem::path scenePath(scenePathBuffer_.data());
+            if (!saveSceneResource(scenePath)) throw std::runtime_error(sceneStatus_);
+            OhosExportOptions options;
+            options.scene = currentScenePath_;
+            options.outputDirectory = ohosExportPathBuffer_.data();
+            const auto output = exportOhosProject(options);
+            ohosExportStatus_ = "Exported HarmonyOS project: " + output.string();
+        } catch (const std::exception& exception) {
+            ohosExportFailed_ = true;
+            ohosExportStatus_ = exception.what();
+        }
+    }
+    if (!ohosExportStatus_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ohosExportFailed_
+            ? ImVec4(1.0f, 0.38f, 0.32f, 1.0f) : ImVec4(0.42f, 0.88f, 0.56f, 1.0f));
+        ImGui::TextWrapped("%s", ohosExportStatus_.c_str());
+        ImGui::PopStyleColor();
+    }
+#endif
 
     ImGui::Separator();
     constexpr ImGuiTableFlags kWorkspaceFlags =
@@ -1373,16 +1404,92 @@ void Renderer::drawMiniMap() {
     ImGui::PopStyleVar(2);
 }
 
+void Renderer::updateTransition(float seconds) {
+    if (!transitionSettings_.enabled || !fixedFrameOutput_.empty()) return;
+    transitionPlayer_.update(seconds, transitionSettings_);
+    if (!authoredView_.enabled || transitionSettings_.activeFov <= 0.0f) return;
+
+    const float amount = std::min(seconds, 0.1f) * 1.5f;
+    transitionCameraFov_ = std::lerp(transitionCameraFov_,
+        transitionPlayer_.active ? transitionSettings_.activeFov : authoredView_.fov, amount);
+    transitionCameraOffset_ = std::lerp(transitionCameraOffset_,
+        transitionPlayer_.active ? transitionSettings_.distanceOffset : 0.0f, amount);
+    transitionCameraDistance_ = std::lerp(transitionCameraDistance_,
+        transitionCameraBaseDistance_ + transitionCameraOffset_, 0.048f);
+    const glm::vec3 direction = cameraPosition_ - cameraTarget_;
+    if (glm::length(direction) > 0.001f) {
+        cameraPosition_ = cameraTarget_ + glm::normalize(direction) *
+            std::max(0.05f, transitionCameraDistance_);
+    }
+}
+
+void Renderer::updateCameraOrbit(bool viewportHovered) {
+    if (!authoredView_.enabled || !authoredView_.orbitEnabled ||
+        playerController_.active() || !fixedFrameOutput_.empty()) {
+        cameraOrbitDragging_ = false;
+        return;
+    }
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        cameraOrbitDragging_ = viewportHovered && !ImGui::IsAnyItemActive();
+        return;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        cameraOrbitDragging_ = false;
+    }
+    const ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (!cameraOrbitDragging_ || (delta.x == 0.0f && delta.y == 0.0f)) {
+        return;
+    }
+
+    const glm::vec3 offset = cameraPosition_ - cameraTarget_;
+    const float radius = glm::length(offset);
+    if (radius < 0.05f) {
+        return;
+    }
+
+    const glm::vec3 up = authoredView_.up;
+    const float height = glm::dot(offset, up);
+    glm::vec3 horizontal = offset - up * height;
+    if (glm::length(horizontal) < 0.0001f) {
+        const glm::vec3 reference = std::abs(up.x) < 0.9f
+            ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f);
+        horizontal = glm::cross(up, reference);
+    }
+
+    constexpr float kRadiansPerPixel = 0.005f;
+    const glm::vec2 pitchLimits = glm::radians(authoredView_.orbitPitchLimits);
+    const float pitch = std::clamp(
+        std::asin(std::clamp(height / radius, -1.0f, 1.0f)) + delta.y * kRadiansPerPixel,
+        pitchLimits.x,
+        pitchLimits.y
+    );
+    const glm::mat4 yaw = glm::rotate(glm::mat4(1.0f), -delta.x * kRadiansPerPixel, up);
+    const glm::vec3 direction(yaw * glm::vec4(glm::normalize(horizontal), 0.0f));
+    cameraPosition_ = cameraTarget_ + radius * (direction * std::cos(pitch) + up * std::sin(pitch));
+    cameraBasisInitialized_ = false;
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    newWindowImGuiFrame(context_->window(), swapChain_->extent());
     ImGui::NewFrame();
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         toolUiVisible_ = !toolUiVisible_;
     }
+    if (transitionSettings_.enabled) {
+        const bool held = ImGui::IsKeyDown(ImGuiKey_Space) &&
+            (cameraOrbitDragging_ || !ImGui::IsAnyItemActive());
+        if (held != transitionHeld_) {
+            transitionHeld_ = held;
+            transitionPlayer_.loop = false;
+            transitionPlayer_.play(held, transitionSettings_);
+        }
+    }
     if (!toolUiVisible_) {
         drawMiniMap();
+        updateCameraOrbit(!ImGui::GetIO().WantCaptureMouse);
         ImGui::Render();
         return;
     }
@@ -1469,8 +1576,10 @@ void Renderer::buildImGuiFrame() {
     ImGui::TextWrapped("%s", screenshotStatus_.c_str());
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
-    ImGui::TextWrapped("The camera looks at the scene origin.");
-    const glm::vec3 defaultCameraPosition(0.0f, 0.0f, 4.0f);
+    const bool orbitEnabled = authoredView_.enabled && authoredView_.orbitEnabled;
+    const bool hasAuthoredCamera = transitionSettings_.enabled || orbitEnabled;
+    const glm::vec3 defaultCameraPosition = hasAuthoredCamera
+        ? transitionCameraStart_ : glm::vec3(0.0f, 0.0f, 4.0f);
     ImGui::DragFloat3(
         "Camera position (X/Y/Z)",
         &cameraPosition_.x,
@@ -1483,11 +1592,41 @@ void Renderer::buildImGuiFrame() {
         if (glm::length(cameraPosition_) < 0.05f) {
             cameraPosition_ = defaultCameraPosition;
         }
+        if (hasAuthoredCamera) {
+            transitionCameraStart_ = cameraPosition_;
+            transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
+            transitionCameraBaseDistance_ = transitionCameraDistance_ - transitionCameraOffset_;
+        }
         shouldSaveTransformSettings = true;
     }
     if (ImGui::Button("Reset camera position")) {
         cameraPosition_ = defaultCameraPosition;
+        if (authoredView_.enabled) cameraBasisInitialized_ = false;
+        transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
+        transitionCameraBaseDistance_ = transitionCameraDistance_;
         shouldSaveTransformSettings = true;
+    }
+    if (orbitEnabled) {
+        ImGui::TextDisabled("Left-drag the viewport to orbit");
+    }
+    if (transitionSettings_.enabled) {
+        ImGui::SeparatorText("Material transition");
+        float progress = transitionPlayer_.progress;
+        if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f)) transitionPlayer_.seek(progress);
+        if (ImGui::Button("Play forward")) {
+            transitionPlayer_.loop = false;
+            if (transitionPlayer_.progress >= 0.999999f) transitionPlayer_.seek(0.0f);
+            transitionPlayer_.play(true, transitionSettings_);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reverse")) {
+            transitionPlayer_.loop = false;
+            transitionPlayer_.play(false, transitionSettings_);
+        }
+        ImGui::Checkbox("Loop", &transitionPlayer_.loop);
+        ImGui::SameLine();
+        ImGui::Checkbox("Flow", &transitionPlayer_.flow);
+        ImGui::TextDisabled("Hold Space to reveal");
     }
     bool removeSelectedNodeRequested = false;
     std::uint32_t selectedNodeIdToRemove = std::numeric_limits<std::uint32_t>::max();
@@ -1604,7 +1743,7 @@ void Renderer::buildImGuiFrame() {
     } else {
         ImGui::TextWrapped("Select a scene object to edit its transform.");
     }
-    drawShaderDemoControls(shouldSaveTransformSettings);
+    if (!hdrSettings_.enabled) drawShaderDemoControls(shouldSaveTransformSettings);
     ImGui::Spacing();
     ImGui::TextWrapped("The 3D model remains the main viewport and is rendered before this transparent ImGui layer.");
     ImGui::SeparatorText("Environment Light");
@@ -1708,13 +1847,10 @@ void Renderer::buildImGuiFrame() {
         saveTransformSettings();
     }
 
-    if (selectedModelNode_ != nullptr &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        !leftPanelHovered &&
-        !rightPanelHovered &&
-        !toolbarHovered &&
-        !resourcePanelHovered &&
-        ImGui::IsWindowHovered()) {
+    const bool viewportHovered = ImGui::IsWindowHovered() &&
+        !leftPanelHovered && !rightPanelHovered && !toolbarHovered && !resourcePanelHovered;
+    updateCameraOrbit(viewportHovered);
+    if (selectedModelNode_ != nullptr && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && viewportHovered) {
         selectedModelNode_ = nullptr;
         updateBoundingBoxVertices();
     }

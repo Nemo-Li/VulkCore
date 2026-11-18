@@ -1,40 +1,34 @@
-# BOTW terrain texture pass
+# 手绘地形材质
 
-`assets/terrain/MainField.tscb` contains the terrain material information
-array, including each material's U/V texture scale and two additional tuning
-values. The extracted project does not include the source `.mate` files or
-`Terrain.Tex1.sbfres`, so the renderer cannot reproduce the original material
-index map verbatim.
+`scenes/game.scene` 的八种地表使用原创的无缝纹理。草地以黄绿和苔绿铺出疏密变化，土壤和砾石使用大小不一的碎石色块，岩壁保留横向层理和苔色。沙地、积雪、泥地和火山灰分别使用沙纹、冷色雪堆、湿洼和灰褐色颗粒。
 
-The project now keeps the TSCB material records and uses the area height band
-plus the area flag to choose a stable TSCB tuning record for each tile. The
-terrain shader derives a hand-painted landform blend from height, slope and
-that per-tile tuning. This gives the extracted heightfield a BOTW-inspired
-palette without claiming to be the original Nintendo material data.
+`assets/terrain/MainField.tscb` 提供地形材质的 U/V 缩放和两个材质调节值。项目现有数据缺少原始材质索引图，渲染器根据坡度、高程和世界空间噪声计算各地表覆盖权重。地形分类保持依据几何法线，避免纹理凹凸改变地表类型。
 
-Generated base-color textures live in `assets/terrain/textures/`:
+## 贴图与采样
 
-- grass, dirt, rock, sand, snow, mud, gravel and volcanic ash
-- `terrain_atlas.png` packs them into a 4×2 atlas used by
-  `shaders/src/shader_terrain.frag`
+- `terrain_<type>.png` 是 512×512 的 sRGB 底色。
+- `terrain_<type>_surface.png` 是 512×512 的线性 RGBA 贴图。RGB 存储切线空间法线，A 存储环境光可见度。V 沿图片行号增长。底色、法线与 AO 使用同一组周期性形状。
+- 两个 Vulkan 纹理数组按草、土、岩、沙、雪、泥、砾石、火山灰的顺序装载。Mip 逐层生成，防止远景采样到相邻地表颜色。缺少纹理层时可用 `terrain_atlas.png` 回退，缺少表面数据时使用几何法线和完整环境光。
+- 世界空间三平面投影覆盖陡坡和顶面。用同一投影同时采样底色与表面数据，将法线扰动转换到地形空间后混合。AO 只影响环境光。34 到 115 个地形世界单位之间逐渐减弱法线和 AO。远景使用更粗的底色 Mip，同时减弱细小斑块的影响，保留大尺度地表变化。
 
-The atlas layout is row-major: grass/dirt/rock/sand on the first row and
-snow/mud/gravel/ash on the second row. The material U/V scale from TSCB is
-carried through the terrain vertex color and controls atlas repeat frequency.
+- `terrain_atlas.png` 的首行依次为草、土、岩、沙，次行依次为雪、泥、砾石、火山灰。来自 TSCB 的 U/V 缩放通过地形顶点颜色传递给着色器，控制纹理重复频率。
 
-Before mesh generation, the loader repairs isolated height spikes, reconciles
-shared tile edges/corners, and applies eight separable `[1, 2, 1] / 4` filter
-passes across neighbouring tiles at the same resolution. The filter has a
-standard deviation of two source samples (about 4.9 m in the included tiles).
-It rounds the narrow height jumps that otherwise become triangular mountain
-teeth when sampled at stride two, while preserving broad landforms and planar
-slopes. Missing neighbours use clamped edges. The original `.hght` files stay
-unchanged; resident filtered samples supply height queries, grass placement,
-mesh bounds, rendering and the PhysX mesh.
+## 高度场平滑与法线
 
-Terrain normals come from the full filtered heightfield. Mesh stitching blends
-these normals at shared vertices instead of recomputing them from the coarser
-triangles, so slope-based material blends and lighting do not reveal the mesh
-diagonals. `vulkcore_terrain_smoke` covers cliff smoothing, isolated peaks,
-shared edges/corners (including a missing tile), preserved slopes/plateaus,
-and agreement between the mesh, height queries and heightfield normals.
+生成网格前，加载器先修复孤立的高度尖峰，并统一相邻瓦片的共享边和角点，再对同分辨率瓦片执行八轮可分离的 `[1, 2, 1] / 4` 滤波。滤波的标准差为两个原始采样间距，在项目瓦片中约为 4.9 米。这会平滑步长为二的采样容易放大的狭窄高度突变，保留大尺度地貌与平面坡面。缺少邻瓦片时使用边缘采样值。高度查询、草簇放置、网格包围盒、渲染与 PhysX 碰撞网格都使用内存中的滤波结果，原始 `.hght` 文件保留。
+
+地形法线取自完整的滤波高度场。拼接网格时，共享顶点混合这些法线，使基于坡度的材质混合和光照沿瓦片边界连续。`vulkcore_terrain_smoke` 覆盖陡坡平滑、孤立尖峰、共享边与角点（含缺瓦片）、坡面与平台保留，以及网格、高度查询和高度场法线的一致性。
+
+## 重新生成
+
+安装 NumPy 和 Pillow 后，在仓库根目录运行：
+
+```bash
+python3 scripts/generate_terrain_materials.py
+```
+
+脚本使用固定随机种子。用 `--output /path/to/textures` 可将生成结果写到另一个目录。
+
+```bash
+./build/vulkcore --scene scenes/game.scene --hide-ui
+```

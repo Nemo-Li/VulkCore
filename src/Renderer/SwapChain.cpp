@@ -1,13 +1,12 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Renderer/SwapChain.hpp"
 
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 
 #include "vulkcore/Renderer/VulkanContext.hpp"
+#include "vulkcore/Renderer/SurfacePresentation.hpp"
 
 namespace VulkCore {
 
@@ -35,7 +34,7 @@ void SwapChain::createFramebuffers(VkRenderPass renderPass) {
     framebuffers_.resize(imageViews_.size());
 
     for (size_t i = 0; i < imageViews_.size(); ++i) {
-        VkImageView attachments[] = {imageViews_[i], depthImageView_};
+        VkImageView attachments[] = {imageViews_[i], depthTargets_[i].view};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -91,8 +90,8 @@ bool SwapChain::supportsTransferSource() const {
     return transferSourceSupported_;
 }
 
-VkImage SwapChain::depthImage() const {
-    return depthImage_;
+VkImage SwapChain::depthImage(uint32_t imageIndex) const {
+    return depthTargets_.at(imageIndex).image;
 }
 
 const std::vector<VkFramebuffer>& SwapChain::framebuffers() const {
@@ -100,10 +99,21 @@ const std::vector<VkFramebuffer>& SwapChain::framebuffers() const {
 }
 
 void SwapChain::createSwapChain() {
+    prepareWindowSurface(context_.window());
     const SwapChainSupportDetails support = context_.querySwapChainSupport(context_.physicalDevice());
     const VkSurfaceFormatKHR surfaceFormat = chooseSurfaceFormat(support.formats);
     const VkPresentModeKHR presentMode = choosePresentMode(support.presentModes);
-    const VkExtent2D selectedExtent = chooseExtent(support.capabilities);
+    int width = 0, height = 0;
+    framebufferSize(context_.window(), &width, &height);
+#ifdef VULKCORE_OHOS
+    constexpr bool renderInWindowCoordinates = true;
+#else
+    constexpr bool renderInWindowCoordinates = false;
+#endif
+    const auto presentation = chooseSurfacePresentation(support.capabilities,
+        {static_cast<uint32_t>(std::max(width, 0)), static_cast<uint32_t>(std::max(height, 0))},
+        renderInWindowCoordinates);
+    const VkExtent2D selectedExtent = presentation.extent;
 
     uint32_t imageCount = support.capabilities.minImageCount + 1;
     if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount) {
@@ -141,8 +151,16 @@ void SwapChain::createSwapChain() {
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
-    createInfo.preTransform = support.capabilities.currentTransform;
-    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    createInfo.preTransform = presentation.transform;
+    for (const auto alpha : {VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+             VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+             VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+             VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR}) {
+        if ((support.capabilities.supportedCompositeAlpha & alpha) != 0) {
+            createInfo.compositeAlpha = alpha;
+            break;
+        }
+    }
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
 
@@ -156,6 +174,7 @@ void SwapChain::createSwapChain() {
 
     imageFormat_ = surfaceFormat.format;
     extent_ = selectedExtent;
+    configureWindowPresentation(context_.window());
 }
 
 void SwapChain::createImageViews() {
@@ -208,42 +227,44 @@ void SwapChain::createDepthResources() {
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(context_.device(), &imageInfo, nullptr, &depthImage_) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create depth image!");
-    }
-
+    depthTargets_.resize(images_.size());
     try {
-        VkMemoryRequirements memoryRequirements{};
-        vkGetImageMemoryRequirements(context_.device(), depthImage_, &memoryRequirements);
+        for (auto& target : depthTargets_) {
+            if (vkCreateImage(context_.device(), &imageInfo, nullptr, &target.image) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create depth image!");
+            }
+            VkMemoryRequirements memoryRequirements{};
+            vkGetImageMemoryRequirements(context_.device(), target.image, &memoryRequirements);
 
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memoryRequirements.size;
-        allocInfo.memoryTypeIndex = context_.findMemoryType(
-            memoryRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-        );
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = memoryRequirements.size;
+            allocInfo.memoryTypeIndex = context_.findMemoryType(
+                memoryRequirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            );
 
-        if (vkAllocateMemory(context_.device(), &allocInfo, nullptr, &depthImageMemory_) != VK_SUCCESS) {
-            throw std::runtime_error("failed to allocate depth image memory!");
-        }
-        if (vkBindImageMemory(context_.device(), depthImage_, depthImageMemory_, 0) != VK_SUCCESS) {
-            throw std::runtime_error("failed to bind depth image memory!");
-        }
+            if (vkAllocateMemory(context_.device(), &allocInfo, nullptr, &target.memory) != VK_SUCCESS) {
+                throw std::runtime_error("failed to allocate depth image memory!");
+            }
+            if (vkBindImageMemory(context_.device(), target.image, target.memory, 0) != VK_SUCCESS) {
+                throw std::runtime_error("failed to bind depth image memory!");
+            }
 
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = depthImage_;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = depthFormat_;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = target.image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = depthFormat_;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
 
-        if (vkCreateImageView(context_.device(), &viewInfo, nullptr, &depthImageView_) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create depth image view!");
+            if (vkCreateImageView(context_.device(), &viewInfo, nullptr, &target.view) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create depth image view!");
+            }
         }
     } catch (...) {
         cleanupDepthResources();
@@ -252,18 +273,12 @@ void SwapChain::createDepthResources() {
 }
 
 void SwapChain::cleanupDepthResources() {
-    if (depthImageView_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(context_.device(), depthImageView_, nullptr);
-        depthImageView_ = VK_NULL_HANDLE;
+    for (const auto& target : depthTargets_) {
+        vkDestroyImageView(context_.device(), target.view, nullptr);
+        vkDestroyImage(context_.device(), target.image, nullptr);
+        vkFreeMemory(context_.device(), target.memory, nullptr);
     }
-    if (depthImage_ != VK_NULL_HANDLE) {
-        vkDestroyImage(context_.device(), depthImage_, nullptr);
-        depthImage_ = VK_NULL_HANDLE;
-    }
-    if (depthImageMemory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(context_.device(), depthImageMemory_, nullptr);
-        depthImageMemory_ = VK_NULL_HANDLE;
-    }
+    depthTargets_.clear();
     depthFormat_ = VK_FORMAT_UNDEFINED;
 }
 
@@ -327,32 +342,6 @@ VkPresentModeKHR SwapChain::choosePresentMode(const std::vector<VkPresentModeKHR
         }
     }
     return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-VkExtent2D SwapChain::chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities) const {
-    if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-        return capabilities.currentExtent;
-    }
-
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(context_.window(), &width, &height);
-
-    VkExtent2D actualExtent{
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height)
-    };
-    actualExtent.width = std::clamp(
-        actualExtent.width,
-        capabilities.minImageExtent.width,
-        capabilities.maxImageExtent.width
-    );
-    actualExtent.height = std::clamp(
-        actualExtent.height,
-        capabilities.minImageExtent.height,
-        capabilities.maxImageExtent.height
-    );
-    return actualExtent;
 }
 
 } // namespace VulkCore

@@ -20,7 +20,8 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
 } ubo;
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
-layout(set = 0, binding = 6) uniform sampler2D terrainDetailTextures[8];
+layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
+layout(set = 0, binding = 7) uniform sampler2DArray surfaceLayers;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -35,196 +36,160 @@ layout(push_constant) uniform MaterialPushConstants {
 
 layout(location = 0) out vec4 outColor;
 
-const vec2 kAtlasCellSize = vec2(0.25, 0.5);
-const vec2 kAtlasInset = vec2(0.004, 0.006);
-// The painted ground layer is considerably brighter than the blade palette.
-// Keep its hue and brush detail, but bring its value close to the grass mesh
-// so exposed terrain no longer forms a luminous patch below the blades.
-const vec3 kGroundGrassColorMatch = vec3(0.72, 0.82, 0.68);
+const int kLandformCount = 8;
+const uint kAlbedoLayers = 8u;
+const uint kSurfaceLayers = 16u;
 
-vec3 matchGroundGrassColor(vec3 color) {
-    return color * kGroundGrassColorMatch;
+float hash21(vec2 cell) {
+    vec3 p = fract(vec3(cell.xyx) * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
 }
 
-vec3 sampleLandform(int index, vec2 uv) {
-    int column = index % 4;
-    int row = index / 4;
-    vec2 cellOrigin = vec2(float(column), float(row)) * kAtlasCellSize;
-    vec2 cellUv = cellOrigin + kAtlasInset +
-        fract(uv) * (kAtlasCellSize - 2.0 * kAtlasInset);
-    vec3 color = texture(textureSampler, cellUv).rgb;
-    return index == 0 ? matchGroundGrassColor(color) : color;
+float valueNoise(vec2 position) {
+    vec2 cell = floor(position);
+    vec2 f = fract(position);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(cell), hash21(cell + vec2(1, 0)), f.x),
+               mix(hash21(cell + vec2(0, 1)), hash21(cell + vec2(1, 1)), f.x), f.y);
 }
 
-vec3 sampleDetailLandform(int index, vec2 uv) {
-    vec3 color = texture(terrainDetailTextures[index], fract(uv)).rgb;
-    return index == 0 ? matchGroundGrassColor(color) : color;
+struct Projection {
+    vec2 uv;
+    vec2 dx;
+    vec2 dy;
+};
+
+Projection projectUv(vec2 uv) {
+    return Projection(uv, dFdx(uv), dFdy(uv));
 }
 
-vec3 sampleLandformTriplanar(
-    int index,
-    vec2 uvX,
-    vec2 uvY,
-    vec2 uvZ,
-    vec3 weights
-) {
-    return sampleLandform(index, uvX) * weights.x +
-        sampleLandform(index, uvY) * weights.y +
-        sampleLandform(index, uvZ) * weights.z;
-}
-
-vec3 sampleDetailLandformTriplanar(
-    int index,
-    vec2 uvX,
-    vec2 uvY,
-    vec2 uvZ,
-    vec3 weights
-) {
-    return sampleDetailLandform(index, uvX) * weights.x +
-        sampleDetailLandform(index, uvY) * weights.y +
-        sampleDetailLandform(index, uvZ) * weights.z;
-}
-
-float waveNoise(vec2 position) {
-    float first = sin(position.x * 0.0017 + sin(position.y * 0.0021));
-    float second = sin(position.y * 0.0031 + sin(position.x * 0.0013));
-    return clamp(first * 0.25 + second * 0.25 + 0.5, 0.0, 1.0);
+vec3 sampleLegacyAtlas(int layer, Projection projection) {
+    const vec2 cellSize = vec2(0.25, 0.5);
+    const vec2 inset = vec2(0.004, 0.006);
+    vec2 cellOrigin = vec2(layer % 4, layer / 4) * cellSize;
+    vec2 span = cellSize - 2.0 * inset;
+    return textureGrad(textureSampler, cellOrigin + inset + fract(projection.uv) * span,
+                       projection.dx * span, projection.dy * span).rgb;
 }
 
 void main() {
-    vec3 normal = normalize(fragNormal);
-    float height = clamp(fragTerrainHeight, 0.0, 1.0);
-    float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
-
-    // The first two vertex-color channels are the TSCB per-material U/V
-    // scales. The last two carry the preserved, currently unnamed material
-    // tuning values from the TSCB record.
-    vec2 textureScale = clamp(fragVertexColor.xy, vec2(0.05), vec2(2.0));
-    // The mesh UV is local to one terrain tile. It is intentionally kept for
-    // the broad Atlas LOD, but using it for close detail makes a large tile
-    // stretch one grass sample over too much world space. Build the close
-    // UV from world position instead, so texture density is independent of
-    // tile/mesh extent and follows the TSCB scale in terrain world units.
+    vec3 geometryNormal = normalize(fragNormal);
+    float slope = 1.0 - clamp(geometryNormal.y, 0.0, 1.0);
+    float height = fragTerrainHeight;
     float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
-    vec2 atlasUv = fragTexCoord * textureScale * 12.0;
     vec3 terrainPosition = fragWorldPosition / sceneScale;
-    vec2 detailUv = terrainPosition.xz * textureScale;
-
-    // A heightfield's XZ UV is degenerate on a vertical face: movement along
-    // Y changes the geometry but does not change the UV. Blend projections
-    // from all three axes so cliff faces get stable texel density as well.
-    vec3 projectionWeights = pow(abs(normal), vec3(4.0));
-    projectionWeights /= max(
-        dot(projectionWeights, vec3(1.0)),
-        0.0001
-    );
-    vec2 detailUvX = terrainPosition.zy * textureScale;
-    vec2 detailUvY = detailUv;
-    vec2 detailUvZ = terrainPosition.xy * textureScale;
-
-    // The atlas UV remains continuous with the existing top-down mapping.
-    // Its side projections use the actual tile size so the lower-resolution
-    // LOD does not stretch vertically or change density between tile sizes.
-    vec2 atlasWorldFrequency = 12.0 / max(fragTerrainTileSize, vec2(0.0001));
-    float atlasVerticalFrequency = sqrt(
-        max(atlasWorldFrequency.x * atlasWorldFrequency.y, 0.0001)
-    );
-    vec3 atlasProjectionPosition = terrainPosition * vec3(
-        atlasWorldFrequency.x,
-        atlasVerticalFrequency,
-        atlasWorldFrequency.y
-    );
-    vec2 atlasUvX = atlasProjectionPosition.zy * textureScale;
-    vec2 atlasUvY = atlasUv;
-    vec2 atlasUvZ = atlasProjectionPosition.xy * textureScale;
-    float materialBias = clamp(fragVertexColor.z, 0.0, 1.0);
-    float materialContrast = mix(0.7, 1.35, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
-    float regionalNoise = waveNoise(fragWorldPosition.xz * (0.7 + materialContrast * 0.3));
-    regionalNoise = clamp(
-        0.5 + (regionalNoise - 0.5) * materialContrast + (materialBias - 0.5) * 0.18,
-        0.0,
-        1.0
+    float distanceWorld = distance(fragWorldPosition, ubo.cameraPosition.xyz) / sceneScale;
+    vec2 textureScale = clamp(fragVertexColor.xy, vec2(0.05), vec2(2.0));
+    // Texture scales come from the terrain records. Keep the projected
+    // pattern broad enough that it reads as paint at player eye height.
+    vec2 frequency = 0.68 * textureScale;
+    float distanceFade = smoothstep(140.0, 720.0, distanceWorld);
+    float gradientScale = mix(1.0, 5.0, distanceFade);
+    Projection projections[3] = Projection[3](
+        projectUv(terrainPosition.zy * frequency),
+        projectUv(terrainPosition.xz * frequency),
+        projectUv(terrainPosition.xy * frequency)
     );
 
-    float snow = smoothstep(0.67, 0.9, height + slope * 0.18);
-    float rock = smoothstep(0.18, 0.62, slope) * (1.0 - snow);
-    float sand = smoothstep(0.02, 0.36, 1.0 - height) *
-        smoothstep(0.42, 0.78, regionalNoise) * (1.0 - rock) * (1.0 - snow);
-    float mud = smoothstep(0.1, 0.6, 1.0 - height) *
-        (1.0 - regionalNoise) * 0.65 * (1.0 - rock) * (1.0 - snow);
-    float gravel = smoothstep(0.1, 0.42, slope) *
-        smoothstep(0.2, 0.75, 1.0 - height) * 0.42 * (1.0 - snow);
-    float ash = smoothstep(0.35, 0.82, height) * regionalNoise *
-        0.28 * (1.0 - snow) * (1.0 - rock);
-    float dirt = smoothstep(0.22, 0.72, 1.0 - height) *
-        (1.0 - rock) * (1.0 - snow) * 0.52;
+    vec2 atlasFrequency = 12.0 / fragTerrainTileSize;
+    float verticalFrequency = sqrt(atlasFrequency.x * atlasFrequency.y);
+    vec3 atlasPosition = terrainPosition * vec3(atlasFrequency.x, verticalFrequency, atlasFrequency.y);
+    Projection legacy[3] = Projection[3](
+        projectUv(atlasPosition.zy * textureScale),
+        projectUv(fragTexCoord * textureScale * 12.0),
+        projectUv(atlasPosition.xy * textureScale)
+    );
 
-    float usedWeight = snow + rock + sand + mud + gravel + ash + dirt;
-    float grass = max(0.08, 1.0 - usedWeight);
-    float totalWeight = grass + snow + rock + sand + mud + gravel + ash + dirt;
-    grass /= totalWeight;
-    snow /= totalWeight;
-    rock /= totalWeight;
-    sand /= totalWeight;
-    mud /= totalWeight;
-    gravel /= totalWeight;
-    ash /= totalWeight;
-    dirt /= totalWeight;
+    // Independent masks for vegetation cover, shoreline deposits, exposed
+    // stone and snow. World-space patches give the transition irregular edges.
+    float region = valueNoise(terrainPosition.xz / 190.0);
+    float patchNoise = mix(valueNoise(terrainPosition.xz / 18.0), 0.5, distanceFade * 0.7);
+    float brush = mix(valueNoise(terrainPosition.xz / 4.8), 0.5, distanceFade);
+    float contrast = mix(0.76, 1.22, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
+    float cover = 0.5 + (0.48 * region + 0.38 * patchNoise + 0.14 * brush - 0.5) * contrast +
+                  (clamp(fragVertexColor.z, 0.0, 1.0) - 0.5) * 0.12;
+    float lowland = 1.0 - smoothstep(0.10, 0.25, height);
+    float highland = smoothstep(0.38, 0.64, height);
+    float brokenSlope = slope + (patchNoise - 0.5) * 0.105 + (brush - 0.5) * 0.052;
+    float snow = smoothstep(0.65, 0.81, height - slope * 0.17 + (region - 0.5) * 0.075);
+    float rock = (1.0 - snow) * smoothstep(0.18, 0.56, brokenSlope);
+    float ground = max(0.0, 1.0 - snow - rock);
+    float ash = ground * highland * smoothstep(0.52, 0.76, region) *
+                smoothstep(0.10, 0.25, brokenSlope);
+    ground -= ash;
+    float sand = ground * lowland * smoothstep(0.54, 0.74, cover);
+    ground -= sand;
+    float mud = ground * lowland * (1.0 - smoothstep(0.25, 0.47, cover));
+    ground -= mud;
+    float gravel = ground * smoothstep(0.11, 0.34, brokenSlope) *
+                   smoothstep(0.36, 0.63, cover) * 0.78;
+    ground -= gravel;
+    float dirt = ground * smoothstep(0.48, 0.69, cover + brokenSlope * 0.37);
+    float grass = ground - dirt;
+    float landforms[kLandformCount] = float[kLandformCount](
+        grass, dirt, rock, sand, snow, mud, gravel, ash
+    );
 
-    vec3 atlasAlbedo =
-        sampleLandformTriplanar(0, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * grass +
-        sampleLandformTriplanar(1, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * dirt +
-        sampleLandformTriplanar(2, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * rock +
-        sampleLandformTriplanar(3, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * sand +
-        sampleLandformTriplanar(4, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * snow +
-        sampleLandformTriplanar(5, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * mud +
-        sampleLandformTriplanar(6, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * gravel +
-        sampleLandformTriplanar(7, atlasUvX, atlasUvY, atlasUvZ, projectionWeights) * ash;
+    vec3 axes = pow(abs(geometryNormal), vec3(4.0));
+    // Negligible axes fall out gradually and do not incur texture reads.
+    axes *= smoothstep(vec3(0.0005), vec3(0.008), axes);
+    axes /= dot(axes, vec3(1.0));
 
-    vec3 albedo = atlasAlbedo;
-    if ((material.textureFlags & 8u) != 0u) {
-        // The camera position is normalized together with the scene. Divide
-        // by the same scale to make these thresholds meaningful in terrain
-        // world units for both player and editor cameras.
-        float distanceWorld = distance(
-            ubo.cameraPosition.xyz,
-            fragWorldPosition
-        ) / sceneScale;
-        const float kDetailStartDistance = 10.0;
-        const float kDetailEndDistance = 36.0;
-        float detailBlend = 1.0 - smoothstep(
-            kDetailStartDistance,
-            kDetailEndDistance,
-            distanceWorld
-        );
-        // Avoid fetching the eight high-resolution layers once the fragment
-        // is fully in the broad-distance LOD. The transition band blends both
-        // representations to avoid a visible texture pop.
-        if (detailBlend > 0.001) {
-            vec3 detailAlbedo =
-                sampleDetailLandformTriplanar(0, detailUvX, detailUvY, detailUvZ, projectionWeights) * grass +
-                sampleDetailLandformTriplanar(1, detailUvX, detailUvY, detailUvZ, projectionWeights) * dirt +
-                sampleDetailLandformTriplanar(2, detailUvX, detailUvY, detailUvZ, projectionWeights) * rock +
-                sampleDetailLandformTriplanar(3, detailUvX, detailUvY, detailUvZ, projectionWeights) * sand +
-                sampleDetailLandformTriplanar(4, detailUvX, detailUvY, detailUvZ, projectionWeights) * snow +
-                sampleDetailLandformTriplanar(5, detailUvX, detailUvY, detailUvZ, projectionWeights) * mud +
-                sampleDetailLandformTriplanar(6, detailUvX, detailUvY, detailUvZ, projectionWeights) * gravel +
-                sampleDetailLandformTriplanar(7, detailUvX, detailUvY, detailUvZ, projectionWeights) * ash;
-            albedo = mix(atlasAlbedo, detailAlbedo, detailBlend);
+    bool hasAlbedo = (material.textureFlags & kAlbedoLayers) != 0u;
+    float surfaceFade = 1.0 - smoothstep(34.0, 115.0, distanceWorld);
+    bool hasSurface = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo && surfaceFade > 0.0;
+    // Each column is a UV axis expressed in world space. Normal XY is a
+    // height gradient on that plane. Reorient gradients before mixing axes,
+    // then remove the component parallel to the geometric normal.
+    const mat2x3 bases[3] = mat2x3[3](
+        mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
+        mat2x3(vec3(1, 0, 0), vec3(0, 0, 1)),
+        mat2x3(vec3(1, 0, 0), vec3(0, 1, 0))
+    );
+    vec3 albedo = vec3(0.0);
+    vec3 normalOffset = vec3(0.0);
+    float occlusion = 0.0;
+    float sampledWeight = 0.0;
+    for (int layer = 0; layer < kLandformCount; ++layer) {
+        for (int axis = 0; axis < 3; ++axis) {
+            float weight = landforms[layer] * axes[axis];
+            weight *= smoothstep(0.001, 0.012, weight);
+            if (weight <= 0.0) continue;
+
+            Projection p = projections[axis];
+            vec3 coordinates = vec3(p.uv, float(layer));
+            vec3 color = hasAlbedo
+                ? textureGrad(albedoLayers, coordinates, p.dx * gradientScale, p.dy * gradientScale).rgb
+                : sampleLegacyAtlas(layer, legacy[axis]);
+            albedo += color * weight;
+            sampledWeight += weight;
+            if (hasSurface) {
+                vec4 surface = textureGrad(surfaceLayers, coordinates, p.dx, p.dy);
+                vec3 tangentNormal = surface.xyz * 2.0 - 1.0;
+                normalOffset += bases[axis] * (tangentNormal.xy / max(tangentNormal.z, 0.4)) * weight;
+                occlusion += surface.a * weight;
+            }
         }
     }
+    float inverseWeight = 1.0 / max(sampledWeight, 0.0001);
+    albedo *= inverseWeight;
+    // Low-frequency color variation survives minification without amplifying
+    // fine detail or imprinting a grid on distant hills.
+    float tint = (0.55 * region + 0.45 * patchNoise - 0.5) * (0.25 + 0.1 * grass);
+    albedo *= vec3(1.0 + tint, 1.0 + tint * 0.84, 1.0 + tint * 0.62);
+
+    vec3 offset = normalOffset * inverseWeight;
+    offset -= geometryNormal * dot(geometryNormal, offset);
+    vec3 normal = normalize(geometryNormal + offset * (surfaceFade * 0.78));
+    float ao = hasSurface ? mix(1.0, occlusion * inverseWeight, surfaceFade) : 1.0;
 
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
-    float diffuseFactor = max(dot(normal, lightDirection), 0.0);
-    // Quantizing diffuse light into three broad bands makes every geometric
-    // triangle read as a hard triangular patch, especially on distant hills.
-    // Keep the terrain lighting continuous so the remaining geometry is not
-    // visually amplified by the stylized light bands.
-    float lightBand = diffuseFactor;
-    vec3 ambientLight = max(ubo.ambientLight.rgb, vec3(0.0)) *
-        max(ubo.ambientLight.a, 0.0);
-    vec3 diffuseLight = max(ubo.sunLightColor.rgb, vec3(0.0)) *
-        max(ubo.sunLightDirection.w, 0.0);
-    vec3 litColor = albedo * (ambientLight + diffuseLight * (0.78 + lightBand * 0.34));
-    outColor = vec4(litColor * material.baseColor.rgb, material.opacity);
+    // Smooth wrapped diffuse keeps broad painterly light shapes and soft
+    // shadow transitions as the small-scale normal detail fades out.
+    float diffuse = smoothstep(-0.38, 0.89, dot(normal, lightDirection));
+    float skyVisibility = mix(0.60, 1.0, clamp(geometryNormal.y, 0.0, 1.0));
+    vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao;
+    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse;
+    outColor = vec4(albedo * (ambient + sunlight) * material.baseColor.rgb, material.opacity);
 }

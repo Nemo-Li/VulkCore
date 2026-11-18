@@ -1,0 +1,4 @@
+{
+  "name": "vulkcore-player", "version": "1.0.0", "description": "VulkCore scene player",
+  "modelVersion": "5.0.0", "dependencies": {}
+}
