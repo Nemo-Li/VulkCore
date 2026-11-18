@@ -15,6 +15,7 @@ export default class EntryAbility extends UIAbility {
       // Establish the landscape window before XComponent creates its surface.
       await mainWindow.setPreferredOrientation(window.Orientation.AUTO_ROTATION_LANDSCAPE);
       await mainWindow.setWindowLayoutFullScreen(true);
+      await mainWindow.setWindowSystemBarEnable([]);
       await mainWindow.setWindowKeepScreenOn(true);
       await stage.loadContent('pages/Index');
     } catch (error) {

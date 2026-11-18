@@ -48,9 +48,9 @@ void prepareWindowSurface(Window* window) {
     }
 }
 void configureWindowPresentation(Window* window) {
-    // OHOS WSI defaults to SCALE_TO_WINDOW at swapchain creation. Fit protects
-    // the content's proportions while an asynchronous window resize completes.
-    if (OH_NativeWindow_NativeWindowSetScalingModeV2(window->native, OH_SCALING_MODE_SCALE_FIT_V2) != 0) {
+    // Keep the screen covered at a uniform scale during asynchronous resizes.
+    // At a stable size, buffer and full-screen component dimensions match.
+    if (OH_NativeWindow_NativeWindowSetScalingModeV2(window->native, OH_SCALING_MODE_SCALE_CROP_V2) != 0) {
         throw std::runtime_error("Failed to configure aspect-preserving surface presentation.");
     }
 }

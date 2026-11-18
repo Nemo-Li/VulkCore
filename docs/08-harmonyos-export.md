@@ -64,9 +64,9 @@ HarmonyOSGame/
 
 ## 手机运行与操作
 
-手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）比例居中等比适配；超宽手机两侧留边，较窄屏幕上下留边，保留完整画面，不裁切或拉伸。圆盘摇杆与技能按钮独立叠加在窗口上。
+手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏并隐藏状态栏与导航栏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）画面为基准，等比放大并居中裁切以铺满手机屏幕：超宽手机裁切部分上下画面，较窄屏幕裁切部分左右画面，物体比例保持一致。XComponent 使用实际全屏尺寸，并延伸到系统栏与刘海区域；圆盘摇杆、技能按钮及小地图按全屏坐标独立布局。
 
-ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XComponent 触控使用组件内部的像素坐标，原点位于左上角，X 向右、Y 向下。创建或重建交换链前，将 NativeWindow 缓冲区设为 XComponent 回报的像素尺寸，避免沿用竖屏缓冲区。运行时不执行预旋转，因此交换链声明 `VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`，交由系统完成屏幕旋转；不能直接把 `currentTransform` 当作已执行的预旋转。交换链创建后启用等比 fit 呈现，并在下一帧绘制前处理尺寸变化，使场景投影与实际渲染目标的宽高比一致。
+ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XComponent 触控使用组件内部的像素坐标，原点位于左上角，X 向右、Y 向下。创建或重建交换链前，将 NativeWindow 缓冲区设为 XComponent 回报的像素尺寸，避免沿用竖屏缓冲区。运行时不执行预旋转，因此交换链声明 `VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`，交由系统完成屏幕旋转；不能直接把 `currentTransform` 当作已执行的预旋转。交换链创建后启用等比 crop 呈现，并在下一帧绘制前处理尺寸变化。`SceneProjection.hpp` 按实际视口宽高比调整相机投影，实现参考画面的 cover 效果；直接按屏幕分辨率渲染，避免扩大 Surface 导致小地图裁切或触摸坐标偏移。
 
 | 操作 | 控制 |
 |---|---|
@@ -83,7 +83,7 @@ ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XCo
 
 ## 验证
 
-桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。`vulkcore_movement_smoke` 检查连续移动方向、归一化和非法输入回退。`vulkcore_touch_smoke` 回放 XComponent 触摸事件，覆盖 `isPressed=false` 的移动事件、多个手指、跨越屏幕中线、松手、取消及后台重置。
+桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略和相机投影保持一致。全屏投影测试覆盖 16:9、20:9、19.5:9、16:10、4:3 等屏幕比例，验证等比放大、居中裁切、屏幕覆盖及物体不变形。`vulkcore_movement_smoke` 检查连续移动方向、归一化和非法输入回退。`vulkcore_touch_smoke` 回放 XComponent 触摸事件，覆盖 `isPressed=false` 的移动事件、多个手指、跨越屏幕中线、松手、取消及后台重置。
 
 ```bash
 ctest --test-dir build --output-on-failure
