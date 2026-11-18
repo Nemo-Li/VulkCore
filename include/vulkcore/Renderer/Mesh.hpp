@@ -165,6 +165,16 @@ struct MaterialData {
     BlendMode blendMode = BlendMode::Opaque;
     bool depthWrite = true;
     bool doubleSided = false;
+    bool drawBackFacesFirst = false;
+    bool depthLessEqual = false;
+    bool samplesOpaqueScene = false;
+    bool customParameters = false;
+    glm::vec4 shaderParameters0{0.0f};
+    glm::vec4 shaderParameters1{0.0f};
+    // Optional binding from the scene's normalized transition to shader opacity.
+    bool transitionOpacity = false;
+    float transitionVisibleFrom = 0.0f;
+    float transitionVisibleUntil = 1.0f;
     bool userCreated = false;
     bool userModified = false;
     ShaderConfiguration shaderConfiguration;

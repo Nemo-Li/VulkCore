@@ -26,7 +26,7 @@ public:
     VkExtent2D extent() const;
     VkImage image(uint32_t imageIndex) const;
     bool supportsTransferSource() const;
-    VkImage depthImage() const;
+    VkImage depthImage(uint32_t imageIndex) const;
     const std::vector<VkFramebuffer>& framebuffers() const;
 
 private:
@@ -39,7 +39,6 @@ private:
     VkFormat findDepthFormat() const;
     static VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
     static VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& presentModes);
-    VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities) const;
 
     VulkanContext& context_;
     VkSwapchainKHR swapChain_ = VK_NULL_HANDLE;
@@ -50,9 +49,12 @@ private:
     std::vector<VkImageView> imageViews_;
     std::vector<VkFramebuffer> framebuffers_;
     VkFormat depthFormat_ = VK_FORMAT_UNDEFINED;
-    VkImage depthImage_ = VK_NULL_HANDLE;
-    VkDeviceMemory depthImageMemory_ = VK_NULL_HANDLE;
-    VkImageView depthImageView_ = VK_NULL_HANDLE;
+    struct DepthTarget {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+    };
+    std::vector<DepthTarget> depthTargets_;
 };
 
 } // namespace VulkCore

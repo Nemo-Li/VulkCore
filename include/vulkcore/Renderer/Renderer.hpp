@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <iosfwd>
 #include <limits>
 #include <memory>
@@ -18,32 +19,37 @@
 #include "vulkcore/Core/Config.hpp"
 #include "vulkcore/Gameplay/Player.hpp"
 #include "vulkcore/Renderer/Mesh.hpp"
+#include "vulkcore/Renderer/SceneEffects.hpp"
 #include "vulkcore/Renderer/ParticleSystem.hpp"
+#include "vulkcore/Renderer/Texture.hpp"
 
-struct GLFWwindow;
+#include "vulkcore/Platform/Window.hpp"
 
 namespace VulkCore {
 
 class Buffer;
 class PhysicsWorld;
 class SwapChain;
-class Texture;
 class VulkanContext;
 class TerrainScene;
+class HdrComposition;
 
 class Renderer {
 public:
     explicit Renderer(
-        GLFWwindow* window,
+        Window* window,
         const std::filesystem::path& startupScene = {},
-        bool hideTools = false
+        bool hideTools = false,
+        const std::function<void()>& onSceneLoading = {}
     );
     ~Renderer();
 
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    void drawFrame();
+    // Returns true once the presentation queue accepts the frame.
+    bool drawFrame();
+    void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
 private:
     struct SceneRenderTarget {
@@ -115,8 +121,11 @@ private:
     void createBoundingBoxPipeline();
     void createParticlePipelines();
     void createPostProcessPipeline();
-    void createSkyboxPipeline();
-    VkPipeline createParticlePipeline(bool additiveBlending);
+    VkPipeline createSkyboxPipeline(VkRenderPass pass);
+    VkPipeline createParticlePipeline(bool additiveBlending, VkRenderPass pass);
+    void configureHdrComposition();
+    void updateTransition(float seconds);
+    void updateCameraOrbit(bool viewportHovered);
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
@@ -169,7 +178,7 @@ private:
     void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
-    void createPresentSemaphores();
+    void recreatePresentSemaphores();
     void updateCameraBasis();
     void updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
@@ -192,15 +201,17 @@ private:
     VkShaderModule shaderModule(const std::string& shaderName);
     VkPipeline createMaterialGraphicsPipeline(
         const ShaderConfiguration& configuration,
-        const MaterialData& material
+        const MaterialData& material,
+        VkRenderPass pass,
+        VkCullModeFlags cullMode
     );
     VkPipeline graphicsPipelineForMaterial(
-        const MaterialData& material
+        const MaterialData& material, bool hdr, VkCullModeFlags cullMode
     );
     VkPipeline computePipelineForMaterial(const MaterialData& material);
     std::string graphicsPipelineKey(
         const ShaderConfiguration& configuration,
-        const MaterialData& material
+        const MaterialData& material, bool hdr, VkCullModeFlags cullMode
     ) const;
     std::uint32_t materialIndexForPart(const MeshPart& part) const;
     std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
@@ -209,6 +220,7 @@ private:
     void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
     void drawShaderDemoControls(bool& shouldSaveSettings);
     void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
+    void recordLegacySceneTransfer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordCommandBuffer(
         VkCommandBuffer commandBuffer,
         uint32_t imageIndex,
@@ -216,14 +228,14 @@ private:
     );
     void ensureScreenshotBuffer();
     void recordScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-    void saveScreenshot();
+    void saveScreenshot(const std::filesystem::path& output);
     void recreateSwapChain();
 
     VkShaderModule createShaderModule(const std::vector<char>& code) const;
 
-    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    static void framebufferResizeCallback(Window* window, int width, int height);
 
-    GLFWwindow* window_ = nullptr;
+    Window* window_ = nullptr;
     std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;
@@ -238,6 +250,22 @@ private:
     VkPipeline particleAdditivePipeline_ = VK_NULL_HANDLE;
     VkPipeline postProcessPipeline_ = VK_NULL_HANDLE;
     VkPipeline skyboxPipeline_ = VK_NULL_HANDLE;
+    VkPipeline hdrSkyboxPipeline_ = VK_NULL_HANDLE;
+    VkPipeline hdrParticleAlphaPipeline_ = VK_NULL_HANDLE;
+    VkPipeline hdrParticleAdditivePipeline_ = VK_NULL_HANDLE;
+    std::unique_ptr<HdrComposition> hdrComposition_;
+    HdrSettings hdrSettings_;
+    AuthoredView authoredView_;
+    bool cameraOrbitDragging_ = false;
+    TransitionSettings transitionSettings_;
+    TransitionPlayer transitionPlayer_;
+    glm::vec3 transitionCameraStart_{0.0f};
+    float transitionCameraBaseDistance_ = 0.0f;
+    float transitionCameraDistance_ = 0.0f;
+    float transitionCameraOffset_ = 0.0f;
+    float transitionCameraFov_ = 45.0f;
+    bool transitionHeld_ = false;
+    std::filesystem::path fixedFrameOutput_;
     std::array<std::vector<std::string>, kShaderStageCount> availableShaders_;
     std::unordered_map<std::string, VkShaderModule> shaderModules_;
     std::unordered_map<std::string, VkPipeline> nodeGraphicsPipelines_;
@@ -284,10 +312,9 @@ private:
     std::vector<std::unique_ptr<Texture>> materialTextures_;
     std::vector<std::unique_ptr<Texture>> normalTextures_;
     std::vector<std::unique_ptr<Texture>> specularTextures_;
-    static constexpr std::size_t kTerrainDetailTextureCount = 8;
-    std::array<std::unique_ptr<Texture>, kTerrainDetailTextureCount>
-        terrainDetailTextures_{};
-    bool terrainDetailTexturesReady_ = false;
+    std::unique_ptr<Texture> terrainAlbedoLayers_;
+    std::unique_ptr<Texture> terrainSurfaceLayers_;
+    std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
     std::unique_ptr<Texture> fallbackTexture_;
@@ -367,6 +394,9 @@ private:
     std::vector<std::filesystem::path> sceneResourcePaths_;
     std::filesystem::path currentScenePath_;
     std::array<char, 512> scenePathBuffer_{};
+    std::array<char, 512> ohosExportPathBuffer_{};
+    std::string ohosExportStatus_;
+    bool ohosExportFailed_ = false;
     std::string sceneStatus_;
     bool sceneStatusFailed_ = false;
     ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;
