@@ -4,7 +4,7 @@
 namespace VulkCore {
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -49,8 +49,11 @@ void Renderer::createDescriptorSetLayout() {
 
     bindings[6].binding = 6;
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[6].descriptorCount = static_cast<uint32_t>(kTerrainDetailTextureCount);
+    bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[7] = bindings[6];
+    bindings[7].binding = 7;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

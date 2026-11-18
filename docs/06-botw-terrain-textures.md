@@ -1,23 +1,26 @@
-# BOTW terrain texture pass
+# 手绘地形材质
 
-`assets/terrain/MainField.tscb` contains the terrain material information
-array, including each material's U/V texture scale and two additional tuning
-values. The extracted project does not include the source `.mate` files or
-`Terrain.Tex1.sbfres`, so the renderer cannot reproduce the original material
-index map verbatim.
+`scenes/game.scene` 的八种地表使用原创的无缝纹理。草地以黄绿和苔绿铺出疏密变化，土壤和砾石使用大小不一的碎石色块，岩壁保留横向层理和苔色。沙地、积雪、泥地和火山灰分别使用沙纹、冷色雪堆、湿洼和灰褐色颗粒。
 
-The project now keeps the TSCB material records and uses the area height band
-plus the area flag to choose a stable TSCB tuning record for each tile. The
-terrain shader derives a hand-painted landform blend from height, slope and
-that per-tile tuning. This gives the extracted heightfield a BOTW-inspired
-palette without claiming to be the original Nintendo material data.
+`assets/terrain/MainField.tscb` 提供地形材质的 U/V 缩放和两个材质调节值。项目现有数据缺少原始材质索引图，渲染器根据坡度、高程和世界空间噪声计算各地表覆盖权重。地形分类保持依据几何法线，避免纹理凹凸改变地表类型。
 
-Generated base-color textures live in `assets/terrain/textures/`:
+## 贴图与采样
 
-- grass, dirt, rock, sand, snow, mud, gravel and volcanic ash
-- `terrain_atlas.png` packs them into a 4×2 atlas used by
-  `shaders/src/shader_terrain.frag`
+- `terrain_<type>.png` 是 512×512 的 sRGB 底色。
+- `terrain_<type>_surface.png` 是 512×512 的线性 RGBA 贴图。RGB 存储切线空间法线，A 存储环境光可见度。V 沿图片行号增长。底色、法线与 AO 使用同一组周期性形状。
+- 两个 Vulkan 纹理数组按草、土、岩、沙、雪、泥、砾石、火山灰的顺序装载。Mip 逐层生成，防止远景采样到相邻地表颜色。缺少纹理层时可用 `terrain_atlas.png` 回退，缺少表面数据时使用几何法线和完整环境光。
+- 世界空间三平面投影覆盖陡坡和顶面。用同一投影同时采样底色与表面数据，将法线扰动转换到地形空间后混合。AO 只影响环境光。34 到 115 个地形世界单位之间逐渐减弱法线和 AO。远景使用更粗的底色 Mip，同时减弱细小斑块的影响，保留大尺度地表变化。
 
-The atlas layout is row-major: grass/dirt/rock/sand on the first row and
-snow/mud/gravel/ash on the second row. The material U/V scale from TSCB is
-carried through the terrain vertex color and controls atlas repeat frequency.
+## 重新生成
+
+安装 NumPy 和 Pillow 后，在仓库根目录运行：
+
+```bash
+python3 scripts/generate_terrain_materials.py
+```
+
+脚本使用固定随机种子。用 `--output /path/to/textures` 可将生成结果写到另一个目录。
+
+```bash
+./build/vulkcore --scene scenes/game.scene --hide-ui
+```

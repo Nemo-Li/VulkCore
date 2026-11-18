@@ -422,13 +422,14 @@ void Renderer::recordCommandBuffer(
         MaterialPushConstants materialPushConstants{};
         materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
         materialPushConstants.baseColor = material.baseColor;
+        const bool terrainMaterial =
+            material.shaderConfiguration.shader(ShaderStage::Fragment) == "shader_terrain.frag";
         materialPushConstants.textureFlags =
             (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
             (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
             (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
-            ((terrainDetailTexturesReady_ &&
-              material.shaderConfiguration.shader(ShaderStage::Fragment) ==
-                  "shader_terrain.frag") ? 8u : 0u);
+            (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
+            (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled

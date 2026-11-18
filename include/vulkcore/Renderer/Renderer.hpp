@@ -310,10 +310,9 @@ private:
     std::vector<std::unique_ptr<Texture>> materialTextures_;
     std::vector<std::unique_ptr<Texture>> normalTextures_;
     std::vector<std::unique_ptr<Texture>> specularTextures_;
-    static constexpr std::size_t kTerrainDetailTextureCount = 8;
-    std::array<std::unique_ptr<Texture>, kTerrainDetailTextureCount>
-        terrainDetailTextures_{};
-    bool terrainDetailTexturesReady_ = false;
+    std::unique_ptr<Texture> terrainAlbedoLayers_;
+    std::unique_ptr<Texture> terrainSurfaceLayers_;
+    std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
     std::unique_ptr<Texture> fallbackTexture_;

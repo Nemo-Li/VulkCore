@@ -756,11 +756,42 @@ void Renderer::createMaterialTextures() {
     materialTextures_.resize(meshData_.materials.size());
     normalTextures_.resize(meshData_.materials.size());
     specularTextures_.resize(meshData_.materials.size());
-    terrainDetailTextures_ = {};
-    terrainDetailTexturesReady_ = false;
+    terrainAlbedoLayers_.reset();
+    terrainSurfaceLayers_.reset();
+    fallbackTerrainLayers_.reset();
     bool needsWhiteFallbackTexture = false;
     bool needsNormalFallbackTexture = false;
-    std::filesystem::path terrainAtlasDirectory;
+    const auto terrain = std::find_if(meshData_.materials.begin(), meshData_.materials.end(),
+        [](const MaterialData& material) {
+            return material.texturePath.filename() == "terrain_atlas.png" &&
+                material.shaderConfiguration.shader(ShaderStage::Fragment) == "shader_terrain.frag";
+        });
+    if (terrain != meshData_.materials.end()) {
+        const std::filesystem::path terrainTextureDirectory = terrain->texturePath.parent_path();
+        static constexpr std::array kLandforms = {
+            "grass", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"
+        };
+        const auto loadLayers = [&](const char* suffix, TextureColorSpace colorSpace) {
+            std::vector<std::filesystem::path> paths;
+            for (const char* landform : kLandforms) {
+                paths.push_back(terrainTextureDirectory /
+                    (std::string("terrain_") + landform + suffix + ".png"));
+            }
+            // Older terrain packs only have base color and the atlas.
+            if (!suffix[0] || std::filesystem::is_regular_file(paths.front())) {
+                try {
+                    return std::make_unique<Texture>(*context_, paths, colorSpace);
+                } catch (const std::exception& error) {
+                    std::cerr << "warning: failed to load terrain layers: " << error.what() << '\n';
+                }
+            }
+            return std::unique_ptr<Texture>{};
+        };
+        terrainAlbedoLayers_ = loadLayers("", TextureColorSpace::Srgb);
+        if (terrainAlbedoLayers_) {
+            terrainSurfaceLayers_ = loadLayers("_surface", TextureColorSpace::Linear);
+        }
+    }
 
     const auto loadTexture = [this](
         const EmbeddedTextureData& embeddedTexture,
@@ -793,12 +824,9 @@ void Renderer::createMaterialTextures() {
 
     for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
         const MaterialData& material = meshData_.materials[materialIndex];
-        materialTextures_[materialIndex] = loadTexture(
-            material.embeddedTexture,
-            material.texturePath,
-            "base color",
-            materialIndex
-        );
+        // Only upload the atlas if this terrain pack cannot use texture arrays.
+        materialTextures_[materialIndex] = terrainAlbedoLayers_ && &material == &*terrain
+            ? nullptr : loadTexture(material.embeddedTexture, material.texturePath, "base color", materialIndex);
         normalTextures_[materialIndex] = loadTexture(
             material.embeddedNormalTexture,
             material.normalTexturePath,
@@ -811,11 +839,6 @@ void Renderer::createMaterialTextures() {
             "specular",
             materialIndex
         );
-        if (material.texturePath.filename() == "terrain_atlas.png" &&
-            materialTextures_[materialIndex] != nullptr) {
-            terrainAtlasDirectory = material.texturePath.parent_path();
-        }
-
         needsWhiteFallbackTexture = needsWhiteFallbackTexture ||
             materialTextures_[materialIndex] == nullptr ||
             specularTextures_[materialIndex] == nullptr;
@@ -837,34 +860,9 @@ void Renderer::createMaterialTextures() {
         );
     }
 
-    if (!terrainAtlasDirectory.empty()) {
-        static constexpr std::array<const char*, kTerrainDetailTextureCount> kTerrainDetailNames = {
-            "terrain_grass.png",
-            "terrain_dirt.png",
-            "terrain_rock.png",
-            "terrain_sand.png",
-            "terrain_snow.png",
-            "terrain_mud.png",
-            "terrain_gravel.png",
-            "terrain_ash.png"
-        };
-        terrainDetailTexturesReady_ = true;
-        for (std::size_t index = 0; index < kTerrainDetailTextureCount; ++index) {
-            try {
-                terrainDetailTextures_[index] = std::make_unique<Texture>(
-                    *context_,
-                    terrainAtlasDirectory / kTerrainDetailNames[index]
-                );
-            } catch (const std::exception& error) {
-                terrainDetailTexturesReady_ = false;
-                std::cerr << "warning: failed to load terrain detail texture '"
-                          << kTerrainDetailNames[index] << "': " << error.what() << '\n';
-                break;
-            }
-        }
-        if (!terrainDetailTexturesReady_) {
-            terrainDetailTextures_ = {};
-        }
+    if (!terrainAlbedoLayers_ || !terrainSurfaceLayers_) {
+        const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
+        fallbackTerrainLayers_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1, true);
     }
 }
 
@@ -933,8 +931,6 @@ void Renderer::rebuildMaterialResources() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
-    terrainDetailTextures_ = {};
-    terrainDetailTexturesReady_ = false;
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     descriptorSets_.clear();
@@ -975,8 +971,7 @@ void Renderer::createDescriptorPool() {
         materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity) *
-        (5 + static_cast<uint32_t>(kTerrainDetailTextureCount)) +
-        skyboxDescriptorCount;
+        7 + skyboxDescriptorCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1043,27 +1038,22 @@ void Renderer::createDescriptorSets() {
             imageInfos[2].imageView = specularTexture->imageView();
             imageInfos[2].sampler = specularTexture->sampler();
 
-            std::array<VkDescriptorImageInfo, kTerrainDetailTextureCount>
-                terrainDetailImageInfos{};
-            for (std::size_t detailIndex = 0;
-                 detailIndex < kTerrainDetailTextureCount;
-                 ++detailIndex) {
-                const Texture* detailTexture = terrainDetailTextures_[detailIndex].get();
-                if (detailTexture == nullptr) {
-                    detailTexture = fallbackTexture_.get();
-                }
-                terrainDetailImageInfos[detailIndex].imageLayout =
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                terrainDetailImageInfos[detailIndex].imageView = detailTexture->imageView();
-                terrainDetailImageInfos[detailIndex].sampler = detailTexture->sampler();
-            }
+            const auto layerInfo = [this](const std::unique_ptr<Texture>& layers) {
+                const Texture& image = layers ? *layers : *fallbackTerrainLayers_;
+                return VkDescriptorImageInfo{
+                    image.sampler(), image.imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                };
+            };
+            const std::array terrainImageInfos = {
+                layerInfo(terrainAlbedoLayers_), layerInfo(terrainSurfaceLayers_)
+            };
 
             VkDescriptorImageInfo depthImageInfo{};
             depthImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
-            std::array<VkWriteDescriptorSet, 6> descriptorWrites{};
+            std::array<VkWriteDescriptorSet, 7> descriptorWrites{};
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
@@ -1104,15 +1094,15 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[4].descriptorCount = 1;
             descriptorWrites[4].pImageInfo = &depthImageInfo;
 
-            descriptorWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[5].dstSet = descriptorSets_[descriptorSetIndex];
-            descriptorWrites[5].dstBinding = 6;
-            descriptorWrites[5].dstArrayElement = 0;
-            descriptorWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[5].descriptorCount = static_cast<uint32_t>(
-                kTerrainDetailTextureCount
-            );
-            descriptorWrites[5].pImageInfo = terrainDetailImageInfos.data();
+            for (std::size_t layerIndex = 0; layerIndex < terrainImageInfos.size(); ++layerIndex) {
+                auto& write = descriptorWrites[5 + layerIndex];
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = descriptorSets_[descriptorSetIndex];
+                write.dstBinding = static_cast<uint32_t>(6 + layerIndex);
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.descriptorCount = 1;
+                write.pImageInfo = &terrainImageInfos[layerIndex];
+            }
 
             vkUpdateDescriptorSets(
                 context_->device(),
