@@ -8,7 +8,7 @@
 
 #include "vulkcore/Renderer/Vertex.hpp"
 
-struct GLFWwindow;
+#include "vulkcore/Platform/Window.hpp"
 
 namespace VulkCore {
 
@@ -57,7 +57,7 @@ public:
     );
     void configureAttackAnimation(PlayerAttack attack, float durationSeconds);
     void update(
-        GLFWwindow* window,
+        Window* window,
         float deltaSeconds,
         PhysicsWorld& physics,
         bool keyboardCaptured,

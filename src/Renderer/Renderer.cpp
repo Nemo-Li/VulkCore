@@ -1,5 +1,4 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
@@ -15,17 +14,17 @@
 namespace VulkCore {
 
 Renderer::Renderer(
-    GLFWwindow* window,
+    Window* window,
     const std::filesystem::path& startupScene,
     bool hideTools
 )
     : window_(window), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
-        throw std::invalid_argument("Renderer requires a valid GLFW window!");
+        throw std::invalid_argument("Renderer requires a valid platform window!");
     }
 
-    glfwSetWindowUserPointer(window, this);
-    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    setWindowUserPointer(window, this);
+    setResizeCallback(window, framebufferResizeCallback);
 
     physicsWorld_ = std::make_unique<PhysicsWorld>();
     context_ = std::make_unique<VulkanContext>(window);
@@ -153,10 +152,10 @@ Renderer::~Renderer() {
     physicsWorld_.reset();
 }
 
-void Renderer::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+void Renderer::framebufferResizeCallback(Window* window, int width, int height) {
     (void)width;
     (void)height;
-    auto* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    auto* renderer = static_cast<Renderer*>(windowUserPointer(window));
     if (renderer != nullptr) {
         renderer->framebufferResized_ = true;
     }

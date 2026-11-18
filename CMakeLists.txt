@@ -10,16 +10,27 @@ if(POLICY CMP0179)
     cmake_policy(SET CMP0179 NEW)
 endif()
 
-project(VulkCore VERSION 0.1.0 LANGUAGES CXX)
+project(VulkCore VERSION 0.1.0 LANGUAGES C CXX)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+    set(VULKCORE_OHOS ON)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    # The SDK passes --gcc-toolchain to Clang; PhysX treats driver warnings as errors.
+    add_compile_options(-Wno-unused-command-line-argument)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Vulkan REQUIRED)
-
-find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
+if(VULKCORE_OHOS)
+    add_library(Vulkan::Vulkan INTERFACE IMPORTED)
+    set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_LINK_LIBRARIES vulkan)
+else()
+    find_package(Vulkan REQUIRED)
+    find_program(VULKCORE_GLSLC_EXECUTABLE glslc REQUIRED)
+endif()
 
 include(FetchContent)
 
@@ -57,7 +68,17 @@ set(PX_BUILDPVDRUNTIME OFF CACHE BOOL "Disable OmniPVD runtime" FORCE)
 set(PUBLIC_RELEASE 1 CACHE BOOL "Use the PhysX public API" FORCE)
 set(NV_FORCE_64BIT_SUFFIX ON CACHE BOOL "Use 64-bit PhysX library names" FORCE)
 
-if(WIN32)
+if(VULKCORE_OHOS)
+    # Use PhysX's Android build rules with the OHOS toolchain and libc.
+    set(TARGET_BUILD_PLATFORM android CACHE STRING "PhysX target platform" FORCE)
+    set(ANDROID_ABI "${OHOS_ARCH}")
+    set(CMAKE_ANDROID_ARCH_ABI "${OHOS_ARCH}")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        set(PX_OUTPUT_ARCH arm CACHE STRING "PhysX output architecture family" FORCE)
+    else()
+        set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
+    endif()
+elseif(WIN32)
     set(TARGET_BUILD_PLATFORM windows CACHE STRING "PhysX target platform" FORCE)
     set(PX_OUTPUT_ARCH x86 CACHE STRING "PhysX output architecture family" FORCE)
 elseif(APPLE)
@@ -90,12 +111,18 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 set(CMAKE_MODULE_PATH "${VULKCORE_SAVED_CMAKE_MODULE_PATH}")
+if(VULKCORE_OHOS)
+    include(cmake/OhosPhysX.cmake)
+endif()
 
 # Assimp is used for importing model geometry. Prefer an installed package so
 # local package managers can provide a shared build; FetchContent keeps a fresh
 # checkout buildable when Assimp is not installed on the host.
 find_package(assimp CONFIG QUIET)
 if(NOT TARGET assimp::assimp)
+    if(VULKCORE_OHOS)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "Link mobile dependencies into the player" FORCE)
+    endif()
     set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
     set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
@@ -145,6 +172,7 @@ if(NOT VULKCORE_SHADER_SOURCES)
 endif()
 
 set(VULKCORE_SHADER_BINARIES)
+if(NOT VULKCORE_OHOS)
 foreach(SHADER_SOURCE IN LISTS VULKCORE_SHADER_SOURCES)
     get_filename_component(SHADER_FILE_NAME "${SHADER_SOURCE}" NAME)
     set(SHADER_BINARY "${VULKCORE_SHADER_BINARY_DIR}/${SHADER_FILE_NAME}.spv")
@@ -161,14 +189,17 @@ foreach(SHADER_SOURCE IN LISTS VULKCORE_SHADER_SOURCES)
 endforeach()
 
 add_custom_target(VulkCoreShaders ALL DEPENDS ${VULKCORE_SHADER_BINARIES})
+endif()
 
 # Prefer the CMake package exported by the dependency, then fall back to
 # pkg-config for environments where only the package metadata is installed.
+if(NOT VULKCORE_OHOS)
 find_package(glfw3 3.3 CONFIG QUIET)
 if(TARGET glfw)
     set(VULKCORE_GLFW_TARGET glfw)
 elseif(TARGET glfw3)
     set(VULKCORE_GLFW_TARGET glfw3)
+endif()
 endif()
 
 find_package(glm CONFIG QUIET)
@@ -178,11 +209,19 @@ elseif(TARGET glm::GLM)
     set(VULKCORE_GLM_TARGET glm::GLM)
 endif()
 
-if(NOT VULKCORE_GLFW_TARGET OR NOT VULKCORE_GLM_TARGET)
+if(VULKCORE_OHOS AND NOT VULKCORE_GLM_TARGET)
+    FetchContent_Declare(glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG 1.0.1 GIT_SHALLOW TRUE EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(glm)
+    set(VULKCORE_GLM_TARGET glm::glm)
+endif()
+
+if((NOT VULKCORE_GLFW_TARGET AND NOT VULKCORE_OHOS) OR NOT VULKCORE_GLM_TARGET)
     find_package(PkgConfig QUIET)
 endif()
 
-if(NOT VULKCORE_GLFW_TARGET)
+if(NOT VULKCORE_GLFW_TARGET AND NOT VULKCORE_OHOS)
     if(NOT PkgConfig_FOUND)
         message(FATAL_ERROR
             "GLFW was not found. Install GLFW or provide a glfw3 CMake package."
@@ -234,9 +273,12 @@ add_library(vulkcore_imgui STATIC
     "${imgui_SOURCE_DIR}/imgui_tables.cpp"
     "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
     "${imgui_SOURCE_DIR}/imgui_demo.cpp"
-    "${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
 )
+
+if(NOT VULKCORE_OHOS)
+    target_sources(vulkcore_imgui PRIVATE "${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp")
+endif()
 
 target_include_directories(vulkcore_imgui
     PUBLIC
@@ -264,6 +306,9 @@ target_include_directories(vulkcore_physics SYSTEM
 )
 
 target_compile_definitions(vulkcore_physics PRIVATE PX_PHYSX_STATIC_LIB)
+if(VULKCORE_OHOS)
+    vulkcore_configure_ohos_physx_target(vulkcore_physics)
+endif()
 
 target_link_libraries(vulkcore_physics
     PUBLIC
@@ -279,9 +324,7 @@ else()
     target_compile_options(vulkcore_physics PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(VulkCore
-    src/main.cpp
-    src/Application.cpp
+set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/Buffer.cpp
     src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
@@ -304,7 +347,27 @@ add_executable(VulkCore
     src/Utils/StbImage.cpp
 )
 
-add_dependencies(VulkCore VulkCoreShaders)
+if(VULKCORE_OHOS)
+    add_library(VulkCore SHARED ${VULKCORE_RUNTIME_SOURCES}
+        src/Platform/OhosWindow.cpp src/Platform/OhosRuntime.cpp)
+    target_compile_definitions(VulkCore PRIVATE VULKCORE_OHOS VK_USE_PLATFORM_OHOS NDEBUG)
+    target_compile_definitions(vulkcore_imgui PUBLIC VK_USE_PLATFORM_OHOS)
+    target_link_libraries(VulkCore PRIVATE ace_ndk.z ace_napi.z rawfile.z hilog_ndk.z native_window)
+    # Resolve paths against the extracted rawfile directory at runtime.
+    set(VULKCORE_SHADER_BINARY_DIR "shaders")
+    set(VULKCORE_MODEL_PATH "assets/models/mill-scene.fbx")
+    set(VULKCORE_CONFIG_PATH "vulkcore.ini")
+else()
+    add_library(vulkcore_export STATIC src/Export/OhosExporter.cpp)
+    target_include_directories(vulkcore_export PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_compile_definitions(vulkcore_export PRIVATE
+        VULKCORE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"
+        VULKCORE_EXPORT_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\")
+    add_executable(VulkCore ${VULKCORE_RUNTIME_SOURCES}
+        src/main.cpp src/Application.cpp src/Platform/DesktopWindow.cpp)
+    target_link_libraries(VulkCore PRIVATE vulkcore_export)
+    add_dependencies(VulkCore VulkCoreShaders)
+endif()
 
 target_include_directories(VulkCore
     PRIVATE
@@ -340,7 +403,16 @@ set_target_properties(VulkCore PROPERTIES
 )
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND NOT VULKCORE_OHOS)
+    add_executable(vulkcore_surface_smoke tests/SurfacePresentationSmoke.cpp)
+    target_include_directories(vulkcore_surface_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(vulkcore_surface_smoke PRIVATE Vulkan::Vulkan ${VULKCORE_GLM_TARGET})
+    add_test(NAME vulkcore_surface_smoke COMMAND vulkcore_surface_smoke)
+
+    add_executable(vulkcore_export_smoke tests/OhosExportSmoke.cpp)
+    target_link_libraries(vulkcore_export_smoke PRIVATE vulkcore_export)
+    add_dependencies(vulkcore_export_smoke VulkCoreShaders)
+    add_test(NAME vulkcore_export_smoke COMMAND vulkcore_export_smoke)
     add_executable(vulkcore_physics_smoke
         tests/PhysicsWorldSmoke.cpp
     )

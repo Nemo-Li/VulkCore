@@ -660,6 +660,14 @@ void Renderer::recordCommandBuffer(
 }
 
 void Renderer::drawFrame() {
+#ifdef VULKCORE_OHOS
+    // Update the swapchain, scene targets and projection before drawing into a
+    // changed XComponent, rather than presenting one frame at the old ratio.
+    if (framebufferResized_) {
+        recreateSwapChain();
+        framebufferResized_ = false;
+    }
+#endif
     if (vkWaitForFences(
             context_->device(),
             1,
@@ -688,7 +696,7 @@ void Renderer::drawFrame() {
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
-    const bool screenshotPressed = glfwGetKey(context_->window(), GLFW_KEY_F12) == GLFW_PRESS;
+    const bool screenshotPressed = keyPressed(context_->window(), Key::Screenshot);
     const bool screenshotRequested = screenshotPressed && !screenshotKeyDown_;
     screenshotKeyDown_ = screenshotPressed;
     const bool captureScreenshot = screenshotRequested && swapChain_->supportsTransferSource();
@@ -785,11 +793,16 @@ void Renderer::drawFrame() {
 void Renderer::recreateSwapChain() {
     int width = 0;
     int height = 0;
-    glfwGetFramebufferSize(context_->window(), &width, &height);
+    framebufferSize(context_->window(), &width, &height);
+#ifdef VULKCORE_OHOS
+    // Surface lifecycle is owned by XComponent; never block its callback thread.
+    if (width == 0 || height == 0) return;
+#else
     while (width == 0 || height == 0) {
-        glfwGetFramebufferSize(context_->window(), &width, &height);
-        glfwWaitEvents();
+        framebufferSize(context_->window(), &width, &height);
+        waitWindowEvents();
     }
+#endif
 
     context_->waitIdle();
     destroySceneRenderResources();

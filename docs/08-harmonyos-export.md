@@ -1,0 +1,118 @@
+# 鸿蒙手机工程导出
+
+VulkCore 可将编辑好的 `.scene` 导出成独立的 HarmonyOS Stage 工程，用 DevEco Studio 打开后，由鸿蒙 Native 工具链编译 C++ 运行时。手机通过 XComponent 和 `VK_OHOS_surface` 运行同一套 Vulkan 渲染、模型动画、PhysX、地形和粒子逻辑。
+
+## 使用
+
+先构建桌面编辑器，使 GLSL 对应的 SPIR-V 更新：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+```
+
+在编辑器底部 Resource Manager 中填写 Scene path，在新的 HarmonyOS project directory 输入框中填写一个尚不存在的输出目录，点击 **Export HarmonyOS**。导出前会保存当前场景，包含尚未手动保存的节点、材质、动画和粒子设置。
+
+也可以从命令行导出已保存的场景，不需要创建桌面窗口或初始化 Vulkan：
+
+```bash
+./build/vulkcore \
+  --scene scenes/game.scene \
+  --export-ohos exports/HarmonyOSGame \
+  --app-name "VulkCore Game" \
+  --bundle-name com.vulkcore.game
+```
+
+`--app-name` 默认是 `VulkCore Player`，`--bundle-name` 默认是 `com.vulkcore.player`。导出目录须不存在；重新导出时使用新的目录，以保护已在 DevEco 中修改的工程。`exports/` 已加入 Git 忽略规则。
+
+使用 DevEco Studio 6.0.2 或更新版本打开输出目录，安装 API 22 和 Native SDK，同步 OHPM。工程最低兼容 API 22，目标为 `arm64-v8a` 手机，也声明支持平板。首次配置 Native 工程会通过 GitHub 下载固定版本的 Assimp、GLM、Dear ImGui 和 PhysX；可使用标准 `FETCHCONTENT_SOURCE_DIR_<依赖名>` CMake 参数指定本地源码缓存。
+
+根目录的 `build-profile.json5` 按 `platform/ohos/template/build-profile.json5` 原样导出，采用展开的 products、buildModeSet、signingConfigs 和 modules 结构。目标 SDK 与最低兼容 SDK 均为 `6.0.2(22)`，strictMode 同时启用 `caseSensitiveCheck` 和 `useNormalizedOHMUrl`，default 产品关联 default 签名配置。
+
+模板沿用当前 `exports/HarmonyOSGame/build-profile.json5` 的完整配置，包含证书路径、密钥别名和签名密码配置；导出不会复制证书文件。在 DevEco 中确认签名配置适用于当前机器与应用后，选择设备运行。
+
+## 工程与资源
+
+```text
+HarmonyOSGame/
+  AppScope/                 应用名称、包名和图标
+  build-profile.json5       API 与产品配置
+  entry/src/main/
+    ets/                    UIAbility、XComponent 页面与触屏控制
+    cpp/                    Native 构建入口和 NAPI 类型声明
+    resources/rawfile/vulkcore/
+      assets/               项目资源及外部资源副本
+      shaders/              编译好的 SPIR-V
+      scenes/<原场景名>.scene
+      startup.txt           启动场景路径
+      manifest.txt          运行时文件清单
+  engine/                   独立的 C++ 运行时源码、CMake 和 stb
+```
+
+导出包含整个 `assets/`，以保留天空盒、草地、技能特效、模型纹理等运行时隐式依赖。编辑器允许的外部模型会复制其所在文件夹，保留 glTF buffer、OBJ/MTL 和同目录纹理；外部地形与水面目录递归复制，单独引用的外部纹理也会复制。外部模型应放在独立资源文件夹中，相关 sidecar 使用相对路径；不支持依赖资源文件夹之外的嵌入绝对路径。
+
+导出器改写以下场景字段中的资源路径，保留节点 ID、材质名称、变换、动画与其他设置：
+
+- `model_resource_path`、`player_model_resource`
+- `terrain_resource`、`water_resource`
+- `material` 的颜色纹理、`material_textures` 的法线/高光纹理
+- `particle_system_object` 的粒子纹理
+
+场景引用的模型和地形相对于场景目录，纹理相对于运行时资源根目录。保留原始场景文件名，使 `tornado.scene` 的程序化特效初始化行为继续生效。模型或地形等必需资源不存在、SPIR-V 缺失或输出目录已存在时，导出会返回具体错误，并清理临时工程；原场景不做路径改写。缺失的可选纹理会清空对应路径，继续使用与编辑器相同的材质颜色、平坦法线或软圆粒子回退。
+
+手机启动时，NAPI `prepare()` 按清单把 rawfile 内容复制到应用沙箱 `filesDir/vulkcore`，以供现有文件系统、Assimp 和图片解码接口使用。每次页面启动刷新资源副本，然后加载 `startup.txt` 指定的场景。
+
+## 手机运行与操作
+
+手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）比例居中等比适配；超宽手机两侧留边，较窄屏幕上下留边，保留完整画面，不裁切或拉伸。触屏按钮独立叠加在窗口上。
+
+ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XComponent 触控使用组件内部的像素坐标，原点位于左上角，X 向右、Y 向下。创建或重建交换链前，将 NativeWindow 缓冲区设为 XComponent 回报的像素尺寸，避免沿用竖屏缓冲区。运行时不执行预旋转，因此交换链声明 `VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`，交由系统完成屏幕旋转；不能直接把 `currentTransform` 当作已执行的预旋转。交换链创建后启用等比 fit 呈现，并在下一帧绘制前处理尺寸变化，使场景投影与实际渲染目标的宽高比一致。
+
+| 操作 | 控制 |
+|---|---|
+| Player 移动 | 左下方向按钮 |
+| Player 相机转向 | 在画面右半部分拖动 |
+| 跳跃 | Jump |
+| 雷霆剑气 / 爆炎新星 / 龙卷风 | Q / E / R |
+
+移动、转向和技能取决于场景中是否有已激活的 Player；纯模型或特效场景使用保存的相机设置并播放场景动画。支持多点触控下移动与转向组合。后台暂停绘制并释放按键；前台恢复。Surface 销毁会先结束渲染线程、释放 Vulkan 资源，再交还 NativeWindow；Surface 尺寸变化触发交换链重建。初始化或渲染失败会显示错误文字并写入 HiLog。
+
+手机 GPU 的可用 Vulkan 特性和性能仍决定自定义材质与大型场景的运行效果。当前沿用桌面的地形、草地密度、CPU 蒙皮和渲染流程，未加入专门的手机画质档位。自定义 geometry/tessellation shader 也仍受现有设备特性启用逻辑限制。
+
+## 验证
+
+桌面构建和现有物理、粒子 smoke test 保持可用。`vulkcore_export_smoke` 检查路径迁移、节点 ID/材质名称保留、外部模型 sidecar、启动场景名、JSON 转义、文件清单、失败清理与覆盖保护。`vulkcore_surface_smoke` 覆盖 0/90/180/270 度 Surface 旋转、横竖屏像素尺寸、不等比拉伸检查、可变尺寸与未初始化缓冲区回退，并检查桌面的呈现策略保持一致。
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+可以单独配置和编译鸿蒙 Native 目标，不需要打包或签名：
+
+```bash
+cmake -S exports/HarmonyOSGame/entry/src/main/cpp -B build/ohos-native \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/openharmony/native/build/cmake/ohos.toolchain.cmake \
+  -DOHOS_ARCH=arm64-v8a -DCMAKE_BUILD_TYPE=Release
+cmake --build build/ohos-native --target VulkCore --parallel
+```
+
+ArkTS/资源检查使用模块的 `default@CompileArkTS` 任务：
+
+```bash
+cd exports/HarmonyOSGame
+/path/to/hvigorw --mode module -p module=entry@default -p product=default default@CompileArkTS
+```
+
+实现过程中已完成桌面构建、导出测试、API 22 SDK 下的 arm64 共享库编译/链接与 ArkTS/资源编译。未执行 HAP 打包、签名、安装或手机运行验证；设备上的画面、交互和性能需在 DevEco Studio 中继续确认。
+
+## 架构决策：复用场景与运行时
+
+采用轻量 `Platform/Window.hpp` 接口隔离窗口、按键、指针、Surface 和 ImGui 平台帧。桌面实现转发 GLFW；鸿蒙实现使用 XComponent NativeWindow 和线程安全的触控状态。`Application` 仍是桌面入口，鸿蒙由 NAPI 与 Surface 回调管理生命周期，渲染器只保留共享的场景执行路径。
+
+使用 rawfile + 沙箱文件副本，避免为现有 Assimp、地形解析器与 stb 单独实现虚拟文件系统。代价是首次页面加载需要复制资源，占用额外沙箱空间；后续可演进为带版本的资源缓存或资源包文件系统。
+
+PhysX 采用固定提交的 Android CPU 构建分支，鸿蒙平台设置 `TARGET_BUILD_PLATFORM=android` 并将 ABI 映射为 `OHOS_ARCH`。`cmake/OhosPhysX.cmake` 在构建目录生成 PhysX 专用平台头，让 PhysX 与业务侧物理封装统一使用 `PX_ANDROID=1`、`PX_LINUX=0`。因此线程取消、互斥锁和浮点处理直接采用其 Android 移动端实现，不再保留原来的 Linux/glibc 修补逻辑。
+
+构建仍使用鸿蒙 SDK、OHOS sysroot 和鸿蒙 ABI，不定义全局 `__ANDROID__`，也不依赖 Android NDK。Android 分支中的 `liblog` 接到鸿蒙 HiLog，NDK `cpufeatures` 替换为 OHOS libc 的 `sysconf(_SC_NPROCESSORS_ONLN)`；保留 `<poll.h>` 的 libc 兼容处理。所有适配都生成到构建目录，不修改共享 PhysX 依赖源码。
+
+CMake 配置输出中的 `PhysX Build Platform: android` 表示已选择该构建分支。`Building for PUBLIC RELEASE`、编译器路径和 `Forcing binary suffixes to 64 bit` 是上游 PhysX 的普通配置说明，hvigor 可能将其标准错误流显示为 WARN；`PUBLIC RELEASE` 表示使用 PhysX 公共 SDK，并非构建失败。

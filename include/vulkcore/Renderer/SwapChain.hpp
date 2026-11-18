@@ -39,7 +39,6 @@ private:
     VkFormat findDepthFormat() const;
     static VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
     static VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& presentModes);
-    VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities) const;
 
     VulkanContext& context_;
     VkSwapchainKHR swapChain_ = VK_NULL_HANDLE;

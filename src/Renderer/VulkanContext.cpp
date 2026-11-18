@@ -1,5 +1,4 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "vulkcore/Platform/Window.hpp"
 
 #include "vulkcore/Renderer/VulkanContext.hpp"
 
@@ -61,10 +60,10 @@ bool QueueFamilyIndices::isComplete() const {
     return graphicsFamily.has_value() && presentFamily.has_value();
 }
 
-VulkanContext::VulkanContext(GLFWwindow* window)
+VulkanContext::VulkanContext(Window* window)
     : window_(window) {
     if (window_ == nullptr) {
-        throw std::invalid_argument("VulkanContext requires a valid GLFW window!");
+        throw std::invalid_argument("VulkanContext requires a valid platform window!");
     }
 
     createInstance();
@@ -124,7 +123,7 @@ VkCommandPool VulkanContext::commandPool() const {
     return commandPool_;
 }
 
-GLFWwindow* VulkanContext::window() const {
+Window* VulkanContext::window() const {
     return window_;
 }
 
@@ -208,7 +207,7 @@ void VulkanContext::setupDebugMessenger() {
 }
 
 void VulkanContext::createSurface() {
-    if (glfwCreateWindowSurface(instance_, window_, nullptr, &surface_) != VK_SUCCESS) {
+    if (createWindowSurface(instance_, window_, &surface_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create window surface!");
     }
 }
@@ -321,13 +320,13 @@ bool VulkanContext::checkDeviceExtensionSupport(VkPhysicalDevice device) const {
 }
 
 std::vector<const char*> VulkanContext::getRequiredExtensions() const {
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    if (glfwExtensions == nullptr) {
-        throw std::runtime_error("GLFW failed to provide required Vulkan extensions!");
+    uint32_t windowExtensionCount = 0;
+    const char* const* windowExtensions = requiredWindowExtensions(&windowExtensionCount);
+    if (windowExtensions == nullptr) {
+        throw std::runtime_error("Window platform failed to provide required Vulkan extensions!");
     }
 
-    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+    std::vector<const char*> extensions(windowExtensions, windowExtensions + windowExtensionCount);
 
     uint32_t extensionCount = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
