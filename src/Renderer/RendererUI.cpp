@@ -1423,6 +1423,53 @@ void Renderer::updateTransition(float seconds) {
     }
 }
 
+void Renderer::updateCameraOrbit(bool viewportHovered) {
+    if (!authoredView_.enabled || !authoredView_.orbitEnabled ||
+        playerController_.active() || !fixedFrameOutput_.empty()) {
+        cameraOrbitDragging_ = false;
+        return;
+    }
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        cameraOrbitDragging_ = viewportHovered && !ImGui::IsAnyItemActive();
+        return;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        cameraOrbitDragging_ = false;
+    }
+    const ImVec2 delta = ImGui::GetIO().MouseDelta;
+    if (!cameraOrbitDragging_ || (delta.x == 0.0f && delta.y == 0.0f)) {
+        return;
+    }
+
+    const glm::vec3 offset = cameraPosition_ - cameraTarget_;
+    const float radius = glm::length(offset);
+    if (radius < 0.05f) {
+        return;
+    }
+
+    const glm::vec3 up = authoredView_.up;
+    const float height = glm::dot(offset, up);
+    glm::vec3 horizontal = offset - up * height;
+    if (glm::length(horizontal) < 0.0001f) {
+        const glm::vec3 reference = std::abs(up.x) < 0.9f
+            ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f);
+        horizontal = glm::cross(up, reference);
+    }
+
+    constexpr float kRadiansPerPixel = 0.005f;
+    const glm::vec2 pitchLimits = glm::radians(authoredView_.orbitPitchLimits);
+    const float pitch = std::clamp(
+        std::asin(std::clamp(height / radius, -1.0f, 1.0f)) + delta.y * kRadiansPerPixel,
+        pitchLimits.x,
+        pitchLimits.y
+    );
+    const glm::mat4 yaw = glm::rotate(glm::mat4(1.0f), -delta.x * kRadiansPerPixel, up);
+    const glm::vec3 direction(yaw * glm::vec4(glm::normalize(horizontal), 0.0f));
+    cameraPosition_ = cameraTarget_ + radius * (direction * std::cos(pitch) + up * std::sin(pitch));
+    cameraBasisInitialized_ = false;
+}
+
 void Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     newWindowImGuiFrame(context_->window(), swapChain_->extent());
@@ -1432,7 +1479,8 @@ void Renderer::buildImGuiFrame() {
         toolUiVisible_ = !toolUiVisible_;
     }
     if (transitionSettings_.enabled) {
-        const bool held = ImGui::IsKeyDown(ImGuiKey_Space) && !ImGui::IsAnyItemActive();
+        const bool held = ImGui::IsKeyDown(ImGuiKey_Space) &&
+            (cameraOrbitDragging_ || !ImGui::IsAnyItemActive());
         if (held != transitionHeld_) {
             transitionHeld_ = held;
             transitionPlayer_.loop = false;
@@ -1441,6 +1489,7 @@ void Renderer::buildImGuiFrame() {
     }
     if (!toolUiVisible_) {
         drawMiniMap();
+        updateCameraOrbit(!ImGui::GetIO().WantCaptureMouse);
         ImGui::Render();
         return;
     }
@@ -1527,7 +1576,9 @@ void Renderer::buildImGuiFrame() {
     ImGui::TextWrapped("%s", screenshotStatus_.c_str());
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
-    const glm::vec3 defaultCameraPosition = transitionSettings_.enabled
+    const bool orbitEnabled = authoredView_.enabled && authoredView_.orbitEnabled;
+    const bool hasAuthoredCamera = transitionSettings_.enabled || orbitEnabled;
+    const glm::vec3 defaultCameraPosition = hasAuthoredCamera
         ? transitionCameraStart_ : glm::vec3(0.0f, 0.0f, 4.0f);
     ImGui::DragFloat3(
         "Camera position (X/Y/Z)",
@@ -1541,7 +1592,7 @@ void Renderer::buildImGuiFrame() {
         if (glm::length(cameraPosition_) < 0.05f) {
             cameraPosition_ = defaultCameraPosition;
         }
-        if (transitionSettings_.enabled) {
+        if (hasAuthoredCamera) {
             transitionCameraStart_ = cameraPosition_;
             transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
             transitionCameraBaseDistance_ = transitionCameraDistance_ - transitionCameraOffset_;
@@ -1550,9 +1601,13 @@ void Renderer::buildImGuiFrame() {
     }
     if (ImGui::Button("Reset camera position")) {
         cameraPosition_ = defaultCameraPosition;
+        if (authoredView_.enabled) cameraBasisInitialized_ = false;
         transitionCameraDistance_ = glm::distance(cameraPosition_, cameraTarget_);
         transitionCameraBaseDistance_ = transitionCameraDistance_;
         shouldSaveTransformSettings = true;
+    }
+    if (orbitEnabled) {
+        ImGui::TextDisabled("Left-drag the viewport to orbit");
     }
     if (transitionSettings_.enabled) {
         ImGui::SeparatorText("Material transition");
@@ -1792,13 +1847,10 @@ void Renderer::buildImGuiFrame() {
         saveTransformSettings();
     }
 
-    if (selectedModelNode_ != nullptr &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        !leftPanelHovered &&
-        !rightPanelHovered &&
-        !toolbarHovered &&
-        !resourcePanelHovered &&
-        ImGui::IsWindowHovered()) {
+    const bool viewportHovered = ImGui::IsWindowHovered() &&
+        !leftPanelHovered && !rightPanelHovered && !toolbarHovered && !resourcePanelHovered;
+    updateCameraOrbit(viewportHovered);
+    if (selectedModelNode_ != nullptr && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && viewportHovered) {
         selectedModelNode_ = nullptr;
         updateBoundingBoxVertices();
     }

@@ -25,6 +25,8 @@ struct AuthoredView {
     glm::vec3 up{0.0f, 1.0f, 0.0f};
     float fov = 45.0f;
     float minimumAspect = 0.0f;
+    bool orbitEnabled = false;
+    glm::vec2 orbitPitchLimits{0.0f, 82.0f};
 };
 
 struct TransitionSettings {

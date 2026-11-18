@@ -761,6 +761,7 @@ void Renderer::clearSceneData() {
     particleVertices_.clear();
     hdrSettings_ = {};
     authoredView_ = {};
+    cameraOrbitDragging_ = false;
     transitionSettings_ = {};
     transitionPlayer_ = {};
     configureHdrComposition();
@@ -1757,6 +1758,15 @@ void Renderer::loadTransformSettings() {
             }
             authored.enabled = true;
             authored.up = glm::normalize(authored.up);
+        } else if (key == "camera_orbit") {
+            auto& limits = authored.orbitPitchLimits;
+            if (!(file >> limits.x >> limits.y) || !std::isfinite(limits.x) ||
+                !std::isfinite(limits.y) || limits.x <= -90.0f ||
+                limits.y >= 90.0f || limits.x >= limits.y) {
+                valid = false;
+                break;
+            }
+            authored.orbitEnabled = true;
         } else if (key == "material_transition") {
             int autoplay = 0;
             if (!(file >> transition.delay >> transition.duration >> transition.dwell >>
@@ -2027,6 +2037,7 @@ void Renderer::loadTransformSettings() {
         : cameraPosition;
     hdrSettings_ = hdr;
     authoredView_ = authored;
+    cameraOrbitDragging_ = false;
     if (authored.enabled) cameraTarget_ = authored.target;
     transitionSettings_ = transition;
     transitionPlayer_ = {};
@@ -2364,13 +2375,18 @@ bool Renderer::saveTransformSettings() const {
         const auto& v = authoredView_;
         file << "authored_view " << v.target.x << ' ' << v.target.y << ' ' << v.target.z << ' '
              << v.up.x << ' ' << v.up.y << ' ' << v.up.z << ' ' << v.fov << ' ' << v.minimumAspect << "\n";
+        if (v.orbitEnabled) {
+            file << "camera_orbit " << v.orbitPitchLimits.x << ' ' << v.orbitPitchLimits.y << "\n";
+        }
     }
     if (transitionSettings_.enabled) {
         const auto& t = transitionSettings_;
         file << "material_transition " << t.delay << ' ' << t.duration << ' ' << t.dwell << ' '
              << t.autoplay << ' ' << t.activeFov << ' ' << t.distanceOffset << "\n";
     }
-    const auto& savedCamera = transitionSettings_.enabled ? transitionCameraStart_ : cameraPosition_;
+    const bool saveAuthoredCamera = transitionSettings_.enabled ||
+        (authoredView_.enabled && authoredView_.orbitEnabled);
+    const auto& savedCamera = saveAuthoredCamera ? transitionCameraStart_ : cameraPosition_;
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
          << "camera_position " << savedCamera.x << ' '
          << savedCamera.y << ' ' << savedCamera.z << "\n"
