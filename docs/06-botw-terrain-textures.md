@@ -21,3 +21,20 @@ Generated base-color textures live in `assets/terrain/textures/`:
 The atlas layout is row-major: grass/dirt/rock/sand on the first row and
 snow/mud/gravel/ash on the second row. The material U/V scale from TSCB is
 carried through the terrain vertex color and controls atlas repeat frequency.
+
+Before mesh generation, the loader repairs isolated height spikes, reconciles
+shared tile edges/corners, and applies eight separable `[1, 2, 1] / 4` filter
+passes across neighbouring tiles at the same resolution. The filter has a
+standard deviation of two source samples (about 4.9 m in the included tiles).
+It rounds the narrow height jumps that otherwise become triangular mountain
+teeth when sampled at stride two, while preserving broad landforms and planar
+slopes. Missing neighbours use clamped edges. The original `.hght` files stay
+unchanged; resident filtered samples supply height queries, grass placement,
+mesh bounds, rendering and the PhysX mesh.
+
+Terrain normals come from the full filtered heightfield. Mesh stitching blends
+these normals at shared vertices instead of recomputing them from the coarser
+triangles, so slope-based material blends and lighting do not reveal the mesh
+diagonals. `vulkcore_terrain_smoke` covers cliff smoothing, isolated peaks,
+shared edges/corners (including a missing tile), preserved slopes/plateaus,
+and agreement between the mesh, height queries and heightfield normals.

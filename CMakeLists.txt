@@ -413,4 +413,13 @@ if(BUILD_TESTING)
     target_include_directories(vulkcore_particle_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vulkcore_particle_smoke PRIVATE Vulkan::Vulkan ${VULKCORE_GLM_TARGET})
     add_test(NAME vulkcore_particle_smoke COMMAND vulkcore_particle_smoke)
+
+    add_executable(vulkcore_terrain_smoke
+        tests/TerrainSmoke.cpp
+        src/Terrain/Terrain.cpp
+        src/Utils/FileUtils.cpp
+    )
+    target_include_directories(vulkcore_terrain_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(vulkcore_terrain_smoke PRIVATE Vulkan::Headers ${VULKCORE_GLM_TARGET})
+    add_test(NAME vulkcore_terrain_smoke COMMAND vulkcore_terrain_smoke)
 endif()

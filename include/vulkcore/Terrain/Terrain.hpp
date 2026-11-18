@@ -42,8 +42,8 @@ struct TerrainTileMetadata {
     std::filesystem::path sourcePath;
 };
 
-// A single BOTW .hght file. The source samples stay resident so chunks can
-// be rebuilt at a different sampling density without reparsing TSCB.
+// A single BOTW .hght tile. Repaired, filtered samples stay resident so height
+// queries, rendering and collision geometry all use the same terrain surface.
 class TerrainTile {
 public:
     TerrainTile(

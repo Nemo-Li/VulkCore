@@ -306,6 +306,128 @@ struct ParsedTile {
     std::vector<std::uint16_t> heights;
 };
 
+void smoothTerrainHeights(std::vector<ParsedTile>& tiles) {
+    constexpr std::size_t resolution = kTerrainHeightmapResolution;
+    constexpr std::size_t last = resolution - 1;
+    constexpr std::size_t missing = std::numeric_limits<std::size_t>::max();
+    // Eight separable binomial passes have a standard deviation of two source
+    // samples (about 4.9 m for MainField). Filter sub-grid cliff teeth before
+    // stride-two sampling while retaining broad mountains and plateaus.
+    constexpr int kSmoothingPasses = 8;
+    using TileKey = std::tuple<std::uint32_t, float, int, int>;
+    using SampleReference = std::pair<std::size_t, std::size_t>;
+    std::map<TileKey, std::size_t> tileLookup;
+    std::map<TileKey, std::vector<SampleReference>> corners;
+    std::vector<TileKey> tileKeys;
+    std::vector<std::vector<float>> samples;
+    tileKeys.reserve(tiles.size());
+    samples.reserve(tiles.size());
+    for (std::size_t index = 0; index < tiles.size(); ++index) {
+        const auto& metadata = tiles[index].metadata;
+        const int x = static_cast<int>(std::lround(
+            metadata.gridPosition.x / metadata.areaSize - 0.5f
+        ));
+        const int z = static_cast<int>(std::lround(
+            metadata.gridPosition.y / metadata.areaSize - 0.5f
+        ));
+        const TileKey key{metadata.lod, metadata.areaSize, x, z};
+        tileLookup.emplace(key, index);
+        tileKeys.push_back(key);
+        samples.emplace_back(tiles[index].heights.begin(), tiles[index].heights.end());
+        for (int dz = 0; dz <= 1; ++dz) {
+            for (int dx = 0; dx <= 1; ++dx) {
+                corners[{metadata.lod, metadata.areaSize, x + dx, z + dz}].push_back({
+                    index, static_cast<std::size_t>(dz) * last * resolution + dx * last
+                });
+            }
+        }
+    }
+
+    // A shared edge is sample 255 in one tile and 0 in the next. Its next
+    // neighbour is sample 1, rather than the duplicated edge sample. Only
+    // join tiles with the same source spacing; clamp at missing neighbours.
+    std::vector<std::array<std::size_t, 4>> neighbours(tiles.size());
+    for (std::size_t index = 0; index < tiles.size(); ++index) {
+        const auto [lod, size, x, z] = tileKeys[index];
+        const std::array<TileKey, 4> keys = {{
+            {lod, size, x - 1, z}, {lod, size, x + 1, z},
+            {lod, size, x, z - 1}, {lod, size, x, z + 1}
+        }};
+        for (std::size_t direction = 0; direction < keys.size(); ++direction) {
+            const auto found = tileLookup.find(keys[direction]);
+            neighbours[index][direction] = found == tileLookup.end()
+                ? missing : found->second;
+        }
+    }
+
+    const auto stitchSamples = [&]() {
+        for (std::size_t index = 0; index < tiles.size(); ++index) {
+            const auto& adjacent = neighbours[index];
+            for (std::size_t coordinate = 1; coordinate < last; ++coordinate) {
+                if (adjacent[1] != missing) {
+                    float& left = samples[index][coordinate * resolution + last];
+                    float& right = samples[adjacent[1]][coordinate * resolution];
+                    left = right = (left + right) * 0.5f;
+                }
+                if (adjacent[3] != missing) {
+                    float& top = samples[index][last * resolution + coordinate];
+                    float& bottom = samples[adjacent[3]][coordinate];
+                    top = bottom = (top + bottom) * 0.5f;
+                }
+            }
+        }
+        // Handle corners together, including incomplete groups of tiles.
+        // Pairwise edge averages alone give order-dependent corner heights.
+        for (const auto& [key, references] : corners) {
+            (void)key;
+            float sum = 0.0f;
+            for (const auto& [tile, sample] : references) {
+                sum += samples[tile][sample];
+            }
+            const float average = sum / static_cast<float>(references.size());
+            for (const auto& [tile, sample] : references) {
+                samples[tile][sample] = average;
+            }
+        }
+    };
+
+    stitchSamples();
+    auto filtered = samples;
+    for (int pass = 0; pass < kSmoothingPasses; ++pass) {
+        for (int axis = 0; axis < 2; ++axis) {
+            const std::size_t step = axis == 0 ? 1 : resolution;
+            for (std::size_t tile = 0; tile < tiles.size(); ++tile) {
+                const auto& source = samples[tile];
+                const std::size_t previousTile = neighbours[tile][axis * 2];
+                const std::size_t nextTile = neighbours[tile][axis * 2 + 1];
+                for (std::size_t z = 0; z < resolution; ++z) {
+                    for (std::size_t x = 0; x < resolution; ++x) {
+                        const std::size_t index = z * resolution + x;
+                        const std::size_t coordinate = axis == 0 ? x : z;
+                        const float previous = coordinate > 0 ? source[index - step]
+                            : previousTile == missing ? source[index]
+                            : samples[previousTile][index + (last - 1) * step];
+                        const float next = coordinate < last ? source[index + step]
+                            : nextTile == missing ? source[index]
+                            : samples[nextTile][index - (last - 1) * step];
+                        filtered[tile][index] =
+                            (previous + source[index] * 2.0f + next) * 0.25f;
+                    }
+                }
+            }
+            samples.swap(filtered);
+        }
+        stitchSamples();
+    }
+    for (std::size_t tile = 0; tile < tiles.size(); ++tile) {
+        for (std::size_t index = 0; index < samples[tile].size(); ++index) {
+            tiles[tile].heights[index] = static_cast<std::uint16_t>(
+                std::lround(samples[tile][index])
+            );
+        }
+    }
+}
+
 struct TerrainVertexKey {
     std::int64_t x = 0;
     std::int64_t z = 0;
@@ -346,8 +468,9 @@ void stitchTerrainMesh(TerrainMeshData& mesh) {
         );
     }
 
-    std::vector<glm::vec3> normalSums(mesh.vertices.size(), glm::vec3(0.0f));
-
+    // Keep normals derived from the full, filtered heightfield. Recomputing
+    // them from decimated triangles exposes mesh diagonals in slope-based
+    // material blends and lighting on distant hills.
     for (const auto& [key, indices] : vertexGroups) {
         (void)key;
         if (indices.size() < 2) {
@@ -355,47 +478,20 @@ void stitchTerrainMesh(TerrainMeshData& mesh) {
         }
         float heightSum = 0.0f;
         glm::vec4 colorSum(0.0f);
+        glm::vec3 normalSum(0.0f);
         for (const std::uint32_t index : indices) {
             heightSum += mesh.vertices[index].position.y;
             colorSum += mesh.vertices[index].color;
+            normalSum += mesh.vertices[index].normal;
         }
         const float averageHeight = heightSum / static_cast<float>(indices.size());
         const glm::vec4 averageColor = colorSum / static_cast<float>(indices.size());
+        const glm::vec3 averageNormal =
+            glm::length(normalSum) <= std::numeric_limits<float>::epsilon()
+                ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::normalize(normalSum);
         for (const std::uint32_t index : indices) {
             mesh.vertices[index].position.y = averageHeight;
             mesh.vertices[index].color = averageColor;
-        }
-    }
-
-    for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
-        const std::uint32_t first = mesh.indices[index];
-        const std::uint32_t second = mesh.indices[index + 1];
-        const std::uint32_t third = mesh.indices[index + 2];
-        if (first >= mesh.vertices.size() || second >= mesh.vertices.size() ||
-            third >= mesh.vertices.size()) {
-            continue;
-        }
-        const glm::vec3 faceNormal = glm::cross(
-            mesh.vertices[second].position - mesh.vertices[first].position,
-            mesh.vertices[third].position - mesh.vertices[first].position
-        );
-        normalSums[first] += faceNormal;
-        normalSums[second] += faceNormal;
-        normalSums[third] += faceNormal;
-    }
-
-    for (const auto& [key, indices] : vertexGroups) {
-        (void)key;
-        glm::vec3 averageNormal(0.0f);
-        for (const std::uint32_t index : indices) {
-            averageNormal += normalSums[index];
-        }
-        if (glm::length(averageNormal) <= std::numeric_limits<float>::epsilon()) {
-            averageNormal = glm::vec3(0.0f, 1.0f, 0.0f);
-        } else {
-            averageNormal = glm::normalize(averageNormal);
-        }
-        for (const std::uint32_t index : indices) {
             mesh.vertices[index].normal = averageNormal;
         }
     }
@@ -1053,6 +1149,10 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             selectedTiles.push_back(std::move(candidate));
         }
     }
+
+    // Filter the resident heightfield before creating bounds, queries, render
+    // geometry and the physics mesh, so player/grass heights stay consistent.
+    smoothTerrainHeights(selectedTiles);
 
     using ChunkKey = std::tuple<std::uint32_t, int, int>;
     std::map<ChunkKey, std::size_t> chunkIndices;
