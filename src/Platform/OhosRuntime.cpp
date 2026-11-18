@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -18,9 +19,16 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 namespace fs = std::filesystem;
+
+// Keep these stage boundaries in sync with the NAPI declaration.
+constexpr int kAssetsReady = 75;
+constexpr int kLoadingScene = 88;
+constexpr int kWaitingForFrame = 97;
+constexpr int kFirstFramePresented = 100;
 
 struct Runtime {
     VulkCore::Window window;
@@ -31,7 +39,9 @@ struct Runtime {
     std::condition_variable wake;
     fs::path startup;
     std::string error;
-    bool prepared = false;
+    std::atomic<int> loadingProgress{0};
+    std::atomic<bool> prepared{false};
+    bool extracting = false; // Accessed only from the NAPI thread.
 
     ~Runtime() { stop(); }
     void clearInput() {
@@ -66,7 +76,11 @@ struct Runtime {
                 // Retain the dimensions from before initialization so a layout
                 // change during resource loading still rebuilds the swapchain.
                 int width = window.width.load(), height = window.height.load();
-                VulkCore::Renderer renderer(&window, startup, true);
+                bool presented = false;
+                VulkCore::Renderer renderer(&window, startup, true, [this] {
+                    loadingProgress = kLoadingScene;
+                });
+                loadingProgress = kWaitingForFrame;
                 while (running) {
                     if (paused || window.width <= 0 || window.height <= 0) {
                         std::unique_lock lock(waitMutex);
@@ -79,7 +93,10 @@ struct Runtime {
                         height = nextHeight;
                         window.resizeCallback(&window, width, height);
                     }
-                    renderer.drawFrame();
+                    if (renderer.drawFrame() && !presented) {
+                        presented = true;
+                        loadingProgress = kFirstFramePresented;
+                    }
                 }
             } catch (const std::exception& exception) {
                 fail(exception.what());
@@ -136,7 +153,84 @@ std::string stringArgument(napi_env env, napi_value value) {
     return result;
 }
 
+using ResourceManagerPtr = std::unique_ptr<NativeResourceManager, decltype(&OH_ResourceManager_ReleaseNativeResourceManager)>;
+
+struct ExtractionWork {
+    ResourceManagerPtr manager{nullptr, OH_ResourceManager_ReleaseNativeResourceManager};
+    napi_async_work handle = nullptr;
+    fs::path root;
+    fs::path startup;
+    std::string error;
+};
+
+void extractResources(napi_env, void* data) {
+    auto& work = *static_cast<ExtractionWork*>(data);
+    try {
+        std::istringstream manifest(readRawText(work.manager.get(), "manifest.txt"));
+        std::vector<std::string> names;
+        std::string name;
+        while (std::getline(manifest, name)) {
+            if (!name.empty()) names.push_back(std::move(name));
+        }
+        if (names.empty()) throw std::runtime_error("Packaged resource manifest is empty.");
+
+        std::array<char, 64 * 1024> buffer{};
+        fs::create_directories(work.root);
+        for (std::size_t index = 0; index < names.size(); ++index) {
+            const auto& resource = names[index];
+            const auto target = work.root / safeRelativePath(resource);
+            fs::create_directories(target.parent_path());
+            auto file = openRaw(work.manager.get(), resource);
+            std::ofstream output(target, std::ios::binary | std::ios::trunc);
+            if (!output) throw std::runtime_error("Cannot open runtime resource: " + target.string());
+            const long size = OH_ResourceManager_GetRawFileSize(file.get());
+            if (size < 0) throw std::runtime_error("Invalid resource size: " + resource);
+            long remaining = size;
+            while (remaining > 0) {
+                const int read = OH_ResourceManager_ReadRawFile(file.get(), buffer.data(),
+                    std::min<std::size_t>(buffer.size(), static_cast<std::size_t>(remaining)));
+                if (read <= 0) throw std::runtime_error("Cannot extract resource: " + resource);
+                output.write(buffer.data(), read);
+                if (!output) throw std::runtime_error("Cannot write runtime resource: " + target.string());
+                remaining -= read;
+                const double fileFraction = static_cast<double>(size - remaining) / size;
+                runtime.loadingProgress = static_cast<int>((index + fileFraction) * (kAssetsReady - 1) / names.size());
+            }
+            output.close();
+            if (!output) throw std::runtime_error("Cannot close runtime resource: " + target.string());
+            runtime.loadingProgress = static_cast<int>((index + 1) * (kAssetsReady - 1) / names.size());
+        }
+        std::ifstream startup(work.root / "startup.txt");
+        if (!std::getline(startup, name)) throw std::runtime_error("Packaged startup scene is missing.");
+        work.startup = work.root / safeRelativePath(name);
+        if (!fs::is_regular_file(work.startup)) throw std::runtime_error("Packaged startup scene was not found.");
+    } catch (const std::exception& exception) {
+        work.error = exception.what();
+    }
+}
+
+void completeExtraction(napi_env env, napi_status status, void* data) {
+    std::unique_ptr<ExtractionWork> work(static_cast<ExtractionWork*>(data));
+    napi_delete_async_work(env, work->handle);
+    runtime.extracting = false;
+    try {
+        if (!work->error.empty()) {
+            runtime.fail(work->error);
+            return;
+        }
+        if (status != napi_ok) throw std::runtime_error("Could not finish extracting application resources.");
+        fs::current_path(work->root);
+        runtime.startup = std::move(work->startup);
+        runtime.prepared = true;
+        // ArkUI mounts the surface after observing this milestone.
+        runtime.loadingProgress = kAssetsReady;
+    } catch (const std::exception& exception) {
+        runtime.fail(exception.what());
+    }
+}
+
 napi_value prepare(napi_env env, napi_callback_info info) {
+    if (runtime.extracting) return nullptr;
     try {
         std::size_t argc = 2;
         napi_value args[2]{};
@@ -144,49 +238,37 @@ napi_value prepare(napi_env env, napi_callback_info info) {
         if (argc != 2) throw std::runtime_error("prepare requires ResourceManager and filesDir.");
         runtime.stop();
         runtime.prepared = false;
-        const fs::path root = fs::path(stringArgument(env, args[1])) / "vulkcore";
-        std::unique_ptr<NativeResourceManager, decltype(&OH_ResourceManager_ReleaseNativeResourceManager)> manager(
-            OH_ResourceManager_InitNativeResourceManager(env, args[0]), OH_ResourceManager_ReleaseNativeResourceManager);
-        if (!manager) throw std::runtime_error("Cannot access application resources.");
-        std::istringstream manifest(readRawText(manager.get(), "manifest.txt"));
-        std::string name;
-        std::array<char, 64 * 1024> buffer{};
-        fs::create_directories(root);
-        while (std::getline(manifest, name)) {
-            if (name.empty()) continue;
-            const auto target = root / safeRelativePath(name);
-            fs::create_directories(target.parent_path());
-            auto file = openRaw(manager.get(), name);
-            std::ofstream output(target, std::ios::binary | std::ios::trunc);
-            const long size = OH_ResourceManager_GetRawFileSize(file.get());
-            if (size < 0) throw std::runtime_error("Invalid resource size: " + name);
-            long remaining = size;
-            while (remaining > 0) {
-                const int read = OH_ResourceManager_ReadRawFile(file.get(), buffer.data(),
-                    std::min<std::size_t>(buffer.size(), static_cast<std::size_t>(remaining)));
-                if (read <= 0) throw std::runtime_error("Cannot extract resource: " + name);
-                output.write(buffer.data(), read);
-                remaining -= read;
-            }
-            if (!output) throw std::runtime_error("Cannot write runtime resource: " + target.string());
-        }
-        std::ifstream startup(root / "startup.txt");
-        if (!std::getline(startup, name)) throw std::runtime_error("Packaged startup scene is missing.");
-        runtime.startup = root / safeRelativePath(name);
-        if (!fs::is_regular_file(runtime.startup)) throw std::runtime_error("Packaged startup scene was not found.");
-        fs::current_path(root);
+        runtime.loadingProgress = 0;
         {
             std::lock_guard lock(runtime.errorMutex);
             runtime.error.clear();
         }
-        runtime.prepared = true;
-        runtime.paused = false;
-        runtime.start();
+        auto work = std::make_unique<ExtractionWork>();
+        work->root = fs::path(stringArgument(env, args[1])) / "vulkcore";
+        work->manager.reset(OH_ResourceManager_InitNativeResourceManager(env, args[0]));
+        if (!work->manager) throw std::runtime_error("Cannot access application resources.");
+        napi_value label{};
+        if (napi_create_string_utf8(env, "VulkCore resource extraction", NAPI_AUTO_LENGTH, &label) != napi_ok ||
+            napi_create_async_work(env, nullptr, label, extractResources, completeExtraction, work.get(), &work->handle) != napi_ok) {
+            throw std::runtime_error("Cannot create resource extraction job.");
+        }
+        if (napi_queue_async_work(env, work->handle) != napi_ok) {
+            napi_delete_async_work(env, work->handle);
+            throw std::runtime_error("Cannot queue resource extraction job.");
+        }
+        runtime.extracting = true;
+        work.release();
     } catch (const std::exception& exception) {
         runtime.fail(exception.what());
         napi_throw_error(env, nullptr, exception.what());
     }
     return nullptr;
+}
+
+napi_value getLoadingProgress(napi_env env, napi_callback_info) {
+    napi_value result{};
+    napi_create_int32(env, runtime.loadingProgress.load(), &result);
+    return result;
 }
 
 napi_value setKey(napi_env env, napi_callback_info info) {
@@ -247,16 +329,23 @@ void surfaceCreated(OH_NativeXComponent* component, void* native) {
     runtime.stop();
     runtime.window.native = static_cast<NativeWindow*>(native);
     surfaceChanged(component, native);
-    runtime.start();
+    try {
+        runtime.start();
+    } catch (const std::exception& exception) {
+        runtime.stop();
+        runtime.fail(exception.what());
+    }
 }
 void surfaceDestroyed(OH_NativeXComponent*, void*) {
     // The renderer and VkSurface must be destroyed before XComponent releases its window.
     runtime.stop();
+    if (runtime.prepared) runtime.loadingProgress = kAssetsReady;
     runtime.window.native = nullptr;
     runtime.window.width = 0;
     runtime.window.height = 0;
 }
 void touch(OH_NativeXComponent* component, void* native) {
+    if (runtime.paused || runtime.loadingProgress != kFirstFramePresented) return;
     OH_NativeXComponent_TouchEvent event{};
     if (OH_NativeXComponent_GetTouchEvent(component, native, &event) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) return;
     VulkCore::TouchPhase phase;
@@ -274,6 +363,7 @@ void touch(OH_NativeXComponent* component, void* native) {
 napi_value initialize(napi_env env, napi_value exports) {
     const napi_property_descriptor methods[] = {
         {"prepare", nullptr, prepare, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getLoadingProgress", nullptr, getLoadingProgress, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setKey", nullptr, setKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setMovement", nullptr, setMovement, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPaused", nullptr, setPaused, nullptr, nullptr, nullptr, napi_default, nullptr},

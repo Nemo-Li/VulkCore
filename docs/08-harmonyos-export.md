@@ -64,6 +64,8 @@ HarmonyOSGame/
 
 ## 手机运行与操作
 
+启动时显示横屏加载页，进度条跟随资源解包、图形引擎和场景初始化更新，首帧提交成功后自动进入游戏。加载页沿用导出时指定的应用名称，底图位于 `entry/src/main/resources/base/media/game_loading.jpg`。
+
 手机入口默认隐藏编辑面板，保留场景模拟和游戏小地图。页面加载前先设置全屏横屏并隐藏状态栏与导航栏，允许在两个横屏方向间随设备旋转。场景以编辑器默认的 1920×1080（16:9）画面为基准，等比放大并居中裁切以铺满手机屏幕：超宽手机裁切部分上下画面，较窄屏幕裁切部分左右画面，物体比例保持一致。XComponent 使用实际全屏尺寸，并延伸到系统栏与刘海区域；圆盘摇杆、技能按钮及小地图按全屏坐标独立布局。
 
 ArkUI 布局使用 vp；Native Surface、Vulkan viewport/scissor、ImGui 与 XComponent 触控使用组件内部的像素坐标，原点位于左上角，X 向右、Y 向下。创建或重建交换链前，将 NativeWindow 缓冲区设为 XComponent 回报的像素尺寸，避免沿用竖屏缓冲区。运行时不执行预旋转，因此交换链声明 `VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`，交由系统完成屏幕旋转；不能直接把 `currentTransform` 当作已执行的预旋转。交换链创建后启用等比 crop 呈现，并在下一帧绘制前处理尺寸变化。`SceneProjection.hpp` 按实际视口宽高比调整相机投影，实现参考画面的 cover 效果；直接按屏幕分辨率渲染，避免扩大 Surface 导致小地图裁切或触摸坐标偏移。

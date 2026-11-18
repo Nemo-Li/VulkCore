@@ -1,0 +1,7 @@
+{ "string": [
+  { "name": "loading_resources", "value": "正在解包游戏资源…" },
+  { "name": "loading_engine", "value": "正在初始化图形引擎…" },
+  { "name": "loading_scene", "value": "正在加载场景…" },
+  { "name": "loading_first_frame", "value": "正在准备首帧…" },
+  { "name": "loading_failed", "value": "游戏启动失败" }
+] }

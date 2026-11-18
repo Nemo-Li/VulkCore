@@ -1,5 +1,10 @@
 { "string": [
   { "name": "app_name", "value": @APP_NAME_JSON@ },
   { "name": "module_desc", "value": "VulkCore scene player" },
-  { "name": "movement_joystick", "value": "Movement joystick" }
+  { "name": "movement_joystick", "value": "Movement joystick" },
+  { "name": "loading_resources", "value": "Unpacking game resources…" },
+  { "name": "loading_engine", "value": "Initializing graphics…" },
+  { "name": "loading_scene", "value": "Loading scene…" },
+  { "name": "loading_first_frame", "value": "Preparing first frame…" },
+  { "name": "loading_failed", "value": "Could not start the game" }
 ] }
