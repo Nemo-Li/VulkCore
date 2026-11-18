@@ -1052,7 +1052,7 @@ void Renderer::drawResourceManager(bool& shouldSaveSettings) {
                 playerVelocity.z
             );
             ImGui::TextWrapped(
-                "WASD / Arrow keys move and turn, Space jumps, hold RMB to orbit the camera."
+                "WASD / Arrow keys move and turn, Space jumps, left-drag the viewport to orbit the camera."
             );
             } else {
             ImGui::SeparatorText("Selected Model Node");
@@ -1412,6 +1412,9 @@ void Renderer::updateTransition(float seconds) {
     const float amount = std::min(seconds, 0.1f) * 1.5f;
     transitionCameraFov_ = std::lerp(transitionCameraFov_,
         transitionPlayer_.active ? transitionSettings_.activeFov : authoredView_.fov, amount);
+    // A player camera's position is constrained by terrain collision.
+    if (playerController_.active()) return;
+
     transitionCameraOffset_ = std::lerp(transitionCameraOffset_,
         transitionPlayer_.active ? transitionSettings_.distanceOffset : 0.0f, amount);
     transitionCameraDistance_ = std::lerp(transitionCameraDistance_,
@@ -1470,7 +1473,7 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
     cameraBasisInitialized_ = false;
 }
 
-void Renderer::buildImGuiFrame() {
+bool Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     newWindowImGuiFrame(context_->window(), swapChain_->extent());
     ImGui::NewFrame();
@@ -1489,9 +1492,10 @@ void Renderer::buildImGuiFrame() {
     }
     if (!toolUiVisible_) {
         drawMiniMap();
-        updateCameraOrbit(!ImGui::GetIO().WantCaptureMouse);
+        const bool viewportHovered = !ImGui::GetIO().WantCaptureMouse;
+        updateCameraOrbit(viewportHovered);
         ImGui::Render();
-        return;
+        return viewportHovered;
     }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1858,6 +1862,7 @@ void Renderer::buildImGuiFrame() {
 
     drawMiniMap();
     ImGui::Render();
+    return viewportHovered;
 }
 
 

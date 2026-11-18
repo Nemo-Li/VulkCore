@@ -20,8 +20,10 @@ constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
 constexpr float kCameraDistance = 5.0f;
 constexpr float kCameraTargetHeight = 0.92f;
-constexpr float kCameraPitchLimit = kPi / 12.0f;
-constexpr float kInitialCameraPitch = -kCameraPitchLimit;
+constexpr float kCameraCollisionRadius = 0.25f;
+constexpr float kMinCameraElevation = 5.0f * kPi / 180.0f;
+constexpr float kMaxCameraElevation = 65.0f * kPi / 180.0f;
+constexpr float kInitialCameraElevation = 15.0f * kPi / 180.0f;
 constexpr float kFallbackRunCycleSeconds = 0.9f;
 constexpr float kFallbackRunStrideHeightRatio = 1.3f;
 
@@ -169,6 +171,7 @@ void PlayerController::clear() {
     flameAttackWasDown_ = false;
     activeAttack_ = PlayerAttack::None;
     triggeredAttack_ = PlayerAttack::None;
+    lookWasDown_ = false;
     lookDragging_ = false;
     spawnPosition_ = glm::vec3(0.0f);
     position_ = glm::vec3(0.0f);
@@ -218,13 +221,14 @@ void PlayerController::reset(
     activeAttack_ = PlayerAttack::None;
     triggeredAttack_ = PlayerAttack::None;
     attackAnimationTimeSeconds_ = 0.0f;
+    lookWasDown_ = false;
     lookDragging_ = false;
     // Imported player models use local +Z as forward. The initial camera
     // looks toward world -Z, so start the visual facing the same direction.
     facingYawRadians_ = kPi;
     runAnimationTimeSeconds_ = 0.0f;
     yawRadians_ = 0.0f;
-    pitchRadians_ = kInitialCameraPitch;
+    cameraElevationRadians_ = kInitialCameraElevation;
     active_ = true;
 }
 
@@ -388,27 +392,31 @@ void PlayerController::update(
         }
     }
 
-    if (window != nullptr && !mouseCaptured &&
-        lookPressed(window)) {
+    const bool lookDown = lookPressed(window);
+    if (!lookDown) {
+        lookDragging_ = false;
+    } else if (!lookWasDown_) {
+        lookDragging_ = !mouseCaptured;
+        if (lookDragging_) {
+            cursorPosition(window, &lastCursorX_, &lastCursorY_);
+        }
+    } else if (lookDragging_) {
         double cursorX = 0.0;
         double cursorY = 0.0;
         cursorPosition(window, &cursorX, &cursorY);
-        if (!lookDragging_) {
-            lookDragging_ = true;
-        } else {
-            yawRadians_ -= static_cast<float>(cursorX - lastCursorX_) * kMouseSensitivity;
-            pitchRadians_ -= static_cast<float>(cursorY - lastCursorY_) * kMouseSensitivity;
-            pitchRadians_ = std::clamp(
-                pitchRadians_,
-                -kCameraPitchLimit,
-                kCameraPitchLimit
-            );
-        }
+        yawRadians_ = std::remainder(
+            yawRadians_ - static_cast<float>(cursorX - lastCursorX_) * kMouseSensitivity,
+            2.0f * kPi
+        );
+        cameraElevationRadians_ = std::clamp(
+            cameraElevationRadians_ + static_cast<float>(cursorY - lastCursorY_) * kMouseSensitivity,
+            kMinCameraElevation,
+            kMaxCameraElevation
+        );
         lastCursorX_ = cursorX;
         lastCursorY_ = cursorY;
-    } else {
-        lookDragging_ = false;
     }
+    lookWasDown_ = lookDown;
 
     const bool jumpDown = window != nullptr &&
         keyPressed(window, Key::Jump);
@@ -485,17 +493,17 @@ void PlayerController::update(
     grounded_ = physics.playerGrounded();
 }
 
-glm::vec3 PlayerController::cameraTargetWorld() const {
-    return position_ + glm::vec3(0.0f, kCameraTargetHeight, 0.0f);
-}
-
-glm::vec3 PlayerController::cameraPositionWorld() const {
-    const glm::vec3 cameraTarget = cameraTargetWorld();
-    const glm::vec3 viewDirection = glm::normalize(
-        horizontalForward() * std::cos(pitchRadians_) +
-        glm::vec3(0.0f, std::sin(pitchRadians_), 0.0f)
+PlayerCameraView PlayerController::cameraView(const PhysicsWorld& physics) const {
+    const glm::vec3 pivot = position_ + glm::vec3(0.0f, kCameraTargetHeight, 0.0f);
+    const glm::vec3 orbitDirection =
+        -horizontalForward() * std::cos(cameraElevationRadians_) +
+        glm::vec3(0.0f, std::sin(cameraElevationRadians_), 0.0f);
+    const float distance = physics.terrainSweepDistance(
+        pivot, orbitDirection, kCameraDistance, kCameraCollisionRadius
     );
-    return cameraTarget - viewDirection * kCameraDistance;
+    const glm::vec3 eye = pivot + orbitDirection * distance;
+    // Keep the view direction valid even when terrain forces the eye to the pivot.
+    return {eye, eye - orbitDirection * kCameraDistance};
 }
 
 } // namespace VulkCore

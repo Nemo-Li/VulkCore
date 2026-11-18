@@ -26,6 +26,14 @@ public:
     // Per-chunk AABBs and mesh BVHs keep broad/mid-phase rejection local.
     void setTerrain(const TerrainMeshData& mesh);
 
+    // Distance a sphere can travel along a unit direction before touching terrain.
+    float terrainSweepDistance(
+        const glm::vec3& origin,
+        const glm::vec3& direction,
+        float maxDistance,
+        float radius
+    ) const;
+
     // Player positions use the bottom center of the upright capsule, matching
     // the renderer's existing player mesh coordinate convention.
     void createPlayer(const glm::vec3& footPosition, float height, float radius);

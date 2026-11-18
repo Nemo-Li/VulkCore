@@ -73,6 +73,64 @@ vec3 sampleLegacyAtlas(int layer, Projection projection) {
                        projection.dx * span, projection.dy * span).rgb;
 }
 
+struct TerrainSample {
+    vec3 albedo;
+    vec2 gradient;
+    float occlusion;
+};
+
+TerrainSample sampleTerrain(int layer, Projection p, bool hasAlbedo, bool hasSurface, float mipBias) {
+    vec3 coordinates = vec3(p.uv, float(layer));
+    vec3 color = hasAlbedo
+        ? textureGrad(albedoLayers, coordinates, p.dx * mipBias, p.dy * mipBias).rgb
+        : sampleLegacyAtlas(layer, p);
+    TerrainSample result = TerrainSample(color, vec2(0.0), 0.0);
+    if (hasSurface) {
+        vec4 surface = textureGrad(surfaceLayers, coordinates, p.dx, p.dy);
+        vec3 tangentNormal = surface.xyz * 2.0 - 1.0;
+        result.gradient = tangentNormal.xy / max(tangentNormal.z, 0.4);
+        result.occlusion = surface.a;
+    }
+    return result;
+}
+
+TerrainSample sampleStochasticTerrain(int layer, int axis, Projection p, vec2 gridWarp,
+                                      bool hasAlbedo, bool hasSurface, float mipBias) {
+    // Skew the sampling plane into a triangular lattice. Adjacent triangles
+    // share the same samples along an edge because the third weight vanishes.
+    const mat2 toLattice = mat2(1.0, 0.0, -0.57735027, 1.15470054);
+    vec2 grid = toLattice * (p.uv * 0.9 + gridWarp);
+    vec2 cell = floor(grid);
+    vec2 f = fract(grid);
+    float diagonal = 1.0 - f.x - f.y;
+    bool lowerTriangle = diagonal >= 0.0;
+    vec2 vertices[3] = vec2[3](cell + vec2(lowerTriangle ? 0.0 : 1.0),
+                                cell + vec2(1.0, 0.0), cell + vec2(0.0, 1.0));
+    vec3 weights = lowerTriangle ? vec3(diagonal, f) : vec3(-diagonal, 1.0 - f.yx);
+    weights *= weights;
+    weights /= dot(weights, vec3(1.0));
+
+    TerrainSample result = TerrainSample(vec3(0.0), vec2(0.0), 0.0);
+    for (int corner = 0; corner < 3; ++corner) {
+        vec2 seed = vertices[corner] + float(axis) * vec2(37.0, -19.0) + float(layer) * vec2(-13.0, 29.0);
+        vec2 offset = vec2(hash21(seed + vec2(5.4, 13.7)), hash21(seed + vec2(-9.8, 3.1)));
+        float angle = mix(-0.68, 0.68, hash21(seed + vec2(8.2, -12.3)));
+        float scale = mix(0.75, 1.35, hash21(seed + vec2(19.8, 2.6)));
+        float c = cos(angle);
+        float s = sin(angle);
+        mat2 transform = scale * mat2(c, s, -s, c);
+        // Explicit gradients stay valid when neighboring pixels choose
+        // different triangles. All channels use the same transform and blend.
+        Projection patchProjection = Projection(transform * p.uv + offset, transform * p.dx, transform * p.dy);
+        TerrainSample sampleValue = sampleTerrain(layer, patchProjection, hasAlbedo, hasSurface, mipBias);
+        float weight = weights[corner];
+        result.albedo += sampleValue.albedo * weight;
+        result.gradient += transpose(transform) * sampleValue.gradient * weight;
+        result.occlusion += sampleValue.occlusion * weight;
+    }
+    return result;
+}
+
 void main() {
     vec3 geometryNormal = normalize(fragNormal);
     float up = clamp(geometryNormal.y, 0.0, 1.0);
@@ -146,14 +204,22 @@ void main() {
 
     const int grassLayer = 0;
     const int rockLayer = 2;
-    // Pigment and horizontal beds are evaluated in terrain units so they
-    // survive texture minification. Warp the beds instead of drawing stripes
-    // along contours of constant elevation.
-    float warmStone = smoothstep(0.29, 0.71, 0.50 * region + 0.28 * ledge + 0.22 * highland);
+    const int gravelLayer = 6;
+    // Warp the rock layers on the slope face and modulate the stone with
+    // broad mineral patches and finer weathering in terrain units.
+    const mat2 turnRock = mat2(0.8, 0.6, -0.6, 0.8);
+    vec2 mineralPosition = turnRock * facePosition;
+    vec2 mineralWarp = vec2(ledge, valueNoise(mineralPosition / 53.0 + vec2(13.6, 24.8))) - 0.5;
+    vec2 rockGridWarp = mineralWarp * 1.1;
+    float mineral = valueNoise(mineralPosition / 23.0 + mineralWarp * 1.8);
+    float grain = valueNoise(mineralPosition / 6.2 + mineralWarp * 2.4);
+    float grainFade = 1.0 - smoothstep(1.0, 5.0, length(fwidth(mineralPosition)));
+    float warmStone = smoothstep(0.26, 0.74, 0.40 * region + 0.34 * mineral + 0.26 * highland);
     vec3 rockTint = mix(vec3(0.90, 1.04, 0.95), vec3(1.58, 0.99, 0.72), warmStone);
-    float bedHeight = (elevation + (region - 0.5) * 44.0 + (ledge - 0.5) * 14.0) / 29.0;
-    float bed = valueNoise(vec2(bedHeight, (groundPosition.x + groundPosition.y) / 175.0));
-    rockTint *= mix(0.80, 1.18, smoothstep(0.24, 0.78, bed));
+    float bedHeight = (elevation + (region - 0.5) * 50.0 + mineralWarp.y * 37.0) / 29.0;
+    float bed = valueNoise(vec2(bedHeight, mineralPosition.x / 130.0 + mineralWarp.x));
+    float weathering = 0.31 * (mineral - 0.5) + 0.17 * (grain - 0.5) * grainFade;
+    rockTint *= mix(0.88, 1.13, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
     vec3 grassTint = mix(vec3(0.96, 1.03, 0.91), vec3(1.09, 1.25, 0.93), vegetation);
 
     vec3 axes = pow(abs(geometryNormal), vec3(4.0));
@@ -183,19 +249,17 @@ void main() {
             weight *= smoothstep(0.001, 0.012, weight);
             if (weight <= 0.0) continue;
 
-            Projection p = projections[axis];
-            vec3 coordinates = vec3(p.uv, float(layer));
-            vec3 color = hasAlbedo
-                ? textureGrad(albedoLayers, coordinates, p.dx * gradientScale, p.dy * gradientScale).rgb
-                : sampleLegacyAtlas(layer, legacy[axis]);
-            albedo += color * layerTint * weight;
-            sampledWeight += weight;
-            if (hasSurface) {
-                vec4 surface = textureGrad(surfaceLayers, coordinates, p.dx, p.dy);
-                vec3 tangentNormal = surface.xyz * 2.0 - 1.0;
-                normalOffset += bases[axis] * (tangentNormal.xy / max(tangentNormal.z, 0.4)) * weight;
-                occlusion += surface.a * weight;
+            Projection p = hasAlbedo ? projections[axis] : legacy[axis];
+            TerrainSample surface;
+            if (layer == rockLayer || layer == gravelLayer) {
+                surface = sampleStochasticTerrain(layer, axis, p, rockGridWarp, hasAlbedo, hasSurface, gradientScale);
+            } else {
+                surface = sampleTerrain(layer, p, hasAlbedo, hasSurface, gradientScale);
             }
+            albedo += surface.albedo * layerTint * weight;
+            normalOffset += bases[axis] * surface.gradient * weight;
+            occlusion += surface.occlusion * weight;
+            sampledWeight += weight;
         }
     }
     float inverseWeight = 1.0 / max(sampledWeight, 0.0001);

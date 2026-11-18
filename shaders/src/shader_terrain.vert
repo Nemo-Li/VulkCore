@@ -34,7 +34,7 @@ layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec4 fragVertexColor;
 layout(location = 3) out vec3 fragWorldPosition;
 layout(location = 4) out vec3 fragTerrainPosition;
-layout(location = 5) out vec2 fragTerrainTileSize;
+layout(location = 5) out vec4 fragTerrainMapping;
 
 void main() {
     mat4 model = ubo.model * pushConstants.nodeTransform;
@@ -46,5 +46,5 @@ void main() {
     fragVertexColor = inColor;
     fragWorldPosition = worldPosition;
     fragTerrainPosition = inPosition;
-    fragTerrainTileSize = max(inTerrainMapping.xy, vec2(0.0001));
+    fragTerrainMapping = vec4(max(inTerrainMapping.xy, vec2(0.0001)), inTerrainMapping.zw);
 }

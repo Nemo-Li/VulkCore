@@ -14,7 +14,7 @@ bool keyPressed(Window* window, Key key) {
 }
 MovementInput analogMovement(Window*) { return {}; }
 bool lookPressed(Window* window) {
-    return window && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    return window && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 }
 void cursorPosition(Window* window, double* x, double* y) { glfwGetCursorPos(window, x, y); }
 void framebufferSize(Window* window, int* width, int* height) {

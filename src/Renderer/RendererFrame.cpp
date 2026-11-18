@@ -771,7 +771,7 @@ bool Renderer::drawFrame() {
         ensureScreenshotBuffer();
     }
 
-    buildImGuiFrame();
+    const bool viewportHovered = buildImGuiFrame();
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
     const float particleDeltaSeconds = std::clamp(
@@ -779,7 +779,7 @@ bool Renderer::drawFrame() {
         0.0f,
         0.1f
     );
-    updatePlayerController(particleDeltaSeconds);
+    updatePlayerController(particleDeltaSeconds, viewportHovered);
     updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
     updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
     lastFrameElapsedSeconds_ = elapsedSeconds;
