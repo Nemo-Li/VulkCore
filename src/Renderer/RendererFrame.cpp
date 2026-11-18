@@ -659,7 +659,7 @@ void Renderer::recordCommandBuffer(
     }
 }
 
-void Renderer::drawFrame() {
+bool Renderer::drawFrame() {
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a
     // changed XComponent, rather than presenting one frame at the old ratio.
@@ -690,7 +690,7 @@ void Renderer::drawFrame() {
 
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapChain();
-        return;
+        return false;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         throw std::runtime_error("failed to acquire swap chain image!");
@@ -778,16 +778,17 @@ void Renderer::drawFrame() {
             std::cerr << "Warning: " << screenshotStatus_ << '\n';
         }
     }
-    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
-        presentResult == VK_SUBOPTIMAL_KHR ||
-        framebufferResized_) {
+    const bool presented = presentResult == VK_SUCCESS || presentResult == VK_SUBOPTIMAL_KHR;
+    if (!presented && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
+        throw std::runtime_error("failed to present swap chain image!");
+    }
+    if (presentResult != VK_SUCCESS || framebufferResized_) {
         framebufferResized_ = false;
         recreateSwapChain();
-    } else if (presentResult != VK_SUCCESS) {
-        throw std::runtime_error("failed to present swap chain image!");
     }
 
     currentFrame_ = (currentFrame_ + 1) % kMaxFramesInFlight;
+    return presented;
 }
 
 void Renderer::recreateSwapChain() {

@@ -1,1 +1,10 @@
-{ "color": [{ "name": "start_window_background", "value": "#17233a" }] }
+{ "color": [
+  { "name": "start_window_background", "value": "#17233a" },
+  { "name": "loading_scrim_top", "value": "#38070C16" },
+  { "name": "loading_scrim_middle", "value": "#00070C16" },
+  { "name": "loading_scrim_bottom", "value": "#F2081018" },
+  { "name": "loading_text", "value": "#F3F6F5" },
+  { "name": "loading_accent", "value": "#FFD395" },
+  { "name": "loading_track", "value": "#55B1C5CC" },
+  { "name": "loading_error", "value": "#FFBAA7" }
+] }

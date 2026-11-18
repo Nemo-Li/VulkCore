@@ -16,7 +16,8 @@ namespace VulkCore {
 Renderer::Renderer(
     Window* window,
     const std::filesystem::path& startupScene,
-    bool hideTools
+    bool hideTools,
+    const std::function<void()>& onSceneLoading
 )
     : window_(window), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
@@ -58,6 +59,7 @@ Renderer::Renderer(
     createSyncObjects();
     initializeImGui();
     toolUiVisible_ = !hideTools;
+    if (onSceneLoading) onSceneLoading();
     if (!startupScene.empty() && !loadSceneResource(startupScene)) {
         throw std::runtime_error(
             sceneStatus_.empty()

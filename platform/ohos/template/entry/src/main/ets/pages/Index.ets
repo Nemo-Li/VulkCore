@@ -1,32 +1,64 @@
 import { common } from '@kit.AbilityKit';
 import player from 'libvulkcore.so';
+import { LoadingScreen } from '../components/LoadingScreen';
 import { VirtualJoystick } from '../components/VirtualJoystick';
+
+// These progress boundaries match the native getLoadingProgress contract.
+enum LoadingMilestone {
+  AssetsReady = 75,
+  LoadingScene = 88,
+  WaitingForFrame = 97,
+  FirstFramePresented = 100
+}
 
 @Entry
 @Component
 struct Index {
   @StorageLink('vulkcoreForeground') private foreground: boolean = true;
-  @State private ready: boolean = false;
+  @State private progress: number = 0;
   @State private error: string = '';
-  private errorTimer: number = -1;
+  private statusTimer: number = -1;
 
   aboutToAppear(): void {
+    this.progress = 0;
+    this.error = '';
     try {
       const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      player.setPaused(!this.foreground);
       player.prepare(context.resourceManager, context.filesDir);
-      this.ready = true;
-      this.errorTimer = setInterval(() => {
-        const error = player.getError();
-        if (error.length > 0) { this.error = error; }
-      }, 1000);
+      this.updateLoadingStatus();
     } catch (error) {
       this.error = String(error);
     }
   }
 
   aboutToDisappear(): void {
-    clearInterval(this.errorTimer);
+    clearTimeout(this.statusTimer);
     player.setPaused(true);
+  }
+
+  private updateLoadingStatus(): void {
+    const error = player.getError();
+    if (error.length > 0) {
+      this.error = error;
+      return;
+    }
+    this.progress = player.getLoadingProgress();
+    const delay = this.progress < LoadingMilestone.FirstFramePresented ? 80 : 1000;
+    this.statusTimer = setTimeout(() => this.updateLoadingStatus(), delay);
+  }
+
+  private loadingStage(): Resource {
+    if (this.progress < LoadingMilestone.AssetsReady) {
+      return $r('app.string.loading_resources');
+    }
+    if (this.progress < LoadingMilestone.LoadingScene) {
+      return $r('app.string.loading_engine');
+    }
+    if (this.progress < LoadingMilestone.WaitingForFrame) {
+      return $r('app.string.loading_scene');
+    }
+    return $r('app.string.loading_first_frame');
   }
 
   @Builder
@@ -43,10 +75,12 @@ struct Index {
 
   build() {
     Stack({ alignContent: Alignment.BottomStart }) {
-      if (this.ready && this.error.length === 0) {
+      if (this.progress >= LoadingMilestone.AssetsReady && this.error.length === 0) {
         // The scene projection performs uniform cover/crop at screen resolution.
         XComponent({ id: 'vulkcore', type: XComponentType.SURFACE, libraryname: 'vulkcore' })
           .width('100%').height('100%')
+      }
+      if (this.progress >= LoadingMilestone.FirstFramePresented && this.error.length === 0) {
         VirtualJoystick({
           inputEnabled: this.foreground,
           onMove: (right: number, forward: number): void => {
@@ -63,11 +97,14 @@ struct Index {
           .fontSize(14).fontColor('#ffffff').position({ left: 24, top: 12 })
           .hitTestBehavior(HitTestMode.None)
       }
-      if (this.error.length > 0) {
-        Text(this.error).fontSize(16).fontColor('#ffb0a0').padding(24)
-          .width('100%').height('100%')
+      if (this.progress < LoadingMilestone.FirstFramePresented || this.error.length > 0) {
+        LoadingScreen({
+          progress: this.progress,
+          stage: this.loadingStage(),
+          error: this.error
+        }).zIndex(1)
       }
-    }.width('100%').height('100%').backgroundColor('#17233a')
+    }.width('100%').height('100%').backgroundColor($r('app.color.start_window_background'))
       .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.CUTOUT], [
         SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM, SafeAreaEdge.START, SafeAreaEdge.END
       ])

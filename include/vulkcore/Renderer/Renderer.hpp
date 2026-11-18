@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <iosfwd>
 #include <limits>
 #include <memory>
@@ -36,14 +37,16 @@ public:
     explicit Renderer(
         Window* window,
         const std::filesystem::path& startupScene = {},
-        bool hideTools = false
+        bool hideTools = false,
+        const std::function<void()>& onSceneLoading = {}
     );
     ~Renderer();
 
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    void drawFrame();
+    // Returns true once the presentation queue accepts the frame.
+    bool drawFrame();
 
 private:
     struct SceneRenderTarget {
