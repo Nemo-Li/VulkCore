@@ -125,6 +125,7 @@ private:
     VkPipeline createParticlePipeline(bool additiveBlending, VkRenderPass pass);
     void configureHdrComposition();
     void updateTransition(float seconds);
+    void updateCameraOrbit(bool viewportHovered);
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
@@ -255,6 +256,7 @@ private:
     std::unique_ptr<HdrComposition> hdrComposition_;
     HdrSettings hdrSettings_;
     AuthoredView authoredView_;
+    bool cameraOrbitDragging_ = false;
     TransitionSettings transitionSettings_;
     TransitionPlayer transitionPlayer_;
     glm::vec3 transitionCameraStart_{0.0f};
