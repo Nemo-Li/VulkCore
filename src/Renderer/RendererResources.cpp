@@ -1325,9 +1325,8 @@ void Renderer::updateCameraBasis() {
     cameraForward_ = glm::normalize(targetDelta);
 
     if (!cameraBasisInitialized_) {
-        const glm::vec3 worldUp = playerController_.active()
-            ? glm::vec3(0.0f, 1.0f, 0.0f)
-            : glm::vec3(0.0f, 0.0f, 1.0f);
+        const glm::vec3 worldUp = authoredView_.enabled ? authoredView_.up :
+            (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f));
         // At the exact pole the position alone does not define camera roll,
         // so retain the historical front-view orientation as the initial one.
         glm::vec3 initialUp = worldUp -
@@ -1381,7 +1380,7 @@ void Renderer::updateUniformBuffer() {
         glm::translate(glm::mat4(1.0f), -modelCenter_);
 
     ubo.model = modelNormalization;
-    ubo.time = glm::vec4(elapsedSeconds, 0.0f, 0.0f, 0.0f);
+    ubo.time = glm::vec4(elapsedSeconds, transitionPlayer_.flowTime, hdrSettings_.exposure, 0.0f);
     ubo.view = glm::lookAt(cameraPosition_, cameraTarget_, cameraUp_);
 
     const VkExtent2D extent = swapChain_->extent();
@@ -1408,6 +1407,17 @@ void Renderer::updateUniformBuffer() {
         100.0f,
         coverReferenceViewport
     );
+
+    if (authoredView_.enabled) {
+        const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const float zoom = authoredView_.minimumAspect > 0.0f
+            ? std::min(1.0f, aspect / authoredView_.minimumAspect) : 1.0f;
+        const float fov = transitionSettings_.enabled ? transitionCameraFov_ : authoredView_.fov;
+        ubo.projection = glm::perspectiveRH_ZO(
+            2.0f * std::atan(std::tan(glm::radians(fov) * 0.5f) / zoom), aspect, nearPlane, 100.0f
+        );
+        ubo.projection[1][1] *= -1.0f;
+    }
 
     const glm::vec3 normalizedSunDirection = glm::length(sunLightDirection_) < 0.001f
         ? glm::vec3(0.45f, 0.55f, 0.75f)
@@ -1463,7 +1473,6 @@ void Renderer::createCommandBuffers() {
 
 void Renderer::createSyncObjects() {
     imageAvailableSemaphores_.resize(kMaxFramesInFlight);
-    renderFinishedSemaphores_.resize(kMaxFramesInFlight);
     inFlightFences_.resize(kMaxFramesInFlight);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -1475,9 +1484,24 @@ void Renderer::createSyncObjects() {
 
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         if (vkCreateSemaphore(context_->device(), &semaphoreInfo, nullptr, &imageAvailableSemaphores_[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(context_->device(), &semaphoreInfo, nullptr, &renderFinishedSemaphores_[i]) != VK_SUCCESS ||
             vkCreateFence(context_->device(), &fenceInfo, nullptr, &inFlightFences_[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create synchronization objects for a frame!");
+        }
+    }
+    recreatePresentSemaphores();
+}
+
+void Renderer::recreatePresentSemaphores() {
+    const VkDevice device = context_->device();
+    for (const VkSemaphore semaphore : renderFinishedSemaphores_) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    renderFinishedSemaphores_.assign(swapChain_->framebuffers().size(), VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (VkSemaphore& semaphore : renderFinishedSemaphores_) {
+        if (vkCreateSemaphore(device, &info, nullptr, &semaphore) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create a swap chain presentation semaphore");
         }
     }
 }

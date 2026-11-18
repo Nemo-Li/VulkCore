@@ -759,6 +759,11 @@ void Renderer::clearSceneData() {
     particleSystems_.clear();
     particleDrawRanges_.clear();
     particleVertices_.clear();
+    hdrSettings_ = {};
+    authoredView_ = {};
+    transitionSettings_ = {};
+    transitionPlayer_ = {};
+    configureHdrComposition();
     particleTextures_.clear();
     sceneModelResources_.clear();
     nextSceneModelInstanceIndex_ = 0;
@@ -780,7 +785,7 @@ void Renderer::clearSceneData() {
 }
 
 void Renderer::recalculateSceneBounds() {
-    if (meshData_.vertices.empty() || meshData_.parts.empty()) {
+    if (authoredView_.enabled || meshData_.vertices.empty() || meshData_.parts.empty()) {
         modelCenter_ = glm::vec3(0.0f);
         modelScale_ = 1.0f;
         return;
@@ -1425,6 +1430,11 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
 
     currentScenePath_ = resolvedScenePath;
     loadTransformSettings();
+    recalculateSceneBounds();
+    configureHdrComposition();
+    lastFrameElapsedSeconds_ = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - startTime_
+    ).count();
     if (isTornadoScene) {
         // A previous saved preview could mark the generated node as removed.
         // The preview scene always owns and shows this node.
@@ -1525,6 +1535,7 @@ void Renderer::loadTransformSettings() {
     struct PendingMaterial {
         std::uint32_t materialIndex = 0;
         MaterialData material;
+        bool keepEmbeddedBaseColor = false;
     };
     struct PendingMaterialTextures {
         std::uint32_t materialIndex = 0;
@@ -1547,6 +1558,14 @@ void Renderer::loadTransformSettings() {
     std::vector<PendingNodeWater> pendingNodeWater;
     std::vector<PendingMaterial> pendingMaterials;
     std::vector<PendingMaterialTextures> pendingMaterialTextures;
+    struct MaterialEffect {
+        std::uint32_t index;
+        MaterialData settings;
+    };
+    std::vector<MaterialEffect> materialEffects;
+    HdrSettings hdr;
+    AuthoredView authored;
+    TransitionSettings transition;
     std::vector<PendingNodeMaterial> pendingNodeMaterials;
     std::vector<PendingParticleSystem> pendingParticleSystems;
     bool valid = true;
@@ -1670,7 +1689,8 @@ void Renderer::loadTransformSettings() {
             pending.material.blendMode = static_cast<MaterialData::BlendMode>(blendMode);
             pending.material.depthWrite = depthWrite != 0;
             pending.material.doubleSided = doubleSided != 0;
-            pending.material.texturePath = texturePath;
+            pending.keepEmbeddedBaseColor = texturePath == "@embedded";
+            if (!pending.keepEmbeddedBaseColor) pending.material.texturePath = texturePath;
             pending.material.userCreated = true;
             // Material lines written by the first Material implementation did
             // not contain shader/water fields. Keep those materials valid and
@@ -1713,6 +1733,62 @@ void Renderer::loadTransformSettings() {
                 }
             }
             pendingMaterials.push_back(std::move(pending));
+        } else if (key == "hdr_composition") {
+            int smaa = 0;
+            if (!(file >> hdr.bloomLevels >> hdr.bloomThreshold >> hdr.bloomSmoothing >>
+                         hdr.bloomIntensity >> hdr.bloomRadius >> hdr.exposure >> smaa >>
+                         hdr.clearColor.r >> hdr.clearColor.g >> hdr.clearColor.b) ||
+                hdr.bloomLevels < 0 || hdr.bloomLevels > 8 || hdr.bloomThreshold < 0 ||
+                hdr.bloomSmoothing < 0 || hdr.bloomIntensity < 0 || hdr.bloomRadius < 0 ||
+                hdr.bloomRadius > 1 || hdr.exposure <= 0 || (smaa != 0 && smaa != 1)) {
+                valid = false;
+                break;
+            }
+            hdr.enabled = true;
+            hdr.smaa = smaa != 0;
+        } else if (key == "authored_view") {
+            if (!(file >> authored.target.x >> authored.target.y >> authored.target.z >>
+                         authored.up.x >> authored.up.y >> authored.up.z >>
+                         authored.fov >> authored.minimumAspect) ||
+                glm::length(authored.up) < 0.001f || authored.fov <= 0 || authored.fov >= 179 ||
+                authored.minimumAspect < 0) {
+                valid = false;
+                break;
+            }
+            authored.enabled = true;
+            authored.up = glm::normalize(authored.up);
+        } else if (key == "material_transition") {
+            int autoplay = 0;
+            if (!(file >> transition.delay >> transition.duration >> transition.dwell >>
+                         autoplay >> transition.activeFov >> transition.distanceOffset) ||
+                transition.delay < 0 || transition.duration <= 0 || transition.dwell < 0 ||
+                (autoplay != 0 && autoplay != 1) || transition.activeFov < 0 ||
+                transition.activeFov >= 179) {
+                valid = false;
+                break;
+            }
+            transition.enabled = true;
+            transition.autoplay = autoplay != 0;
+        } else if (key == "material_effect") {
+            MaterialEffect effect{};
+            int twoPass = 0, lessEqual = 0, samplesOpaque = 0, hasProgress = 0, custom = 0;
+            auto& m = effect.settings;
+            if (!(file >> effect.index >> twoPass >> lessEqual >> samplesOpaque >> hasProgress >>
+                         m.transitionVisibleFrom >> m.transitionVisibleUntil >> custom >>
+                         m.shaderParameters0.x >> m.shaderParameters0.y >> m.shaderParameters0.z >> m.shaderParameters0.w >>
+                         m.shaderParameters1.x >> m.shaderParameters1.y >> m.shaderParameters1.z >> m.shaderParameters1.w) ||
+                (twoPass & ~1) || (lessEqual & ~1) || (samplesOpaque & ~1) || (hasProgress & ~1) ||
+                (custom & ~1) || m.transitionVisibleFrom < 0 || m.transitionVisibleUntil > 1 ||
+                m.transitionVisibleFrom > m.transitionVisibleUntil) {
+                valid = false;
+                break;
+            }
+            m.drawBackFacesFirst = twoPass != 0;
+            m.depthLessEqual = lessEqual != 0;
+            m.samplesOpaqueScene = samplesOpaque != 0;
+            m.transitionOpacity = hasProgress != 0;
+            m.customParameters = custom != 0;
+            materialEffects.push_back(std::move(effect));
         } else if (key == "material_textures") {
             PendingMaterialTextures pending;
             std::string normalTexturePath;
@@ -1949,6 +2025,18 @@ void Renderer::loadTransformSettings() {
     cameraPosition_ = glm::length(cameraPosition) < 0.05f
         ? glm::vec3(0.0f, 0.0f, 4.0f)
         : cameraPosition;
+    hdrSettings_ = hdr;
+    authoredView_ = authored;
+    if (authored.enabled) cameraTarget_ = authored.target;
+    transitionSettings_ = transition;
+    transitionPlayer_ = {};
+    transitionPlayer_.loop = transition.autoplay;
+    transitionCameraStart_ = cameraPosition_;
+    transitionCameraBaseDistance_ = glm::distance(cameraTarget_, cameraPosition_);
+    transitionCameraDistance_ = transitionCameraBaseDistance_;
+    transitionCameraOffset_ = 0.0f;
+    transitionCameraFov_ = authored.fov;
+    transitionHeld_ = false;
     // A loaded scene may replace the camera while another scene was already
     // active. Reinitialize the roll once for the new saved camera position;
     // subsequent position edits remain continuous through updateCameraBasis().
@@ -2038,6 +2126,9 @@ void Renderer::loadTransformSettings() {
             // fields. Preserve the imported defaults unless a separate
             // material_textures record explicitly overrides them.
             const MaterialData& importedMaterial = meshData_.materials[pending.materialIndex];
+            if (pending.keepEmbeddedBaseColor) {
+                pending.material.embeddedTexture = importedMaterial.embeddedTexture;
+            }
             if (pending.material.normalTexturePath.empty() &&
                 pending.material.embeddedNormalTexture.empty()) {
                 pending.material.normalTexturePath = importedMaterial.normalTexturePath;
@@ -2052,6 +2143,20 @@ void Renderer::loadTransformSettings() {
         } else if (pending.materialIndex == meshData_.materials.size()) {
             meshData_.materials.push_back(std::move(pending.material));
         }
+    }
+    for (const MaterialEffect& effect : materialEffects) {
+        if (effect.index >= meshData_.materials.size()) continue;
+        auto& material = meshData_.materials[effect.index];
+        const auto& source = effect.settings;
+        material.drawBackFacesFirst = source.drawBackFacesFirst;
+        material.depthLessEqual = source.depthLessEqual;
+        material.samplesOpaqueScene = source.samplesOpaqueScene;
+        material.transitionOpacity = source.transitionOpacity;
+        material.transitionVisibleFrom = source.transitionVisibleFrom;
+        material.transitionVisibleUntil = source.transitionVisibleUntil;
+        material.customParameters = source.customParameters;
+        material.shaderParameters0 = source.shaderParameters0;
+        material.shaderParameters1 = source.shaderParameters1;
     }
     for (const PendingMaterialTextures& pending : pendingMaterialTextures) {
         if (pending.materialIndex >= meshData_.materials.size()) {
@@ -2242,12 +2347,33 @@ bool Renderer::saveTransformSettings() const {
         if (model.playerModel) {
             continue;
         }
-        file << "model_resource_path " << std::quoted(model.path.string()) << ' '
-             << model.rootNodeId << "\n";
+        std::error_code relativeError;
+        const auto relativePath = std::filesystem::relative(model.path, configPath.parent_path(), relativeError);
+        file << "model_resource_path "
+             << std::quoted((relativeError || relativePath.empty() ? model.path : relativePath).generic_string())
+             << ' ' << model.rootNodeId << "\n";
     }
+    if (hdrSettings_.enabled) {
+        const auto& h = hdrSettings_;
+        file << "hdr_composition " << h.bloomLevels << ' ' << h.bloomThreshold << ' '
+             << h.bloomSmoothing << ' ' << h.bloomIntensity << ' ' << h.bloomRadius << ' '
+             << h.exposure << ' ' << h.smaa << ' ' << h.clearColor.r << ' '
+             << h.clearColor.g << ' ' << h.clearColor.b << "\n";
+    }
+    if (authoredView_.enabled) {
+        const auto& v = authoredView_;
+        file << "authored_view " << v.target.x << ' ' << v.target.y << ' ' << v.target.z << ' '
+             << v.up.x << ' ' << v.up.y << ' ' << v.up.z << ' ' << v.fov << ' ' << v.minimumAspect << "\n";
+    }
+    if (transitionSettings_.enabled) {
+        const auto& t = transitionSettings_;
+        file << "material_transition " << t.delay << ' ' << t.duration << ' ' << t.dwell << ' '
+             << t.autoplay << ' ' << t.activeFov << ' ' << t.distanceOffset << "\n";
+    }
+    const auto& savedCamera = transitionSettings_.enabled ? transitionCameraStart_ : cameraPosition_;
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
-         << "camera_position " << cameraPosition_.x << ' '
-         << cameraPosition_.y << ' ' << cameraPosition_.z << "\n"
+         << "camera_position " << savedCamera.x << ' '
+         << savedCamera.y << ' ' << savedCamera.z << "\n"
          << "ambient_color " << ambientLightColor_.r << ' '
          << ambientLightColor_.g << ' ' << ambientLightColor_.b << "\n"
          << "ambient_intensity " << ambientLightIntensity_ << "\n"
@@ -2337,6 +2463,20 @@ bool Renderer::saveTransformSettings() const {
         saveNodeAnimationSettings(file, node);
     }
     saveUserMaterials(file, meshData_.materials, materialIndexRemap);
+    for (std::size_t index = 0; index < meshData_.materials.size(); ++index) {
+        const auto remap = materialIndexRemap.find(index);
+        if (remap == materialIndexRemap.end()) continue;
+        const auto& m = meshData_.materials[index];
+        if (!m.drawBackFacesFirst && !m.depthLessEqual && !m.samplesOpaqueScene &&
+            !m.transitionOpacity && !m.customParameters) continue;
+        const auto& a = m.shaderParameters0;
+        const auto& b = m.shaderParameters1;
+        file << "material_effect " << remap->second << ' ' << m.drawBackFacesFirst << ' '
+             << m.depthLessEqual << ' ' << m.samplesOpaqueScene << ' ' << m.transitionOpacity << ' '
+             << m.transitionVisibleFrom << ' ' << m.transitionVisibleUntil << ' ' << m.customParameters << ' '
+             << a.x << ' ' << a.y << ' ' << a.z << ' ' << a.w << ' '
+             << b.x << ' ' << b.y << ' ' << b.z << ' ' << b.w << "\n";
+    }
     saveNodeMaterialSettings(file, meshData_.hierarchy, materialIndexRemap);
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeMaterialSettings(file, node, materialIndexRemap);

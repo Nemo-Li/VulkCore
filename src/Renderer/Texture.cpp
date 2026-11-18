@@ -17,9 +17,11 @@ Texture::Texture(
     VulkanContext& context,
     const std::filesystem::path& path,
     VkSamplerAddressMode addressModeU,
-    VkSamplerAddressMode addressModeV
+    VkSamplerAddressMode addressModeV,
+    TextureColorSpace colorSpace
 )
     : context_(context),
+      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
       addressModeU_(addressModeU),
       addressModeV_(addressModeV) {
     int width = 0;
@@ -114,7 +116,7 @@ void Texture::uploadRgbaPixels(
     VkFormatProperties formatProperties{};
     vkGetPhysicalDeviceFormatProperties(
         context_.physicalDevice(),
-        VK_FORMAT_R8G8B8A8_SRGB,
+        format_,
         &formatProperties
     );
     if ((formatProperties.optimalTilingFeatures &
@@ -164,7 +166,7 @@ void Texture::createImage(uint32_t width, uint32_t height) {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.format = format_;
     imageInfo.extent = {width, height, 1};
     imageInfo.mipLevels = mipLevels_;
     imageInfo.arrayLayers = 1;
@@ -214,7 +216,7 @@ void Texture::createImageView() {
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image_;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.format = format_;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = mipLevels_;

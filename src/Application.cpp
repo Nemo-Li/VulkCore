@@ -23,20 +23,31 @@ Application::~Application() {
 }
 
 void Application::run() {
-    initWindow();
+    initWindow(kWindowWidth, kWindowHeight, false);
     renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
     mainLoop();
 }
 
-void Application::initWindow() {
+void Application::captureFrame(float progress, float time, int width, int height,
+                               const std::filesystem::path& output) {
+    initWindow(width, height, true);
+    renderer_ = std::make_unique<Renderer>(window_, startupScene_, true);
+    renderer_->captureTransitionFrame(progress, time, output);
+}
+
+void Application::initWindow(int width, int height, bool hidden) {
     if (glfwInit() != GLFW_TRUE) {
         throw std::runtime_error("failed to initialize GLFW!");
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_VISIBLE, hidden ? GLFW_FALSE : GLFW_TRUE);
+#ifdef GLFW_COCOA_RETINA_FRAMEBUFFER
+    if (hidden) glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
+#endif
     window_ = glfwCreateWindow(
-        static_cast<int>(kWindowWidth),
-        static_cast<int>(kWindowHeight),
+        width,
+        height,
         "VulkCore",
         nullptr,
         nullptr
