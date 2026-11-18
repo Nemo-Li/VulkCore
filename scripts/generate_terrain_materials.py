@@ -75,66 +75,108 @@ class Tile:
                 mask = np.maximum(mask, shape_mask)
         return mask, elevation, face_tone
 
+    def rock_faces(self, cells, warp):
+        """Measure distance to irregular, wrapping stone face boundaries."""
+        x, y = (self.x + warp[0]) * cells, (self.y + warp[1]) * cells
+        i, j = np.floor(x).astype(np.int32), np.floor(y).astype(np.int32)
+        seeds = self.rng.random((3, cells, cells), dtype=np.float32)
+        nearest = np.full_like(x, np.inf)
+        second = nearest.copy()
+        face_tone = np.zeros_like(x)
+        for near_y in (-1, 0, 1):
+            for near_x in (-1, 0, 1):
+                k, l = i + near_x, j + near_y
+                sx, sy, tone = seeds[:, l % cells, k % cells]
+                dx, dy = x - k - (0.25 + 0.50 * sx), y - l - (0.25 + 0.50 * sy)
+                distance = dx * dx + dy * dy
+                closer = distance < nearest
+                second = np.where(closer, nearest, np.minimum(second, distance))
+                nearest = np.minimum(nearest, distance)
+                face_tone = np.where(closer, tone, face_tone)
+        return np.sqrt(second) - np.sqrt(nearest), face_tone
+
 
 def blend(base, overlay, weight):
     return base * (1 - weight[..., None]) + overlay * weight[..., None]
 
 
 def render_landform(name, tile):
-    warp = (0.13 * (tile.noise(4) - 0.5), 0.13 * (tile.noise(4) - 0.5))
-    field = tile.noise(5, 6, warp)
-    brush = tile.noise(18, 24, warp)
-    flecks = tile.noise(53, 47)
-    pigment = np.clip(0.61 * field + 0.30 * brush + 0.09 * flecks, 0, 1)
-    micro_relief = 0.13 * field + 0.15 * brush + 0.022 * flecks
+    warp = (0.21 * (tile.noise(4, 5) - 0.5), 0.21 * (tile.noise(5, 4) - 0.5))
+    field = tile.noise(6, 7, warp)
+    brush = tile.noise(21, 25, warp)
+    grain = tile.noise(68, 77, warp)
+    flecks = tile.noise(131, 127)
+    pigment = 0.53 * field + 0.30 * brush + 0.12 * grain + 0.05 * flecks
+    micro_relief = 0.11 * field + 0.13 * brush + 0.039 * grain + 0.014 * flecks
     if name == "grass":
-        grass_stroke = tile.noise(43, 21, warp)
-        leaves, leaf_height, leaf_tone = tile.stones(33, 52, 0.70, 1.55)
-        color = palette(pigment, "506228", "688136", "859b49", "a5b868")
-        color += (smooth(0.56, 0.79, grass_stroke) - 0.34)[:, :, None] * [7, 8, 2]
-        color = blend(color, palette(leaf_tone, "5a7332", "8eaa50", "b6bf66"), leaves * 0.27)
-        return color, micro_relief + leaf_height * 0.034 + grass_stroke * 0.016, 4.4, 0.22
+        wisps = tile.noise(38, 62, warp)
+        leaves, leaf_height, leaf_tone = tile.stones(48, 59, 0.64, 1.46)
+        color = palette(pigment, "5d763e", "779751", "92aa60", "b0bb78")
+        color = blend(color, palette(leaf_tone, "697f43", "9fb565", "bac17a"), leaves * 0.21)
+        color += ((wisps - 0.5) * 8 + (grain - 0.5) * 6)[..., None] * [0.85, 1, 0.5]
+        return color, micro_relief * 0.58 + leaf_height * 0.024 + wisps * 0.014, 4.4, 0.20
     if name == "dirt":
-        chips, relief, tone = tile.stones(14, 16, 0.53, 1.12)
-        color = palette(pigment, "644e39", "856644", "9a7c53", "b89b71")
-        color = blend(color, palette(tone, "6e6250", "a79877", "c0b091"), chips * 0.55)
-        return color, micro_relief * 0.72 + relief * 0.15, 5.0, 0.37
+        chips, relief, tone = tile.stones(29, 24, 0.75, 1.28)
+        streaks = tile.noise(17, 35, warp)
+        color = palette(pigment * 0.82 + streaks * 0.18, "7a5b3e", "a18055", "ba9b65", "d5bc84")
+        color = blend(color, palette(tone, "867455", "ab986e", "d2bb8b"), chips * 0.48)
+        return color, micro_relief * 0.71 + relief * 0.106 + streaks * 0.024, 5.0, 0.32
     if name == "rock":
-        plates, relief, tone = tile.stones(5, 9, 0.94, 1.56)
-        folds = tile.noise(7, 34, warp)
-        ledges = smooth(0.38, 0.46, folds)
-        stone = pigment * 0.73 + ledges * 0.26
-        color = palette(stone, "565d57", "737971", "95958a", "bcb5a0")
-        color = blend(color, palette(tone, "616761", "9b9b8c", "bbb4a0"), plates * 0.34)
-        moss = smooth(0.65, 0.90, field) * smooth(0.33, 0.7, brush) * 0.74
-        color = blend(color, palette(field, "535d42", "7e8560"), moss)
-        return color, micro_relief * 0.84 + relief * 0.19 + ledges * 0.063, 7.3, 0.44
+        fracture_warp = (
+            0.075 * (tile.noise(8, 9, warp) - 0.5),
+            0.075 * (tile.noise(9, 8, warp) - 0.5),
+        )
+        edge, face_tone = tile.rock_faces(8, fracture_warp)
+        mottling = tile.noise(12, 12, warp)
+        # Fade across the boundary so only the broken joints have hard edges.
+        face = (face_tone - 0.5) * smooth(0, 0.21, edge)
+        exposed = smooth(0.29, 0.68, 0.55 * brush + 0.45 * grain)
+        joints = (1 - smooth(0.013, 0.060, edge)) * exposed
+        stone = 0.65 * pigment + 0.20 * mottling + 0.15 * grain + 0.14 * face
+        color = palette(stone, "535c5b", "747c77", "9b9c91", "b2ab96")
+        minerals = smooth(0.58, 0.81, 0.60 * mottling + 0.30 * brush + 0.10 * grain)
+        color = blend(color, palette(grain, "938772", "a79b80", "b6aa8a"), minerals * 0.40)
+        color -= (joints * 24)[..., None] * [0.94, 1, 1.07]
+        height = micro_relief * 0.80 + face * 0.035 + mottling * 0.055 - joints * 0.058
+        return color, height, 7.2, 0.43
     if name == "sand":
-        phase = tile.y * 12 + tile.x * 2 + (field - 0.5) * 1.85
-        ripple = (np.sin(phase * (2 * np.pi)) * 0.5 + 0.5) ** 2
-        color = palette(pigment * 0.84 + ripple * 0.13, "ac8a55", "c1a16a", "d7ba82", "e6cf9a")
-        return color, micro_relief * 0.54 + ripple * 0.052, 3.6, 0.18
+        phase = tile.y * 18 + tile.x * 2 + (field - 0.5) * 2.3 + (brush - 0.5) * 0.46
+        ripple = smooth(-0.72, 0.86, np.sin(phase * (2 * np.pi)))
+        color = palette(pigment * 0.78 + ripple * 0.15 + grain * 0.07, "af8f58", "c4a56d", "dbba7c", "edcf97")
+        return color, micro_relief * 0.39 + ripple * 0.035, 3.5, 0.16
     if name == "snow":
-        drift = tile.noise(9, 16, warp)
-        color = palette(pigment * 0.81 + drift * 0.17, "9caec0", "bbcbd4", "dbe5e6", "f0f1e6")
-        return color, micro_relief * 0.52 + drift * 0.16, 3.2, 0.18
+        drift = tile.noise(10, 26, warp)
+        ice = tile.noise(27, 39, warp)
+        color = palette(pigment * 0.57 + drift * 0.33 + ice * 0.10, "a5bbc6", "c3d5dc", "dde8ea", "f3f2e7")
+        return color, micro_relief * 0.42 + drift * 0.11, 2.9, 0.15
     if name == "mud":
-        pools = 1 - smooth(0.28, 0.51, pigment)
-        color = palette(pigment, "484838", "5f5540", "78674d", "a08a66")
-        color = blend(color, palette(field, "46483c", "62614e"), pools * 0.58)
-        return color, micro_relief * (1 - pools * 0.50) - pools * 0.10, 4.1, 0.34
+        pools = 1 - smooth(0.27, 0.56, 0.72 * field + 0.28 * brush)
+        color = palette(pigment, "4c4836", "65573d", "877251", "ad935f")
+        color = blend(color, palette(field, "4c533c", "72764f"), pools * 0.63)
+        return color, micro_relief * (1 - pools * 0.52) - pools * 0.079, 4.3, 0.31
     if name == "gravel":
-        chips, relief, tone = tile.stones(13, 15, 0.96, 1.25)
-        small, small_relief, small_tone = tile.stones(23, 29, 0.78, 1.14)
-        color = palette(pigment, "615c4d", "7d7360", "968a72")
-        color = blend(color, palette(small_tone, "676656", "918977", "a69f8e"), small * 0.67)
-        color = blend(color, palette(tone, "6c6d61", "9d9783", "b0a793"), chips * 0.91)
-        return color, micro_relief * 0.55 + np.maximum(relief * 0.18, small_relief * 0.08), 5.9, 0.42
-    cinders, relief, tone = tile.stones(15, 19, 0.72, 1.27)
-    seams = tile.noise(9, 22, warp)
-    color = palette(pigment * 0.8 + seams * 0.2, "393638", "514945", "6b5a54", "92776a")
-    color = blend(color, palette(tone, "4a4544", "746159", "917970"), cinders * 0.65)
-    return color, micro_relief + relief * 0.14 + seams * 0.058, 5.1, 0.41
+        chips, relief, tone = tile.stones(21, 25, 0.76, 1.26)
+        small, small_relief, small_tone = tile.stones(40, 43, 0.72, 1.13)
+        color = palette(pigment, "6d6b57", "898370", "a3987a", "cabc96")
+        color = blend(color, palette(small_tone, "767566", "a5a18b", "bbb297"), small * 0.45)
+        color = blend(color, palette(tone, "73766d", "a5a698", "c3b392"), chips * 0.68)
+        return color, micro_relief * 0.48 + np.maximum(relief * 0.128, small_relief * 0.067), 5.7, 0.38
+    cinders, relief, tone = tile.stones(28, 33, 0.68, 1.30)
+    seams = tile.noise(16, 31, warp)
+    color = palette(pigment * 0.74 + seams * 0.26, "434545", "605753", "866e60", "a78a75")
+    color = blend(color, palette(tone, "535452", "816e62", "9f8474"), cinders * 0.55)
+    return color, micro_relief * 0.65 + relief * 0.10 + seams * 0.041, 5.0, 0.37
+
+
+def world_controls(size):
+    """Bake terrain-wide moisture, iron, sediment and light variation into linear RGBA."""
+    field = Tile(size, 42109)
+    warp = (0.13 * (field.noise(7, 9) - 0.5), 0.13 * (field.noise(9, 7) - 0.5))
+    moisture = 0.66 * field.noise(9, 12, warp) + 0.34 * field.noise(30, 36, warp)
+    iron = 0.77 * field.noise(7, 8, warp) + 0.23 * field.noise(22, 26, warp)
+    sediment = 0.60 * field.noise(18, 24, warp) + 0.40 * field.noise(63, 55, warp)
+    light = 0.67 * field.noise(14, 18, warp) + 0.33 * field.noise(42, 48, warp)
+    return image_from(np.dstack([moisture, iron, sediment, light]) * 255.0)
 
 
 def surface_map(height, normal_strength, ao_strength):
@@ -177,6 +219,7 @@ def main():
         )
         atlas.paste(albedo, ((index % 4) * size, (index // 4) * size))
     atlas.save(args.output / "terrain_atlas.png", optimize=True)
+    world_controls(1024).save(args.output / "terrain_macro.png", optimize=True)
 
 
 if __name__ == "__main__":

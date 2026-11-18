@@ -147,6 +147,12 @@ void checkFixture(bool missingCorner) {
     require(mesh.vertices.size() == scene->tileCount() * rowSize * rowSize,
         "smoothing unexpectedly changed mesh density");
     for (const auto& vertex : mesh.vertices) {
+        // The fixture spans 1250 world units on each axis. Interior seams
+        // must keep their global UV (e.g. U=0.5), regardless of chunk or tile.
+        const glm::vec2 macroUv(vertex.terrainMapping.z, vertex.terrainMapping.w);
+        const glm::vec2 expectedUv = glm::vec2(vertex.position.x, vertex.position.z) / 1250.0f;
+        require(glm::distance(macroUv, expectedUv) < 0.00001f,
+            "macro UV restarted at a tile boundary");
         require(std::isfinite(vertex.normal.x) && std::isfinite(vertex.normal.y) &&
             std::isfinite(vertex.normal.z) && std::abs(glm::length(vertex.normal) - 1.0f) < 0.0001f,
             "mesh contains an invalid normal");

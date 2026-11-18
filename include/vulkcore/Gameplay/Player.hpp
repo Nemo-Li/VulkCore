@@ -70,6 +70,8 @@ public:
     );
 
     bool active() const { return active_; }
+    bool debugModeEnabled() const { return debugModeEnabled_; }
+    void setDebugModeEnabled(bool enabled) { debugModeEnabled_ = enabled; }
     const glm::vec3& position() const { return position_; }
     const glm::vec3& spawnPosition() const { return spawnPosition_; }
     const glm::vec3& velocity() const { return velocity_; }
@@ -89,6 +91,7 @@ private:
     float currentFootTraction() const;
 
     bool active_ = false;
+    bool debugModeEnabled_ = false;
     bool grounded_ = true;
     bool moving_ = false;
     bool jumpWasDown_ = false;

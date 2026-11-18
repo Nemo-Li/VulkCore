@@ -1243,7 +1243,11 @@ void Renderer::drawMiniMap() {
 
     ImGui::TextUnformatted("Mini Map");
     ImGui::SameLine();
-    ImGui::TextDisabled("click to travel");
+    if (playerController_.debugModeEnabled()) {
+        ImGui::TextDisabled("Debug  Y %.1f", playerController_.position().y);
+    } else {
+        ImGui::TextDisabled("click to travel");
+    }
 
     const ImVec2 canvasMinimum = ImGui::GetCursorScreenPos();
     const ImVec2 canvasSize(kMapCanvasSize, kMapCanvasSize);
@@ -1481,8 +1485,11 @@ bool Renderer::buildImGuiFrame() {
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         toolUiVisible_ = !toolUiVisible_;
     }
+    if (playerController_.active() && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+        playerController_.setDebugModeEnabled(!playerController_.debugModeEnabled());
+    }
     if (transitionSettings_.enabled) {
-        const bool held = ImGui::IsKeyDown(ImGuiKey_Space) &&
+        const bool held = !playerController_.debugModeEnabled() && ImGui::IsKeyDown(ImGuiKey_Space) &&
             (cameraOrbitDragging_ || !ImGui::IsAnyItemActive());
         if (held != transitionHeld_) {
             transitionHeld_ = held;
@@ -1560,6 +1567,14 @@ bool Renderer::buildImGuiFrame() {
             updateBoundingBoxVertices();
         }
         saveTransformSettings();
+    }
+    if (playerController_.active()) {
+        ImGui::SameLine();
+        bool debugModeEnabled = playerController_.debugModeEnabled();
+        if (ImGui::Checkbox("Debug Mode (F2)", &debugModeEnabled)) {
+            playerController_.setDebugModeEnabled(debugModeEnabled);
+        }
+        ImGui::SetItemTooltip("Move at 4x speed. Hold Space to ascend.");
     }
     const bool toolbarHovered = ImGui::IsWindowHovered();
     ImGui::EndChild();

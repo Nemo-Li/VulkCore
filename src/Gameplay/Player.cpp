@@ -16,6 +16,8 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kPlayerTurnSpeed = 10.0f;
 constexpr float kJumpSpeed = 6.2f;
+constexpr float kDebugMovementSpeedMultiplier = 4.0f;
+constexpr float kDebugAscentSpeed = 6.0f;
 constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
 constexpr float kCameraDistance = 5.0f;
@@ -163,6 +165,7 @@ CapsuleMeshData createCapsuleMesh(
 
 void PlayerController::clear() {
     active_ = false;
+    debugModeEnabled_ = false;
     grounded_ = true;
     moving_ = false;
     jumpWasDown_ = false;
@@ -229,6 +232,7 @@ void PlayerController::reset(
     runAnimationTimeSeconds_ = 0.0f;
     yawRadians_ = 0.0f;
     cameraElevationRadians_ = kInitialCameraElevation;
+    debugModeEnabled_ = false;
     active_ = true;
 }
 
@@ -420,7 +424,7 @@ void PlayerController::update(
 
     const bool jumpDown = window != nullptr &&
         keyPressed(window, Key::Jump);
-    if (!keyboardCaptured && jumpDown && !jumpWasDown_ && grounded_) {
+    if (!debugModeEnabled_ && !keyboardCaptured && jumpDown && !jumpWasDown_ && grounded_) {
         if (physics.jump(kJumpSpeed)) {
             grounded_ = false;
         }
@@ -474,19 +478,27 @@ void PlayerController::update(
             facingYawRadians_ = std::remainder(facingYawRadians_, 2.0f * kPi);
         }
     }
+    const float speedMultiplier = debugModeEnabled_ ? kDebugMovementSpeedMultiplier : 1.0f;
     if (moving_ && runCycleDurationSeconds_ > 0.0f) {
         runAnimationTimeSeconds_ = std::fmod(
-            runAnimationTimeSeconds_ + deltaSeconds,
+            runAnimationTimeSeconds_ + deltaSeconds * speedMultiplier,
             runCycleDurationSeconds_
         );
     } else {
         runAnimationTimeSeconds_ = 0.0f;
     }
-    physics.setPlayerFootTraction(
-        movementDirection2D,
-        moving_ ? runGroundSpeed_ : 0.0f,
-        moving_ ? currentFootTraction() : 1.0f
-    );
+    if (debugModeEnabled_) {
+        physics.setPlayerDebugMovement(
+            movementDirection2D * (runGroundSpeed_ * speedMultiplier),
+            !keyboardCaptured && jumpDown ? kDebugAscentSpeed : 0.0f
+        );
+    } else {
+        physics.setPlayerFootTraction(
+            movementDirection2D,
+            moving_ ? runGroundSpeed_ : 0.0f,
+            moving_ ? currentFootTraction() : 1.0f
+        );
+    }
     physics.simulate(deltaSeconds);
     position_ = physics.playerRenderFootPosition();
     velocity_ = physics.playerLinearVelocity();

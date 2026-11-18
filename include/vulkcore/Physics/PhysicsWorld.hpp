@@ -40,14 +40,15 @@ public:
     void removePlayer();
     bool hasPlayer() const;
 
-    // Stores an animation-driven locomotion request. During each fixed step,
-    // the request is converted to a friction-limited foot impulse instead of
-    // overwriting the capsule's horizontal velocity.
+    // Replaces debug movement with a friction-limited foot impulse request.
     void setPlayerFootTraction(
         const glm::vec2& direction,
         float targetSpeed,
         float contactStrength
     );
+    // Applies the requested horizontal velocity on the ground and in the air.
+    // A zero ascent speed leaves vertical motion to gravity and collisions.
+    void setPlayerDebugMovement(const glm::vec2& horizontalVelocity, float ascentSpeed);
     bool jump(float verticalSpeed);
     void simulate(float deltaSeconds);
 
