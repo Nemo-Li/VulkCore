@@ -425,6 +425,8 @@ AttributeFormat attributeFormat(const Binary& file, unsigned format) {
     case 0x0115: return {Type::Unorm, 4, 2};
     case 0x0212: return {Type::Snorm, 2, 2};
     case 0x0215: return {Type::Snorm, 4, 2};
+    case 0x0109: return {Type::Unorm, 2, 1};
+    case 0x0209: return {Type::Snorm, 2, 1};
     case 0x010b: return {Type::Unorm, 4, 1};
     case 0x020b: return {Type::Snorm, 4, 1};
     case 0x020e: return {Type::PackedNormal, 4, 1};
