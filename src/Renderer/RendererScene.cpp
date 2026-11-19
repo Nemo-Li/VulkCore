@@ -341,7 +341,8 @@ void Renderer::appendTerrainToScene(
             indexOffset + static_cast<std::uint32_t>(chunkMesh.indexOffset),
             static_cast<std::uint32_t>(chunkMesh.indexCount),
             terrainMaterialIndex,
-            chunkNodeId
+            chunkNodeId,
+            TerrainChunkBounds{chunkMesh.boundsMinimum, chunkMesh.boundsMaximum}
         });
         ++terrainNode.meshCount;
 
@@ -1432,6 +1433,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     loadTransformSettings();
     recalculateSceneBounds();
     configureHdrComposition();
+    prepareTerrainPipelines();
     lastFrameElapsedSeconds_ = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - startTime_
     ).count();

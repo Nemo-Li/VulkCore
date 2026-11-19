@@ -13,7 +13,8 @@ class Application {
 public:
     explicit Application(
         std::filesystem::path startupScene = {},
-        bool hideTools = false
+        bool hideTools = false,
+        bool terrainFrustumCullingEnabled = true
     );
     ~Application();
 
@@ -32,6 +33,7 @@ private:
     std::unique_ptr<Renderer> renderer_;
     std::filesystem::path startupScene_;
     bool hideTools_ = false;
+    bool terrainFrustumCullingEnabled_ = true;
 };
 
 } // namespace VulkCore

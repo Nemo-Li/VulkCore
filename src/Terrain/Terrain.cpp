@@ -1314,7 +1314,10 @@ glm::vec3 TerrainScene::centerPosition() const {
 
 TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const {
     TerrainMeshData mesh;
+    std::vector<std::size_t> chunkVertexOffsets;
+    chunkVertexOffsets.reserve(chunks_.size() + 1);
     for (const TerrainChunk& chunk : chunks_) {
+        chunkVertexOffsets.push_back(mesh.vertices.size());
         chunk.appendMesh(
             options.sampleStride,
             header_.worldScale,
@@ -1322,17 +1325,27 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
             mesh
         );
     }
+    chunkVertexOffsets.push_back(mesh.vertices.size());
+    stitchTerrainMesh(mesh);
+
     // All chunks address the same macro texture in terrain space.
     const glm::vec2 minimum(boundsMinimum_.x, boundsMinimum_.z);
     const glm::vec2 extent = glm::max(
         glm::vec2(boundsMaximum_.x, boundsMaximum_.z) - minimum, glm::vec2(0.0001f)
     );
-    for (Vertex& vertex : mesh.vertices) {
-        const glm::vec2 uv = (glm::vec2(vertex.position.x, vertex.position.z) - minimum) / extent;
-        vertex.terrainMapping.z = uv.x;
-        vertex.terrainMapping.w = uv.y;
+    for (std::size_t chunkIndex = 0; chunkIndex < mesh.chunks.size(); ++chunkIndex) {
+        TerrainChunkMesh& chunk = mesh.chunks[chunkIndex];
+        for (std::size_t i = chunkVertexOffsets[chunkIndex];
+             i < chunkVertexOffsets[chunkIndex + 1]; ++i) {
+            Vertex& vertex = mesh.vertices[i];
+            const glm::vec2 uv = (glm::vec2(vertex.position.x, vertex.position.z) - minimum) / extent;
+            vertex.terrainMapping.z = uv.x;
+            vertex.terrainMapping.w = uv.y;
+            // Stitching can move a seam vertex outside this chunk's original height range.
+            chunk.boundsMinimum.y = std::min(chunk.boundsMinimum.y, vertex.position.y);
+            chunk.boundsMaximum.y = std::max(chunk.boundsMaximum.y, vertex.position.y);
+        }
     }
-    stitchTerrainMesh(mesh);
     return mesh;
 }
 

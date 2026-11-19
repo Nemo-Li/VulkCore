@@ -15,6 +15,7 @@ int main(int argc, char** argv) {
     try {
         std::filesystem::path startupScene;
         bool hideTools = false;
+        bool terrainFrustumCullingEnabled = true;
         std::filesystem::path frameOutput;
         float frameProgress = 0.0f;
         float frameTime = 0.0f;
@@ -52,8 +53,11 @@ int main(int argc, char** argv) {
                 std::cout << "Usage: vulkcore [--scene path.scene] [--hide-ui]\n"
                     "       vulkcore --scene path.scene --capture-frame progress time width height output.png\n"
                     "       vulkcore --scene path.scene --export-ohos output-directory\n"
-                    "                [--app-name name] [--bundle-name com.example.game]\n";
+                    "                [--app-name name] [--bundle-name com.example.game]\n"
+                    "       Add --no-terrain-culling to compare viewport output.\n";
                 return EXIT_SUCCESS;
+            } else if (argument == "--no-terrain-culling") {
+                terrainFrustumCullingEnabled = false;
             } else if (argument == "--hide-ui") {
                 hideTools = true;
             } else {
@@ -70,7 +74,7 @@ int main(int argc, char** argv) {
             std::cout << "Exported HarmonyOS project: " << output.string() << '\n';
             return EXIT_SUCCESS;
         }
-        VulkCore::Application application(std::move(startupScene), hideTools);
+        VulkCore::Application application(std::move(startupScene), hideTools, terrainFrustumCullingEnabled);
         if (frameOutput.empty()) application.run();
         else application.captureFrame(frameProgress, frameTime, frameWidth, frameHeight, frameOutput);
     } catch (const std::exception& exception) {
