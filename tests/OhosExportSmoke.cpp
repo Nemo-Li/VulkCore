@@ -17,7 +17,7 @@ void write(const fs::path& path, const std::string& value) {
     std::ofstream(path, std::ios::binary) << value;
 }
 std::string read(const fs::path& path) {
-    std::ifstream stream(path);
+    std::ifstream stream(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 }
@@ -43,6 +43,10 @@ int main() {
         fs::create_directories(source / "platform/ohos");
         fs::copy(fs::path(__FILE__).parent_path().parent_path() / "platform/ohos/template",
             source / "platform/ohos/template", fs::copy_options::recursive);
+        const auto sdk = fs::path("engine/third_party/physx");
+        const auto binaryProbe = sdk / "lib/arm64-v8a/binary-probe.a";
+        const auto probeBytes = std::string(1, '\0') + "@APP_NAME_JSON@@BUNDLE_NAME_JSON@";
+        write(source / "platform/ohos/template" / binaryProbe, probeBytes);
         const auto scene = source / "scenes/tornado.scene";
         const std::string original = "model_resource_path \"" + model.generic_string() + "\" 42\n"
             "terrain_resource \"../assets/terrain\"\n"
@@ -60,6 +64,13 @@ int main() {
         options.appName = "Game \"Mobile\"";
         VulkCore::exportOhosProject(options);
         require(fs::is_regular_file(options.outputDirectory / "engine/cmake/OhosPhysX.cmake"), "Native compatibility source was lost");
+        require(read(options.outputDirectory / binaryProbe) == probeBytes, "Template substitution modified binary data");
+        require(fs::is_regular_file(options.outputDirectory / sdk / "include/PxPhysicsAPI.h"), "PhysX headers were lost");
+        for (const std::string component : {"PhysX", "PhysXCommon", "PhysXCooking",
+                 "PhysXExtensions", "PhysXFoundation", "PhysXPvdSDK"}) {
+            require(fs::is_regular_file(options.outputDirectory / sdk / "lib/arm64-v8a" /
+                ("lib" + component + "_static_64.a")), "Prebuilt PhysX archive was lost");
+        }
         const auto payload = options.outputDirectory / "entry/src/main/resources/rawfile/vulkcore";
         const auto exported = read(payload / "scenes/tornado.scene");
         require(exported.find(root.generic_string()) == std::string::npos, "Host absolute paths leaked into scene");

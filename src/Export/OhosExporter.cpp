@@ -214,12 +214,15 @@ std::filesystem::path exportOhosProject(const OhosExportOptions& options) {
     if (!fs::create_directory(staging)) throw std::runtime_error("Cannot create export staging directory.");
     try {
         copyTree(source / "platform/ohos/template", staging);
-        for (const auto& item : fs::recursive_directory_iterator(staging)) {
-            if (!item.is_regular_file()) continue;
-            auto text = readText(item.path());
+        for (const auto* configuration : {
+                 "AppScope/app.json5",
+                 "AppScope/resources/base/element/string.json",
+                 "entry/src/main/resources/base/element/string.json"}) {
+            const auto path = staging / configuration;
+            auto text = readText(path);
             replaceAll(text, "@APP_NAME_JSON@", jsonString(options.appName));
             replaceAll(text, "@BUNDLE_NAME_JSON@", jsonString(options.bundleName));
-            writeText(item.path(), text);
+            writeText(path, text);
         }
         const auto engine = staging / "engine";
         for (const auto* directory : {"src", "include", "cmake", "shaders/src", "third_party/stb"}) {

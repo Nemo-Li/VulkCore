@@ -25,7 +25,7 @@ cmake --build build --parallel
 
 `--app-name` 默认是 `VulkCore Player`，`--bundle-name` 默认是 `com.vulkcore.player`。导出目录须不存在；重新导出时使用新的目录，以保护已在 DevEco 中修改的工程。`exports/` 已加入 Git 忽略规则。
 
-使用 DevEco Studio 6.0.2 或更新版本打开输出目录，安装 API 22 和 Native SDK，同步 OHPM。工程最低兼容 API 22，目标为 `arm64-v8a` 手机，也声明支持平板。首次配置 Native 工程会通过 GitHub 下载固定版本的 Assimp、GLM、Dear ImGui 和 PhysX；可使用标准 `FETCHCONTENT_SOURCE_DIR_<依赖名>` CMake 参数指定本地源码缓存。
+使用 DevEco Studio 6.0.2 或更新版本打开输出目录，安装 API 22 和 Native SDK，同步 OHPM。工程最低兼容 API 22，目标为 `arm64-v8a` 手机，也声明支持平板。首次配置 Native 工程会通过 GitHub 下载固定版本的 Assimp、GLM 和 Dear ImGui，可使用标准 `FETCHCONTENT_SOURCE_DIR_<依赖名>` CMake 参数指定本地源码缓存。PhysX 由模板提供，构建时直接链接。
 
 根目录的 `build-profile.json5` 按 `platform/ohos/template/build-profile.json5` 原样导出，采用展开的 products、buildModeSet、signingConfigs 和 modules 结构。目标 SDK 与最低兼容 SDK 均为 `6.0.2(22)`，strictMode 同时启用 `caseSensitiveCheck` 和 `useNormalizedOHMUrl`，default 产品关联 default 签名配置。
 
@@ -47,6 +47,7 @@ HarmonyOSGame/
       startup.txt           启动场景路径
       manifest.txt          运行时文件清单
   engine/                   独立的 C++ 运行时源码、CMake 和 stb
+    third_party/physx/      PhysX 头文件、许可证与 arm64-v8a 静态库
 ```
 
 导出包含整个 `assets/`，以保留天空盒、草地、技能特效、模型纹理等运行时隐式依赖。编辑器允许的外部模型会复制其所在文件夹，保留 glTF buffer、OBJ/MTL 和同目录纹理；外部地形与水面目录递归复制，单独引用的外部纹理也会复制。外部模型应放在独立资源文件夹中，相关 sidecar 使用相对路径；不支持依赖资源文件夹之外的嵌入绝对路径。
@@ -121,8 +122,6 @@ cd exports/HarmonyOSGame
 
 使用 rawfile + 沙箱文件副本，避免为现有 Assimp、地形解析器与 stb 单独实现虚拟文件系统。代价是首次页面加载需要复制资源，占用额外沙箱空间；后续可演进为带版本的资源缓存或资源包文件系统。
 
-PhysX 采用固定提交的 Android CPU 构建分支，鸿蒙平台设置 `TARGET_BUILD_PLATFORM=android` 并将 ABI 映射为 `OHOS_ARCH`。`cmake/OhosPhysX.cmake` 在构建目录生成 PhysX 专用平台头，让 PhysX 与业务侧物理封装统一使用 `PX_ANDROID=1`、`PX_LINUX=0`。因此线程取消、互斥锁和浮点处理直接采用其 Android 移动端实现，不再保留原来的 Linux/glibc 修补逻辑。
+模板里的 PhysX SDK 来自 `exports/HarmonyOSGame` 的 API 22、`arm64-v8a` Release Native 构建，对应 O3DE PhysX 提交 `d5c964f23c3ba5553a305bbc7af3b50a5fa47a12`（5.6.1）。六个静态库位于 `platform/ohos/template/engine/third_party/physx/lib/arm64-v8a`，入库前通过 `llvm-strip --strip-debug` 去掉调试信息。更新静态库时要同时更新同一版本的头文件和许可证。
 
-构建仍使用鸿蒙 SDK、OHOS sysroot 和鸿蒙 ABI，不定义全局 `__ANDROID__`，也不依赖 Android NDK。Android 分支中的 `liblog` 接到鸿蒙 HiLog，NDK `cpufeatures` 替换为 OHOS libc 的 `sysconf(_SC_NPROCESSORS_ONLN)`；保留 `<poll.h>` 的 libc 兼容处理。所有适配都生成到构建目录，不修改共享 PhysX 依赖源码。
-
-CMake 配置输出中的 `PhysX Build Platform: android` 表示已选择该构建分支。`Building for PUBLIC RELEASE`、编译器路径和 `Forcing binary suffixes to 64 bit` 是上游 PhysX 的普通配置说明，hvigor 可能将其标准错误流显示为 WARN；`PUBLIC RELEASE` 表示使用 PhysX 公共 SDK，并非构建失败。
+源码构建时，`cmake/OhosPhysX.cmake` 用鸿蒙 Native SDK 编译 PhysX 的 Android CPU 分支，日志接到 HiLog，CPU 数量通过 `sysconf` 获取。模板沿用该构建生成的 `PxPreprocessor.h`，使运行时物理封装与静态库使用相同的 `PX_ANDROID=1`、`PX_LINUX=0` 平台配置。导出工程的 CMake 只导入这些静态库。
