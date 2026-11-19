@@ -1,5 +1,6 @@
 #include "vulkcore/Terrain/Grass.hpp"
 
+#include "vulkcore/Gameplay/Player.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <algorithm>
@@ -15,19 +16,17 @@ struct GrassLodSettings {
     glm::vec4 fade; // Fade-in start/end and fade-out start/end, in terrain units.
 };
 
-constexpr std::array<GrassLodSettings, static_cast<std::size_t>(GrassLod::Count)> kLodSettings{{
-    {8.0f, 16, {0.0f, 0.0f, 17.0f, 22.0f}},
-    {16.0f, 16, {15.0f, 19.0f, 48.0f, 60.0f}},
-    {32.0f, 16, {49.0f, 58.0f, 145.0f, 180.0f}},
-    {8.0f, 8, {0.0f, 0.0f, 19.0f, 27.0f}},
-}};
+constexpr GrassLodSettings kNearMeshSettings{8.0f, 16, {0.0f, 0.0f, 30.0f, 40.0f}};
+constexpr GrassLodSettings kFlowerSettings{8.0f, 8, {0.0f, 0.0f, 19.0f, 27.0f}};
+constexpr float kCanopyHeight = PlayerController::kBotwLinkHeight * 0.73f;
+constexpr float kMappedGrassHeight = kCanopyHeight * 1.18f;
 constexpr float kAnchorSize = 4.0f;
 constexpr float kAnchorPadding = 3.0f; // Half the anchor cell's diagonal, rounded up.
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kGoldenAngle = 2.39996323f;
 
 const GrassLodSettings& settings(GrassLod lod) {
-    return kLodSettings[static_cast<std::size_t>(lod)];
+    return lod == GrassLod::NearMesh ? kNearMeshSettings : kFlowerSettings;
 }
 
 std::uint32_t hashBits(std::uint32_t value) {
@@ -53,12 +52,9 @@ float smoothstep(float low, float high, float value) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-bool intersectsRing(
-    glm::vec2 origin, glm::vec2 minimum, glm::vec2 maximum, float near, float far
-) {
+bool intersectsDisk(glm::vec2 origin, glm::vec2 minimum, glm::vec2 maximum, float radius) {
     const glm::vec2 nearest = glm::clamp(origin, minimum, maximum) - origin;
-    const glm::vec2 furthest = glm::max(glm::abs(minimum - origin), glm::abs(maximum - origin));
-    return glm::dot(nearest, nearest) <= far * far && glm::dot(furthest, furthest) >= near * near;
+    return glm::dot(nearest, nearest) <= radius * radius;
 }
 
 } // namespace
@@ -76,7 +72,6 @@ GrassCoverage::Cell GrassCoverage::buildCell(
     const auto& lodSettings = settings(lod);
     const int count = lodSettings.samplesPerSide;
     const float spacing = lodSettings.cellSize / static_cast<float>(count);
-    const bool near = lod == GrassLod::NearMesh;
     const bool flower = lod == GrassLod::FlowerCard;
     const auto append = [&](glm::vec3 root, glm::vec3 normal, float height, float width,
                             float yaw, float lean, std::uint32_t seed,
@@ -138,9 +133,10 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             }
 
             const glm::vec3 root(point.x, *ground + 0.012f, point.y);
-            const float height = map ? map->height * 0.95f : 0.48f + hash01(seed + 4u) * 0.32f;
+            const float heightVariation = hash01(seed + 4u);
             const float yaw = hash01(seed + 5u) * 2.0f * kPi;
-            if (near) {
+            if (!flower) {
+                const float canopyHeight = kCanopyHeight * (0.91f + heightVariation * 0.18f);
                 constexpr int blades = 14;
                 for (int blade = 0; blade < blades; ++blade) {
                     const auto bladeSeed = hashBits(seed + static_cast<std::uint32_t>(blade + 1));
@@ -152,19 +148,17 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                     if (bladeMap ? bladeMap->height <= 0.0f : map.has_value()) continue;
                     const float y = root.y -
                         glm::dot(glm::vec2(normal.x, normal.z), offset) / std::max(normal.y, 0.35f);
-                    const float bladeHeight = bladeMap ? bladeMap->height * 0.95f : height;
+                    const float bladeHeight = bladeMap ? bladeMap->height * kMappedGrassHeight : canopyHeight;
                     append({bladePoint.x, y, bladePoint.y}, normal,
-                           bladeHeight * (0.78f + hash01(bladeSeed + 1u) * 0.40f),
+                           bladeHeight * (0.84f + hash01(bladeSeed + 1u) * 0.30f),
                            0.045f + hash01(bladeSeed + 2u) * 0.033f, angle,
                            (hash01(bladeSeed + 3u) - 0.5f) * 0.26f, bladeSeed, bladeMap);
                 }
             } else {
-                const int cards = lod == GrassLod::MidCluster ? 3 : (flower ? 2 : 1);
-                const float width = flower ? 0.42f : spacing * 0.8f;
-                for (int card = 0; card < cards; ++card) {
-                    append(root, normal, height, width, yaw + static_cast<float>(card) * kPi / cards,
-                           0.0f, seed, map);
-                }
+                const float height = 0.48f + heightVariation * 0.32f;
+                constexpr float width = 0.42f;
+                append(root, normal, height, width, yaw, 0.0f, seed, map);
+                append(root, normal, height, width, yaw + kPi * 0.5f, 0.0f, seed, map);
             }
         }
     }
@@ -176,9 +170,7 @@ bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center, float 
     const glm::vec2 terrainMin(terrain.boundsMinimum().x, terrain.boundsMinimum().z);
     const glm::vec2 terrainMax(terrain.boundsMaximum().x, terrain.boundsMaximum().z);
     const float padding = kAnchorPadding + viewPadding;
-    const glm::vec2 limit(
-        settings(GrassLod::FarCard).fade.w + padding + kAnchorSize
-    );
+    const glm::vec2 limit(kNearMeshSettings.fade.w + padding + kAnchorSize);
     center = glm::clamp(center, terrainMin - limit, terrainMax + limit);
     const glm::ivec2 rounded(glm::floor(center / kAnchorSize));
     const CellCoordinate anchor{rounded.x, rounded.y};
@@ -189,18 +181,17 @@ bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center, float 
     instances_.clear();
     ranges_.clear();
     for (std::size_t layer = 0; layer < cells_.size(); ++layer) {
-        const auto lod = static_cast<GrassLod>(layer);
+        const auto lod = kGrassLods[layer];
         const auto& lodSettings = settings(lod);
         auto& cache = cells_[layer];
         const float span = lodSettings.cellSize;
-        const float near = std::max(0.0f, lodSettings.fade.x - padding);
         const float far = lodSettings.fade.w + padding;
         const glm::ivec2 first(glm::floor(glm::max(origin - far, terrainMin) / span));
         const glm::ivec2 last(glm::floor(glm::min(origin + far, terrainMax) / span));
         for (int z = first.y; z <= last.y; ++z) {
             for (int x = first.x; x <= last.x; ++x) {
                 const glm::vec2 minimum = glm::vec2(x, z) * span;
-                if (!intersectsRing(origin, minimum, minimum + span, near, far)) continue;
+                if (!intersectsDisk(origin, minimum, minimum + span, far)) continue;
                 const CellCoordinate coordinate{x, z};
                 auto it = cache.find(coordinate);
                 if (it == cache.end()) {

@@ -112,7 +112,7 @@ void main() {
 
     mat3 normalMatrix = transpose(inverse(mat3(model)));
     fragBladeUv = vec2(side * 0.5 + 0.5, nearBlade ? heightWeight : 1.0 - heightWeight);
-    fragNormal = normalize(normalMatrix * mix(forward, rootNormal, nearBlade ? 0.58 : 0.68));
+    fragNormal = normalize(normalMatrix * mix(forward, rootNormal, nearBlade ? 0.90 : 0.68));
     fragTint = inTint;
     fragWorldPosition = worldPosition;
     fragLodVisibility = visibility;

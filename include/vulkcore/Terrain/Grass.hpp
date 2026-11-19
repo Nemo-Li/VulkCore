@@ -15,12 +15,19 @@ namespace VulkCore {
 class TerrainScene;
 
 enum class GrassLod : std::uint32_t {
-    NearMesh,
-    MidCluster,
-    FarCard,
-    FlowerCard,
-    Count,
+    NearMesh = 0,
+    // Slots 1 and 2 belonged to grass cards. Keep the saved wildflower node ID and seed.
+    FlowerCard = 3,
 };
+
+inline constexpr std::array kGrassLods{GrassLod::NearMesh, GrassLod::FlowerCard};
+
+inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
+    for (const auto lod : kGrassLods) {
+        if (layer == static_cast<std::uint32_t>(lod)) return lod;
+    }
+    return std::nullopt;
+}
 
 // Per-instance vertex stream shared by the curved blade and card templates.
 struct GrassInstance {
@@ -67,7 +74,7 @@ private:
 
     std::optional<CellCoordinate> anchor_;
     std::uint64_t generation_ = 0;
-    std::array<std::map<CellCoordinate, Cell>, static_cast<std::size_t>(GrassLod::Count)> cells_;
+    std::array<std::map<CellCoordinate, Cell>, kGrassLods.size()> cells_;
     std::vector<GrassInstance> instances_;
     std::vector<GrassDrawRange> ranges_;
 };

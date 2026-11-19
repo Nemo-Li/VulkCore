@@ -11,6 +11,7 @@ layout(location = 6) flat in float fragLod;
 layout(location = 7) flat in float fragColorVariation;
 
 #include "scene_fog.glsl"
+#include "meadow_shading.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 
@@ -40,48 +41,37 @@ void main() {
         discard;
     }
 
-    float bladeHeight = fragLod < 0.5
-        ? clamp(fragBladeUv.y, 0.0, 1.0)
-        : clamp(1.0 - fragBladeUv.y, 0.0, 1.0);
+    bool nearBlade = fragLod < 0.5;
+    float bladeHeight = clamp(nearBlade ? fragBladeUv.y : 1.0 - fragBladeUv.y, 0.0, 1.0);
     float variation = fragColorVariation;
-    vec3 rootA = vec3(0.055, 0.17, 0.018);
-    vec3 rootB = vec3(0.085, 0.235, 0.026);
-    vec3 tipA = vec3(0.27, 0.52, 0.055);
-    vec3 tipB = vec3(0.39, 0.63, 0.082);
-    vec3 rootColor = mix(rootA, rootB, variation);
-    vec3 tipColor = mix(tipA, tipB, variation);
-    vec3 albedo = mix(rootColor, tipColor, smoothstep(0.0, 0.92, bladeHeight));
-    if (fragLod >= 0.5 && (material.textureFlags & 1u) != 0u) {
-        vec4 vegetationSample = texture(textureSampler, fragBladeUv);
-        // Generated cutouts intentionally retain soft antialiasing. A firm
-        // threshold removes matte/glow pixels and keeps the Opaque depth path.
-        if (vegetationSample.a < 0.54) {
-            discard;
+    vec3 albedo;
+    if (nearBlade) {
+        vec3 tint = kMeadowAlbedo;
+        if (fragTint.a > 0.5) {
+            // Merge imported tint into the ground palette before the mesh begins to fade.
+            vec3 rgb = fragTint.rgb;
+            vec3 linearTint = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)),
+                                  greaterThan(rgb, vec3(0.04045)));
+            float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
+            float distanceWorld = distance(fragWorldPosition.xz, ubo.cameraPosition.xz) / sceneScale;
+            tint = mix(tint, linearTint, 1.0 - smoothstep(14.0, 29.0, distanceWorld));
         }
-        if (fragLod < 2.5) {
-            vec3 meadowTint = mix(rootColor, tipColor, 0.7);
-            albedo = mix(vegetationSample.rgb, meadowTint, 0.42) *
-                mix(0.94, 1.08, variation);
-        } else {
-            albedo = vegetationSample.rgb * mix(0.94, 1.04, variation);
-        }
-    }
-
-    if (fragTint.a > 0.5) {
-        // Use the tile RGB as the mapped blade tint. The card texture supplies
-        // shape and neutral detail, so its own green does not override the map.
-        vec3 rgb = fragTint.rgb;
-        vec3 linearTint = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)),
-                              greaterThan(rgb, vec3(0.04045)));
-        float detail = smoothstep(0.0, 0.92, bladeHeight) * 0.60 + 0.45;
-        albedo = linearTint * detail * mix(0.9, 1.1, variation);
+        float canopyShade = mix(0.43, 1.27, smoothstep(0.0, 0.88, bladeHeight));
+        albedo = tint * canopyShade * mix(0.89, 1.11, variation);
+    } else {
+        if ((material.textureFlags & 1u) == 0u) discard;
+        vec4 flower = texture(textureSampler, fragBladeUv);
+        if (flower.a < 0.54) discard;
+        albedo = flower.rgb * mix(0.94, 1.04, variation);
     }
 
     vec3 normal = normalize(fragNormal);
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     vec3 viewDirection = normalize(ubo.cameraPosition.xyz - fragWorldPosition);
-    float diffuse = abs(dot(normal, lightDirection));
-    float diffuseBand = diffuse < 0.32 ? 0.72 : (diffuse < 0.67 ? 0.91 : 1.12);
+    float facing = dot(normal, lightDirection);
+    float diffuse = abs(facing);
+    float flowerDiffuse = diffuse < 0.32 ? 0.72 : (diffuse < 0.67 ? 0.91 : 1.12);
+    float diffuseBand = nearBlade ? meadowDiffuse(facing) : flowerDiffuse;
     float backLight = pow(
         max(dot(viewDirection, -lightDirection), 0.0),
         4.0
@@ -92,9 +82,9 @@ void main() {
         max(ubo.ambientLight.a, 0.0);
     vec3 sunlight = max(ubo.sunLightColor.rgb, vec3(0.0)) *
         max(ubo.sunLightDirection.w, 0.0);
-    vec3 lighting = ambient * 0.72 + sunlight * (diffuseBand + backLight + rim);
+    vec3 lighting = ambient * (nearBlade ? 1.0 : 0.72) +
+        sunlight * (diffuseBand + (backLight + rim) * (nearBlade ? 0.35 : 1.0));
     vec3 finalColor = albedo * lighting * material.baseColor.rgb;
-    // Warm tips are a characteristic part of BOTW's readable grass mass.
-    finalColor += mix(vec3(0.045, 0.034, 0.004), albedo * 0.1, fragTint.a) * bladeHeight * backLight;
+    if (!nearBlade) finalColor += vec3(0.045, 0.034, 0.004) * bladeHeight * backLight;
     outColor = vec4(applySceneFog(finalColor, sceneFogAt(fragWorldPosition)), material.opacity);
 }
