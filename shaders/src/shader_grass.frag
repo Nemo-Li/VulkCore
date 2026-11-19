@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragBladeUv;
 layout(location = 1) in vec3 fragNormal;
@@ -8,19 +9,7 @@ layout(location = 4) in float fragLodVisibility;
 layout(location = 5) in vec2 fragRoot;
 layout(location = 6) flat in float fragLod;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-    vec4 cameraPosition;
-    vec4 playerPosition;
-    vec4 playerVelocity;
-} ubo;
+#include "scene_fog.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 
@@ -96,5 +85,5 @@ void main() {
     vec3 finalColor = albedo * lighting * material.baseColor.rgb;
     // Warm tips are a characteristic part of BOTW's readable grass mass.
     finalColor += vec3(0.045, 0.034, 0.004) * bladeHeight * backLight;
-    outColor = vec4(finalColor, material.opacity);
+    outColor = vec4(applySceneFog(finalColor, sceneFogAt(fragWorldPosition)), material.opacity);
 }

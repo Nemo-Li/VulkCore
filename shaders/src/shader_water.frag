@@ -1,20 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-} ubo;
+#include "scene_fog.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 2) uniform sampler2D sceneColorTexture;
@@ -186,10 +178,14 @@ void main() {
     vec3 sceneRefraction = texture(sceneColorTexture, refractionUv).rgb;
     vec3 sceneReflection = texture(sceneColorTexture, reflectionUv).rgb;
     vec3 skyReflection = mix(vec3(0.08, 0.22, 0.32), vec3(0.42, 0.72, 0.82), fresnel);
-    vec3 refractedColor = mix(waterColor * (ambientLight + diffuseLight * diffuseFactor), sceneRefraction, 0.42);
-    vec3 reflectedColor = mix(skyReflection, sceneReflection, 0.72);
+    // Screen samples already contain the scene's fog. Apply it to the
+    // water's own color and lighting contributions.
+    vec4 fog = sceneFogAt(fragWorldPosition);
+    vec3 litWater = applySceneFog(waterColor * (ambientLight + diffuseLight * diffuseFactor), fog);
+    vec3 refractedColor = mix(litWater, sceneRefraction, 0.42);
+    vec3 reflectedColor = mix(applySceneFog(skyReflection, fog), sceneReflection, 0.72);
     vec3 color = mix(refractedColor, reflectedColor, 0.22 + fresnel * 0.68);
-    color += specularLight * sparkle * mix(0.7, 1.1, metallic) * specularMapFactor;
+    color += specularLight * sparkle * mix(0.7, 1.1, metallic) * specularMapFactor * (1.0 - fog.a);
 
     outColor = vec4(color, (0.76 + fresnel * 0.18) * opacity);
 }

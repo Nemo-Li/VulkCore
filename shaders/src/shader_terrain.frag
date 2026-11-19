@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
@@ -7,17 +8,7 @@ layout(location = 3) in vec3 fragWorldPosition;
 layout(location = 4) in vec3 fragTerrainPosition;
 layout(location = 5) in vec4 fragTerrainMapping;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-    vec4 cameraPosition;
-} ubo;
+#include "scene_fog.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
@@ -310,12 +301,13 @@ void main() {
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse * mix(0.85, 1.04, controls.a);
     vec3 litTerrain = albedo * (ambient + sunlight) * material.baseColor.rgb;
 
-    // Aerial perspective lifts the shadows of distant ridges toward the sky.
-    // Near terrain retains its color and contrast, with less haze on rays
-    // that climb out of the denser air near the ground.
-    float viewElevation = cameraRay.y / max(distanceWorld, 0.001);
-    float haze = 1.0 - exp2(-max(distanceWorld - 125.0, 0.0) / 1350.0);
-    haze *= mix(0.58, 0.34, smoothstep(0.02, 0.48, viewElevation));
-    vec3 hazeColor = vec3(0.19, 0.34, 0.48);
-    outColor = vec4(mix(litTerrain, hazeColor, haze), material.opacity);
+    vec4 fog = sceneFogAt(fragWorldPosition);
+    if (ubo.distanceFogParams.w == 0.0) {
+        // Retain the original terrain haze for scenes saved without a fog preset.
+        float viewElevation = cameraRay.y / max(distanceWorld, 0.001);
+        float haze = 1.0 - exp2(-max(distanceWorld - 125.0, 0.0) / 1350.0);
+        haze *= mix(0.58, 0.34, smoothstep(0.02, 0.48, viewElevation));
+        fog = vec4(0.19, 0.34, 0.48, haze);
+    }
+    outColor = vec4(applySceneFog(litTerrain, fog), material.opacity);
 }

@@ -1,20 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-} ubo;
+#include "scene_fog.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 3) uniform sampler2D normalTexture;
@@ -94,5 +86,5 @@ void main() {
     vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor) * (1.0 - metallic * 0.35);
     litColor += specularLight * specularFactor * mix(0.12, 0.5, metallic) * specularMapFactor;
     litColor += max(material.waterSurface.rgb, vec3(0.0)) * max(material.waterSurface.a, 0.0);
-    outColor = vec4(litColor, baseColor.a * opacity);
+    outColor = vec4(applySceneFog(litColor, sceneFogAt(fragWorldPosition)), baseColor.a * opacity);
 }

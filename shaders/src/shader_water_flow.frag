@@ -1,20 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-} ubo;
+#include "scene_fog.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 2) uniform sampler2D sceneColorTexture;
@@ -201,10 +193,11 @@ void main() {
     );
     vec3 sceneRefraction = texture(sceneColorTexture, refractionUv).rgb;
     vec3 sceneReflection = texture(sceneColorTexture, reflectionUv).rgb;
-    vec3 refractedColor = mix(waterColor, sceneRefraction, 0.48);
-    vec3 reflectedColor = mix(vec3(0.08, 0.3, 0.42), sceneReflection, 0.78);
+    vec4 fog = sceneFogAt(fragWorldPosition);
+    vec3 refractedColor = mix(applySceneFog(waterColor, fog), sceneRefraction, 0.48);
+    vec3 reflectedColor = mix(applySceneFog(vec3(0.08, 0.3, 0.42), fog), sceneReflection, 0.78);
     waterColor = mix(refractedColor, reflectedColor, 0.2 + fresnel * 0.7);
-    waterColor += specularLight * specular * mix(0.75, 1.15, metallic) * specularMapFactor;
+    waterColor += specularLight * specular * mix(0.75, 1.15, metallic) * specularMapFactor * (1.0 - fog.a);
 
     outColor = vec4(waterColor, (0.72 + fresnel * 0.2) * opacity);
 }

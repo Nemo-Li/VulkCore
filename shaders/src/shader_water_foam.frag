@@ -1,14 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model; mat4 view; mat4 projection; vec4 time; vec4 viewport;
-    vec4 ambientLight; vec4 sunLightDirection; vec4 sunLightColor;
-} ubo;
+#include "scene_fog.glsl"
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 2) uniform sampler2D sceneColorTexture;
 layout(set = 0, binding = 5) uniform sampler2D sceneDepthTexture;
@@ -44,12 +42,13 @@ void main() {
     water *= 0.22 + diffuse * 0.78;
     vec3 refracted = texture(sceneColorTexture, clamp(screenUv + normal.xy * 0.03, vec2(0.001), vec2(0.999))).rgb;
     vec3 reflected = texture(sceneColorTexture, clamp(vec2(screenUv.x, 1.0 - screenUv.y) + normal.xy * 0.02, vec2(0.001), vec2(0.999))).rgb;
-    water = mix(mix(water, refracted, 0.42), reflected, 0.18 + fresnel * 0.68);
+    vec4 fog = sceneFogAt(fragWorldPosition);
+    water = mix(mix(applySceneFog(water, fog), refracted, 0.42), reflected, 0.18 + fresnel * 0.68);
 
     float backgroundDepth = texture(sceneDepthTexture, screenUv).r;
     float depthGap = max(backgroundDepth - gl_FragCoord.z, 0.0);
     float foam = smoothstep(0.001, 0.035, depthGap) * (0.45 + 0.55 * (0.5 + 0.5 * w));
     foam *= 0.75 + 0.25 * sin(fragTexCoord.x * 45.0 + fragTexCoord.y * 31.0 + ubo.time.x * 2.0);
-    vec3 color = mix(water, vec3(0.92, 0.98, 1.0), clamp(foam, 0.0, 1.0) * 0.82);
+    vec3 color = mix(water, applySceneFog(vec3(0.92, 0.98, 1.0), fog), clamp(foam, 0.0, 1.0) * 0.82);
     outColor = vec4(color, (0.72 + fresnel * 0.2 + foam * 0.12) * material.opacity);
 }
