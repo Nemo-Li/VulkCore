@@ -434,6 +434,7 @@ void Renderer::discoverShaderBinaries() {
         // owned by the post-process pipeline, not by mesh materials.
         if (shaderName == "shader_fullscreen.vert" ||
             shaderName == "shader_postprocess.frag" ||
+            shaderName == "shader_skybox.vert" ||
             shaderName == "shader_skybox.frag") {
             continue;
         }
@@ -902,7 +903,7 @@ VkPipeline Renderer::createSkyboxPipeline(VkRenderPass pass) {
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertexStage.module = shaderModule("shader_fullscreen.vert");
+    vertexStage.module = shaderModule("shader_skybox.vert");
     vertexStage.pName = "main";
 
     VkPipelineShaderStageCreateInfo fragmentStage{};
@@ -938,12 +939,11 @@ VkPipeline Renderer::createSkyboxPipeline(VkRenderPass pass) {
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // The sky is drawn first and never touches depth. Opaque geometry then
-    // naturally overwrites it while untouched pixels keep the sky color.
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthTestEnable = VK_TRUE;
     depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask =

@@ -1494,6 +1494,10 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
+    if (skyboxTexture_ != nullptr && currentScenePath_.filename() == "game.scene") {
+        const float cloudTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
+        ubo.daylight = glm::vec4(1.0f, cloudTime, 0.0f, 0.0f);
+    }
     if (distanceFogSettings_.enabled) {
         const auto& fog = distanceFogSettings_;
         ubo.distanceFogParams = glm::vec4(fog.startDistance, fog.halfDistance, fog.maxOpacity, 1.0f);
