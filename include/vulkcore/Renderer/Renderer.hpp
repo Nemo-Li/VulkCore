@@ -52,6 +52,7 @@ public:
 
     // Returns true once the presentation queue accepts the frame.
     bool drawFrame();
+    void setTerrainFrustumCullingEnabled(bool enabled) { terrainFrustumCullingEnabled_ = enabled; }
     void queueModelViewerDrop(std::vector<std::filesystem::path> paths);
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
@@ -188,7 +189,7 @@ private:
     void createSyncObjects();
     void recreatePresentSemaphores();
     void updateCameraBasis();
-    void updateUniformBuffer();
+    std::optional<glm::mat4> updateUniformBuffer();
     void drawModelHierarchy(ModelNode& node);
     void drawResourceModelHierarchy(const ModelNode& node);
     void drawResourceManager(bool& shouldSaveSettings);
@@ -216,6 +217,7 @@ private:
     VkPipeline graphicsPipelineForMaterial(
         const MaterialData& material, bool hdr, VkCullModeFlags cullMode
     );
+    void prepareTerrainPipelines();
     VkPipeline computePipelineForMaterial(const MaterialData& material);
     std::string graphicsPipelineKey(
         const ShaderConfiguration& configuration,
@@ -232,7 +234,8 @@ private:
     void recordCommandBuffer(
         VkCommandBuffer commandBuffer,
         uint32_t imageIndex,
-        bool captureScreenshot
+        bool captureScreenshot,
+        const std::optional<glm::mat4>& clipFromScene
     );
     void ensureScreenshotBuffer();
     void recordScreenshotCopy(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -288,6 +291,9 @@ private:
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
+    bool terrainFrustumCullingEnabled_ = true;
+    std::size_t terrainDrawCandidates_ = 0;
+    std::size_t terrainDrawCulled_ = 0;
     std::unique_ptr<PhysicsWorld> physicsWorld_;
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;

@@ -139,6 +139,10 @@ cmake --build build --parallel
 ./build/vulkcore --scene scenes/game.scene --hide-ui
 ```
 
+地形块默认按当前视锥筛选后提交绘制。已上传的地形缓冲保持常驻，转动相机时按当帧视角更新绘制列表。
+工具面板中的 `Terrain frustum culling` 可切换此功能并查看提交的地形块数。使用 `--capture-frame`
+截图对比时，可加 `--no-terrain-culling` 关闭剔除。
+
 程序启动时默认显示空场景，不会自动导入 `assets/models` 中的模型。模型需要在运行时由
 Resource Manager 导入，或通过场景文件恢复。
 

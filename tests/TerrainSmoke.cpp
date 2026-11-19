@@ -1,4 +1,7 @@
+#include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -8,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -31,8 +35,8 @@ struct Fixture {
         std::filesystem::remove_all(root, error);
     }
 
-    void create(bool missingCorner) const {
-        const std::size_t count = missingCorner ? 3 : 4;
+    void create(bool missingCorner, bool mixedLod = false) const {
+        const std::size_t count = mixedLod ? 2 : (missingCorner ? 3 : 4);
         constexpr std::size_t lookup = 0x4c;
         const std::size_t entries = lookup + count * 4;
         std::vector<char> tscb(entries + count * 0x40, 0);
@@ -64,19 +68,22 @@ struct Fixture {
             u32(lookup + tile * 4, static_cast<std::uint32_t>(entry - lookup - tile * 4));
             const int tileX = static_cast<int>(tile % 2);
             const int tileZ = static_cast<int>(tile / 2);
-            f32(entry, 1.0f + tileX * 2.0f);
-            f32(entry + 4, 1.0f + tileZ * 2.0f);
-            f32(entry + 8, 2.0f);
+            f32(entry, mixedLod && tile == 1 ? 0.5f : 1.0f + tileX * 2.0f);
+            f32(entry + 4, mixedLod && tile == 1 ? 0.5f : 1.0f + tileZ * 2.0f);
+            f32(entry + 8, mixedLod && tile == 1 ? 1.0f : 2.0f);
             f32(entry + 0x10, 1.0f);
             u32(entry + 0x20, 0x10);
-            const std::string name = "540000000" + std::to_string(tile);
+            const std::string name = mixedLod && tile == 0
+                ? "5300000000" : "540000000" + std::to_string(tile);
             std::copy(name.begin(), name.end(), tscb.begin() + entry + 0x30);
-            std::ofstream heightmap(directory / (name + ".hght"), std::ios::binary);
+            std::ofstream heightmap((mixedLod ? root : directory) / (name + ".hght"), std::ios::binary);
             for (int z = 0; z < 256; ++z) {
                 for (int x = 0; x < 256; ++x) {
                     int value = 8000 + (tileX * 255 + x) * 3 +
                         (tileZ * 255 + z) * 5 + tileX * 40000;
-                    if (tile == 0 && x == 100 && z == 100) {
+                    if (mixedLod) {
+                        value = tile == 0 ? 10000 : 20000;
+                    } else if (tile == 0 && x == 100 && z == 100) {
                         value = 65000; // An isolated, unsupported peak.
                     }
                     const std::array<char, 2> bytes = {
@@ -177,12 +184,71 @@ void checkFixture(bool missingCorner) {
         << "peak repair, cliff smoothing, preserved slopes, consistent mesh heights/normals\n";
 }
 
+void checkStitchedChunkBounds() {
+    Fixture fixture;
+    fixture.create(false, true);
+    const auto scene = VulkCore::TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    const auto mesh = scene->buildMesh();
+    require(mesh.chunks.size() == 2, "mixed LOD fixture must produce two chunks");
+    require(mesh.chunks.front().boundsMaximum.y > scene->chunks().front().boundsMaximum().y,
+        "stitched overlap must raise the coarse chunk's upper bound");
+    for (const auto& chunk : mesh.chunks) {
+        for (std::size_t i = chunk.indexOffset; i < chunk.indexOffset + chunk.indexCount; ++i) {
+            const glm::vec3 position = mesh.vertices[mesh.indices[i]].position;
+            require(glm::all(glm::greaterThanEqual(position, chunk.boundsMinimum)) &&
+                glm::all(glm::lessThanEqual(position, chunk.boundsMaximum)),
+                "chunk bounds omit a stitched mesh vertex");
+        }
+    }
+}
+
+void checkFrustum() {
+    using VulkCore::isOutsideVulkanFrustum;
+    const glm::mat4 identity(1.0f);
+    require(isOutsideVulkanFrustum(identity, {-0.2f, -0.2f, -0.8f}, {0.2f, 0.2f, -0.2f}),
+        "Vulkan near clip boundary is z = 0");
+    require(!isOutsideVulkanFrustum(identity, {-0.2f, -0.2f, -0.2f}, {0.2f, 0.2f, 0.2f}),
+        "a chunk spanning the near plane must remain visible");
+    require(!isOutsideVulkanFrustum(identity, {-2.0f, -2.0f, 0.5f}, {2.0f, 2.0f, 0.7f}),
+        "a box covering the viewport is visible even with all corners outside");
+    require(!isOutsideVulkanFrustum(identity, {1.0f, -0.2f, 0.1f}, {2.0f, 0.2f, 0.9f}),
+        "a box touching a side plane must remain visible");
+
+    const glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(45.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+    const glm::vec3 eye(0.0f);
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    const glm::mat4 forward = projection * glm::lookAt(eye, {0.0f, 0.0f, -1.0f}, up);
+    const glm::mat4 backward = projection * glm::lookAt(eye, {0.0f, 0.0f, 1.0f}, up);
+    const glm::vec3 minimum(-1.0f, -1.0f, -1.0f);
+    const glm::vec3 maximum(1.0f);
+    const auto terrainAt = [&](float distance) {
+        return glm::translate(identity, {0.0f, 0.0f, distance});
+    };
+    const glm::mat4 distantTerrain = terrainAt(-95.0f);
+    require(!isOutsideVulkanFrustum(forward * distantTerrain, minimum, maximum),
+        "distant terrain inside the current far plane was rejected");
+    require(isOutsideVulkanFrustum(backward * distantTerrain, minimum, maximum),
+        "terrain behind the new view was retained");
+    require(!isOutsideVulkanFrustum(backward * terrainAt(95.0f), minimum, maximum),
+        "distant terrain on the other side was rejected after turning");
+    require(!isOutsideVulkanFrustum(forward * terrainAt(-100.0f), minimum, maximum),
+        "a chunk spanning the far plane must remain visible");
+    require(isOutsideVulkanFrustum(forward * terrainAt(-110.0f), minimum, maximum),
+        "a chunk entirely outside the far plane was retained");
+    auto invalid = identity;
+    invalid[0][0] = std::numeric_limits<float>::quiet_NaN();
+    require(!isOutsideVulkanFrustum(invalid, minimum, maximum),
+        "an invalid transform must conservatively retain the chunk");
+}
+
 } // namespace
 
 int main() {
     try {
         checkFixture(false);
         checkFixture(true);
+        checkStitchedChunkBounds();
+        checkFrustum();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

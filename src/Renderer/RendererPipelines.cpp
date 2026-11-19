@@ -686,6 +686,25 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
     }
 }
 
+void Renderer::prepareTerrainPipelines() {
+    // Compile terrain pipelines at scene load, even when the initial view sees sky.
+    const bool hdr = hdrComposition_ != nullptr;
+    std::unordered_set<std::uint32_t> preparedMaterials;
+    for (const MeshPart& part : meshData_.parts) {
+        if (!part.terrainBounds) continue;
+        const std::uint32_t index = materialIndexForPart(part);
+        if (index >= meshData_.materials.size() || !preparedMaterials.insert(index).second) continue;
+        const MaterialData& material = meshData_.materials[index];
+        if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
+            graphicsPipelineForMaterial(material, hdr, VK_CULL_MODE_FRONT_BIT);
+            graphicsPipelineForMaterial(material, hdr, VK_CULL_MODE_BACK_BIT);
+        } else {
+            graphicsPipelineForMaterial(material, hdr,
+                material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+        }
+    }
+}
+
 std::uint32_t Renderer::materialIndexForPart(const MeshPart& part) const {
     const std::int32_t overrideIndex = inheritedMaterialOverrideForSceneNode(part.nodeId);
     if (overrideIndex >= 0 &&

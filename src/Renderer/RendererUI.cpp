@@ -1600,6 +1600,11 @@ bool Renderer::buildImGuiFrame() {
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Frame time: %.2f ms", 1000.0f / std::max(ImGui::GetIO().Framerate, 0.001f));
     ImGui::TextWrapped("%s", screenshotStatus_.c_str());
+    if (terrainScene_) {
+        ImGui::Checkbox("Terrain frustum culling", &terrainFrustumCullingEnabled_);
+        ImGui::Text("Terrain chunks: %zu/%zu queued",
+                    terrainDrawCandidates_ - terrainDrawCulled_, terrainDrawCandidates_);
+    }
     bool shouldSaveTransformSettings = false;
     ImGui::SeparatorText("Camera");
     const bool orbitEnabled = authoredView_.enabled && authoredView_.orbitEnabled;

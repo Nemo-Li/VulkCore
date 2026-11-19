@@ -11,8 +11,11 @@
 
 namespace VulkCore {
 
-Application::Application(std::filesystem::path startupScene, bool hideTools)
-    : startupScene_(std::move(startupScene)), hideTools_(hideTools) {}
+Application::Application(
+    std::filesystem::path startupScene, bool hideTools, bool terrainFrustumCullingEnabled
+)
+    : startupScene_(std::move(startupScene)), hideTools_(hideTools),
+      terrainFrustumCullingEnabled_(terrainFrustumCullingEnabled) {}
 
 Application::~Application() {
     renderer_.reset();
@@ -25,6 +28,7 @@ Application::~Application() {
 void Application::run() {
     initWindow(kWindowWidth, kWindowHeight, false);
     renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
+    renderer_->setTerrainFrustumCullingEnabled(terrainFrustumCullingEnabled_);
     mainLoop();
 }
 
@@ -32,6 +36,7 @@ void Application::captureFrame(float progress, float time, int width, int height
                                const std::filesystem::path& output) {
     initWindow(width, height, true);
     renderer_ = std::make_unique<Renderer>(window_, startupScene_, true);
+    renderer_->setTerrainFrustumCullingEnabled(terrainFrustumCullingEnabled_);
     renderer_->captureTransitionFrame(progress, time, output);
 }
 

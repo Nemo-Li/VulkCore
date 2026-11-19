@@ -1389,7 +1389,7 @@ void Renderer::updateCameraBasis() {
     cameraUp_ = glm::normalize(glm::cross(cameraRight_, cameraForward_));
 }
 
-void Renderer::updateUniformBuffer() {
+std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
@@ -1410,7 +1410,7 @@ void Renderer::updateUniformBuffer() {
 
     const VkExtent2D extent = swapChain_->extent();
     if (extent.height == 0) {
-        return;
+        return std::nullopt;
     }
     ubo.viewport = glm::vec4(
         static_cast<float>(extent.width),
@@ -1469,6 +1469,7 @@ void Renderer::updateUniformBuffer() {
     }
 
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
+    return ubo.projection * ubo.view * ubo.model;
 }
 
 void Renderer::updateBoundingBoxBuffer() {

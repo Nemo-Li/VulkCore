@@ -3,6 +3,7 @@
 
 #include <ctime>
 
+#include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Utils/Screenshot.hpp"
 
 namespace VulkCore {
@@ -354,7 +355,8 @@ void Renderer::recordLegacySceneTransfer(VkCommandBuffer commandBuffer, uint32_t
 void Renderer::recordCommandBuffer(
     VkCommandBuffer commandBuffer,
     uint32_t imageIndex,
-    bool captureScreenshot
+    bool captureScreenshot,
+    const std::optional<glm::mat4>& clipFromScene
 ) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -391,6 +393,8 @@ void Renderer::recordCommandBuffer(
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
     bool needsOpaqueSnapshot = false;
+    terrainDrawCandidates_ = 0;
+    terrainDrawCulled_ = 0;
     for (const MeshPart& part : meshData_.parts) {
         if (part.indexCount == 0 || !isSceneNodeRenderEnabled(part.nodeId)) continue;
         const std::uint32_t index = materialIndexForPart(part);
@@ -399,6 +403,25 @@ void Renderer::recordCommandBuffer(
         if (material.transitionOpacity && transitionSettings_.enabled &&
             (transitionPlayer_.progress < material.transitionVisibleFrom ||
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
+        if (const auto& bounds = part.terrainBounds) {
+            ++terrainDrawCandidates_;
+            // The terrain shader applies the same transform as the CPU test.
+            // Other geometry stages may displace vertices beyond these bounds.
+            const auto& shaders = material.shaderConfiguration;
+            if (terrainFrustumCullingEnabled_ && clipFromScene &&
+                shaders.shader(ShaderStage::Vertex) == "shader_terrain.vert" &&
+                shaders.shader(ShaderStage::TessellationControl).empty() &&
+                shaders.shader(ShaderStage::TessellationEvaluation).empty() &&
+                shaders.shader(ShaderStage::Geometry).empty() &&
+                isOutsideVulkanFrustum(
+                    *clipFromScene * transformForSceneNode(part.nodeId),
+                    bounds->minimum,
+                    bounds->maximum
+                )) {
+                ++terrainDrawCulled_;
+                continue;
+            }
+        }
         const bool readsOpaque = material.samplesOpaqueScene ||
             isWaterShaderConfiguration(material.shaderConfiguration);
         needsOpaqueSnapshot |= readsOpaque;
@@ -729,6 +752,10 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
     transitionPlayer_.seek(progress);
     transitionPlayer_.flowTime = time;
     if (!drawFrame()) throw std::runtime_error("failed to present the captured frame");
+    if (terrainDrawCandidates_ != 0) {
+        std::cout << "Terrain chunks queued: " << terrainDrawCandidates_ - terrainDrawCulled_
+                  << '/' << terrainDrawCandidates_ << " (" << terrainDrawCulled_ << " culled)\n";
+    }
 }
 
 bool Renderer::drawFrame() {
@@ -800,13 +827,13 @@ bool Renderer::drawFrame() {
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
-    updateUniformBuffer();
+    const auto clipFromScene = updateUniformBuffer();
     updateParticleBuffer();
     updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }
-    recordCommandBuffer(commandBuffers_[currentFrame_], imageIndex, captureScreenshot);
+    recordCommandBuffer(commandBuffers_[currentFrame_], imageIndex, captureScreenshot, clipFromScene);
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -191,11 +192,17 @@ struct MaterialData {
     EmbeddedTextureData embeddedAlphaMask;
 };
 
+struct TerrainChunkBounds {
+    glm::vec3 minimum;
+    glm::vec3 maximum;
+};
+
 struct MeshPart {
     std::uint32_t firstIndex = 0;
     std::uint32_t indexCount = 0;
     std::uint32_t materialIndex = 0;
     std::uint32_t nodeId = 0;
+    std::optional<TerrainChunkBounds> terrainBounds = std::nullopt;
 };
 
 enum class SceneObjectType : std::uint8_t {
