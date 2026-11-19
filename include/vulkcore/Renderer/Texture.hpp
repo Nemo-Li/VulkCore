@@ -33,7 +33,8 @@ public:
         const std::vector<std::uint8_t>& rgbaPixels,
         std::uint32_t width,
         std::uint32_t height,
-        bool arrayView = false
+        bool arrayView = false,
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb
     );
     ~Texture();
 

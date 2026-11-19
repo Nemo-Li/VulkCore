@@ -312,6 +312,7 @@ private:
     std::vector<std::unique_ptr<Texture>> materialTextures_;
     std::vector<std::unique_ptr<Texture>> normalTextures_;
     std::vector<std::unique_ptr<Texture>> specularTextures_;
+    std::vector<std::unique_ptr<Texture>> alphaMaskTextures_;
     std::unique_ptr<Texture> terrainAlbedoLayers_;
     std::unique_ptr<Texture> terrainSurfaceLayers_;
     std::unique_ptr<Texture> fallbackTerrainLayers_;

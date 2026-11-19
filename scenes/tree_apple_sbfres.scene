@@ -1,0 +1,19 @@
+# VulkCore scene
+model_resource_path "../../../Downloads/Model/Obj_TreeApple_A.sbfres" 1
+authored_view -0.119999997 4.48999977 0.0500000007 0 1 0 36 1
+camera_orbit -75 75
+sun_present 0
+camera_position 11 8 19
+ambient_color 0.469999999 0.49000001 0.430000007
+ambient_intensity 1
+sun_light_direction 0.456903607 0.774749517 0.437038213
+sun_light_color 1 0.939999998 0.829999983
+sun_light_intensity 1.20000005
+shader_demo 0 1 0.5 0.5 0
+node_render 2 0
+node_render 6 0
+node_render 10 0
+node_render 17 0
+node_render 18 0
+node_render 19 0
+node_render 21 0

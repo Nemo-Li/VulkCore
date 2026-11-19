@@ -11,6 +11,7 @@
 5. [BOTW 风格草地技术方案与实现](07-botw-grass.md)：说明三层草地 LOD、程序化种植、风场、Player 踩踏和当前性能边界。
 
 6. [鸿蒙手机工程导出](08-harmonyos-export.md)：说明 DevEco 工程导出、资源路径迁移、XComponent 原生运行与手机触屏控制。
+7. [Switch SBFRES 模型导入](09-sbfres-import.md) 记录模型与贴图格式、管线改动和苹果树场景的运行方法。
 
 ## 状态约定
 

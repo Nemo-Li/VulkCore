@@ -756,6 +756,7 @@ void Renderer::createMaterialTextures() {
     materialTextures_.resize(meshData_.materials.size());
     normalTextures_.resize(meshData_.materials.size());
     specularTextures_.resize(meshData_.materials.size());
+    alphaMaskTextures_.resize(meshData_.materials.size());
     terrainAlbedoLayers_.reset();
     terrainSurfaceLayers_.reset();
     fallbackTerrainLayers_.reset();
@@ -808,7 +809,9 @@ void Renderer::createMaterialTextures() {
                     *context_,
                     embeddedTexture.data,
                     embeddedTexture.width,
-                    embeddedTexture.height
+                    embeddedTexture.height,
+                    false,
+                    embeddedTexture.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear
                 );
             }
             if (!texturePath.empty()) {
@@ -855,6 +858,9 @@ void Renderer::createMaterialTextures() {
             material.specularTexturePath,
             "specular",
             materialIndex
+        );
+        alphaMaskTextures_[materialIndex] = loadTexture(
+            material.embeddedAlphaMask, {}, "alpha mask", materialIndex
         );
         needsWhiteFallbackTexture = needsWhiteFallbackTexture ||
             materialTextures_[materialIndex] == nullptr ||
@@ -948,6 +954,7 @@ void Renderer::rebuildMaterialResources() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
+    alphaMaskTextures_.clear();
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     descriptorSets_.clear();
@@ -988,7 +995,7 @@ void Renderer::createDescriptorPool() {
         materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity) *
-        7 + skyboxDescriptorCount;
+        kMaterialImageBindingCount + skyboxDescriptorCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1044,6 +1051,11 @@ void Renderer::createDescriptorSets() {
             bufferInfo.offset = 0;
             bufferInfo.range = sizeof(UniformBufferObject);
 
+            const Texture* mask = alphaMaskTextures_[materialIndex].get();
+            if (mask == nullptr) mask = fallbackTexture_.get();
+            const VkDescriptorImageInfo maskInfo{
+                mask->sampler(), mask->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
             VkDescriptorImageInfo imageInfos[3]{};
             for (VkDescriptorImageInfo& imageInfo : imageInfos) {
                 imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1070,7 +1082,13 @@ void Renderer::createDescriptorSets() {
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
-            std::array<VkWriteDescriptorSet, 7> descriptorWrites{};
+            std::array<VkWriteDescriptorSet, kMaterialImageBindingCount> descriptorWrites{};
+            descriptorWrites.back().sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites.back().dstSet = descriptorSets_[descriptorSetIndex];
+            descriptorWrites.back().dstBinding = kAlphaMaskBinding;
+            descriptorWrites.back().descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites.back().descriptorCount = 1;
+            descriptorWrites.back().pImageInfo = &maskInfo;
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;

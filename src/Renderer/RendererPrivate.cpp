@@ -1,4 +1,5 @@
 #include "RendererPrivate.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 namespace VulkCore::renderer_detail {
 
@@ -79,6 +80,7 @@ const char* defaultShaderForStage(ShaderStage stage) {
 }
 
 bool isModelAssetPath(const std::filesystem::path& path) {
+    if (isBfresPath(path)) return !isBfresTextureSidecarPath(path);
     static constexpr std::array<std::string_view, 17> kModelExtensions = {
         ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl",
         ".blend", ".x", ".md5mesh", ".ase", ".lwo", ".lws", ".off", ".x3d",

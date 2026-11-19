@@ -462,6 +462,12 @@ void Renderer::recordCommandBuffer(
             materialPushConstants.waterFlow = material.shaderParameters0;
             materialPushConstants.waterSurface = material.shaderParameters1;
         }
+        const auto& fragment = material.shaderConfiguration.shader(ShaderStage::Fragment);
+        if (material.alphaCutoff >= 0.0f && (fragment.empty() || fragment == kDefaultFragmentShader)) {
+            // The base shader reuses an unused component to stay within 128 bytes.
+            materialPushConstants.textureFlags |= kAlphaTestFlag;
+            materialPushConstants.waterFlow.x = material.alphaCutoff;
+        }
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,

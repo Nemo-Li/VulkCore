@@ -1,4 +1,5 @@
 #include "vulkcore/Utils/ModelLoader.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 #include <assimp/Importer.hpp>
 #include <assimp/anim.h>
@@ -918,6 +919,10 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
     }
     if (!std::filesystem::exists(path)) {
         throw std::runtime_error("model file does not exist: " + path.string());
+    }
+
+    if (isBfresPath(path)) {
+        return loadSbfresMesh(path);
     }
 
     Assimp::Importer importer;

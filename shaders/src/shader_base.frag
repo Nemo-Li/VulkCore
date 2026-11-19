@@ -19,6 +19,7 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 3) uniform sampler2D normalTexture;
 layout(set = 0, binding = 4) uniform sampler2D specularTexture;
+layout(set = 0, binding = 8) uniform sampler2D alphaMask;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -60,9 +61,9 @@ vec3 applyNormalMap(vec3 geometricNormal, vec3 worldPosition, vec2 uv) {
 
 void main() {
     vec4 baseColor = material.baseColor * fragVertexColor;
-    if ((material.textureFlags & 1u) != 0u) {
-        baseColor *= texture(textureSampler, fragTexCoord);
-    }
+    vec4 texel = (material.textureFlags & 1u) != 0u ? texture(textureSampler, fragTexCoord) : vec4(1.0);
+    // Calculate derivative-based normal mapping before discarding masked pixels.
+    baseColor *= texel;
 
     vec3 normal = normalize(fragNormal);
     if ((material.textureFlags & 2u) != 0u) {
@@ -86,6 +87,10 @@ void main() {
         specularMapFactor = texture(specularTexture, fragTexCoord).r;
     }
 
+    if ((material.textureFlags & 64u) != 0u) {
+        float coverage = texel.a * material.baseColor.a * texture(alphaMask, fragTexCoord).r;
+        if (coverage < material.waterFlow.x) discard;
+    }
     vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor) * (1.0 - metallic * 0.35);
     litColor += specularLight * specularFactor * mix(0.12, 0.5, metallic) * specularMapFactor;
     litColor += max(material.waterSurface.rgb, vec3(0.0)) * max(material.waterSurface.a, 0.0);
