@@ -411,6 +411,7 @@ if(BUILD_TESTING AND NOT VULKCORE_OHOS)
 
     add_executable(vulkcore_terrain_smoke
         tests/TerrainSmoke.cpp
+        src/Terrain/Grass.cpp
         src/Terrain/Terrain.cpp
         src/Utils/FileUtils.cpp
     )

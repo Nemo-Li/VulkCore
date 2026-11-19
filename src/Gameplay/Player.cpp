@@ -20,7 +20,6 @@ constexpr float kDebugMovementSpeedMultiplier = 4.0f;
 constexpr float kDebugAscentSpeed = 6.0f;
 constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
-constexpr float kCameraDistance = 5.0f;
 constexpr float kCameraTargetHeight = 0.92f;
 constexpr float kCameraCollisionRadius = 0.25f;
 constexpr float kMinCameraElevation = 5.0f * kPi / 180.0f;

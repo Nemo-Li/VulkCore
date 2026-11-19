@@ -99,17 +99,17 @@ std::filesystem::path findHeightmapPath(
     return {};
 }
 
-std::filesystem::path findWatermapPath(
-    const std::filesystem::path& waterRoot,
-    const std::string& fileBase
+std::filesystem::path findSurfaceTilePath(
+    const std::filesystem::path& root,
+    const std::string& fileBase,
+    const std::string& extension
 ) {
-    if (waterRoot.empty()) {
+    if (root.empty()) {
         return {};
     }
 
     std::vector<std::filesystem::path> candidates;
-    // Extracted water SARC directories use the first file in each group of
-    // four: 54000000DB.water.extm is stored below 54000000D8.water.extm.
+    // Extracted SARC directories use the first file in each group of four.
     if (fileBase.size() >= 2) {
         const auto hexValue = [](char value) -> int {
             if (value >= '0' && value <= '9') {
@@ -132,17 +132,17 @@ std::filesystem::path findWatermapPath(
             groupBase[groupBase.size() - 2] = hexDigits[groupedValue >> 4];
             groupBase[groupBase.size() - 1] = hexDigits[groupedValue & 0xF];
             candidates.push_back(
-                waterRoot / (groupBase + ".water.extm") /
-                    (fileBase + ".water.extm")
+                root / (groupBase + extension) /
+                    (fileBase + extension)
             );
         }
     }
 
     candidates.push_back(
-        waterRoot / (fileBase + ".water.extm") /
-            (fileBase + ".water.extm")
+        root / (fileBase + extension) /
+            (fileBase + extension)
     );
-    candidates.push_back(waterRoot / (fileBase + ".water.extm"));
+    candidates.push_back(root / (fileBase + extension));
     for (const auto& candidate : candidates) {
         std::error_code error;
         if (std::filesystem::is_regular_file(candidate, error)) {
@@ -150,6 +150,44 @@ std::filesystem::path findWatermapPath(
         }
     }
     return {};
+}
+
+using SurfaceCell = std::pair<int, int>;
+constexpr float kSurfaceCellSize = 256.0f;
+
+SurfaceCell surfaceCell(glm::vec2 point) {
+    return {
+        static_cast<int>(std::floor(point.x / kSurfaceCellSize)),
+        static_cast<int>(std::floor(point.y / kSurfaceCellSize))
+    };
+}
+
+std::pair<glm::vec2, glm::vec2> surfaceArea(
+    const TerrainTileMetadata& metadata, float worldScale
+) {
+    const float scale = worldScale * kTerrainWorldExtentMultiplier / kTerrainGridSize;
+    return {
+        (metadata.gridPosition - metadata.areaSize * 0.5f) * scale,
+        (metadata.gridPosition + metadata.areaSize * 0.5f) * scale
+    };
+}
+
+void indexSurfaceTile(
+    std::map<SurfaceCell, std::vector<std::size_t>>& index,
+    glm::vec2 minimum, glm::vec2 maximum, std::size_t tile
+) {
+    const auto [minX, minZ] = surfaceCell(minimum);
+    const auto [maxX, maxZ] = surfaceCell(maximum);
+    for (int z = minZ; z <= maxZ; ++z) {
+        for (int x = minX; x <= maxX; ++x) {
+            index[{x, z}].push_back(tile);
+        }
+    }
+}
+
+bool containsPoint(glm::vec2 point, glm::vec2 minimum, glm::vec2 maximum) {
+    return point.x >= minimum.x && point.y >= minimum.y &&
+        point.x <= maximum.x && point.y <= maximum.y;
 }
 
 std::vector<std::uint16_t> loadHeightSamples(const std::filesystem::path& path) {
@@ -1002,6 +1040,8 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
     parsedTiles.reserve(scene->header_.areaCount);
     std::vector<WaterTileData> parsedWaterTiles;
     parsedWaterTiles.reserve(scene->header_.areaCount);
+    const std::filesystem::path grassRoot = terrainRoot / "terrain_grass";
+    const bool hasGrassDirectory = std::filesystem::is_directory(grassRoot);
     for (std::uint32_t index = 0; index < scene->header_.areaCount; ++index) {
         const std::size_t lookupOffset =
             areaLookupOffset + static_cast<std::size_t>(index) * sizeof(std::uint32_t);
@@ -1055,10 +1095,27 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
         metadata.materialIndex = materialIt->index;
         metadata.materialInfo = *materialIt;
 
-        const std::filesystem::path watermapPath = findWatermapPath(
-            waterRoot,
-            metadata.fileBase
-        );
+        if (hasGrassDirectory) {
+            const auto path = findSurfaceTilePath(grassRoot, metadata.fileBase, ".grass.extm");
+            if (!path.empty()) {
+                const auto bytes = readBinaryFile(path);
+                if (bytes.size() != kTerrainGrassResolution * kTerrainGrassResolution * 4u) {
+                    throw std::runtime_error(
+                        "grass map must contain exactly 64x64 height/RGB samples: " + path.string()
+                    );
+                }
+                const auto [minimum, maximum] = surfaceArea(metadata, scene->header_.worldScale);
+                if (!glm::all(glm::lessThan(minimum, maximum))) {
+                    throw std::runtime_error("grass map has invalid bounds: " + path.string());
+                }
+                indexSurfaceTile(scene->grassTilesByCell_, minimum, maximum, scene->grassTiles_.size());
+                scene->grassTiles_.push_back({
+                    minimum, maximum, metadata.lod, {bytes.begin(), bytes.end()}
+                });
+            }
+        }
+
+        const auto watermapPath = findSurfaceTilePath(waterRoot, metadata.fileBase, ".water.extm");
         if (!watermapPath.empty()) {
             try {
                 std::vector<WaterSample> waterSamples = loadWaterSamples(watermapPath);
@@ -1116,6 +1173,13 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
         }
     );
     scene->waterTiles_ = std::move(parsedWaterTiles);
+    for (std::size_t index = 0; index < scene->waterTiles_.size(); ++index) {
+        const auto [minimum, maximum] =
+            surfaceArea(scene->waterTiles_[index].metadata, scene->header_.worldScale);
+        if (glm::all(glm::lessThan(minimum, maximum))) {
+            indexSurfaceTile(scene->waterTilesByCell_, minimum, maximum, index);
+        }
+    }
 
     if (parsedTiles.empty()) {
         throw std::runtime_error(
@@ -1216,6 +1280,80 @@ std::size_t TerrainScene::waterTileCount() const {
     return waterTiles_.size();
 }
 
+std::optional<GrassSample> TerrainScene::grassAtWorld(const glm::vec2& worldPosition) const {
+    if (grassTiles_.empty()) return std::nullopt;
+    const auto candidates = grassTilesByCell_.find(surfaceCell(worldPosition));
+    if (candidates == grassTilesByCell_.end()) return std::nullopt;
+
+    const GrassTile* selected = nullptr;
+    for (const std::size_t index : candidates->second) {
+        const GrassTile& tile = grassTiles_[index];
+        if (containsPoint(worldPosition, tile.minimum, tile.maximum) &&
+            (selected == nullptr || tile.lod > selected->lod)) {
+            selected = &tile;
+        }
+    }
+    if (selected == nullptr) return std::nullopt;
+
+    constexpr int last = kTerrainGrassResolution - 1;
+    const glm::vec2 position = glm::clamp(
+        (worldPosition - selected->minimum) / (selected->maximum - selected->minimum),
+        glm::vec2(0.0f), glm::vec2(1.0f)
+    ) * static_cast<float>(last);
+    const glm::ivec2 a(glm::floor(position));
+    const glm::ivec2 b = glm::min(a + 1, glm::ivec2(last));
+    const glm::vec2 weight = glm::fract(position);
+    const auto sample = [&](int x, int z) {
+        const std::size_t offset = (z * kTerrainGrassResolution + x) * 4u;
+        const auto* bytes = selected->bytes.data() + offset;
+        const float height = static_cast<float>(bytes[0]) / 255.0f;
+        const glm::vec3 color = glm::vec3(bytes[1], bytes[2], bytes[3]) / 255.0f;
+        return glm::vec4(color * height, height);
+    };
+    const glm::vec4 data = glm::mix(
+        glm::mix(sample(a.x, a.y), sample(b.x, a.y), weight.x),
+        glm::mix(sample(a.x, b.y), sample(b.x, b.y), weight.x),
+        weight.y
+    );
+    // Color in empty texels must not bleed into nearby planted areas.
+    return GrassSample{data.w, data.w > 0.0f ? glm::vec3(data) / data.w : glm::vec3(0.0f)};
+}
+
+std::optional<float> TerrainScene::waterHeightAtWorld(const glm::vec2& worldPosition) const {
+    if (waterTiles_.empty()) return std::nullopt;
+    const auto candidates = waterTilesByCell_.find(surfaceCell(worldPosition));
+    if (candidates == waterTilesByCell_.end()) return std::nullopt;
+
+    const WaterTileData* selected = nullptr;
+    glm::vec2 grid(0.0f);
+    constexpr int last = kTerrainWaterResolution - 1;
+    for (const std::size_t index : candidates->second) {
+        const auto& tile = waterTiles_[index];
+        const auto [minimum, maximum] = surfaceArea(tile.metadata, header_.worldScale);
+        if (containsPoint(worldPosition, minimum, maximum) &&
+            (selected == nullptr || tile.metadata.lod > selected->metadata.lod)) {
+            selected = &tile;
+            grid = (worldPosition - minimum) / (maximum - minimum) * static_cast<float>(last);
+        }
+    }
+    if (selected == nullptr) return std::nullopt;
+
+    const glm::ivec2 corner = glm::clamp(glm::ivec2(glm::floor(grid)), glm::ivec2(0), glm::ivec2(last - 1));
+    const std::size_t i = corner.y * kTerrainWaterResolution + corner.x;
+    const auto& heights = selected->samples;
+    const float h00 = heights[i].height;
+    const float h10 = heights[i + 1].height;
+    const float h01 = heights[i + kTerrainWaterResolution].height;
+    const float h11 = heights[i + kTerrainWaterResolution + 1].height;
+    // Match the rendered water mesh, which drops quads at invalid samples.
+    if (std::min({h00, h10, h01, h11}) <= 1.0f) return std::nullopt;
+    const glm::vec2 w = grid - glm::vec2(corner);
+    const float height = w.x + w.y <= 1.0f
+        ? h00 + (h10 - h00) * w.x + (h01 - h00) * w.y
+        : h11 + (h01 - h11) * (1.0f - w.x) + (h10 - h11) * (1.0f - w.y);
+    return height / 65535.0f * header_.maximumHeight;
+}
+
 std::optional<float> TerrainScene::heightAtWorld(const glm::vec2& worldPosition) const {
     const TerrainTile* selectedTile = nullptr;
     for (const TerrainChunk& chunk : chunks_) {
@@ -1242,6 +1380,9 @@ std::optional<float> TerrainScene::renderedHeightAtWorld(
 ) const {
     const TerrainTile* selectedTile = nullptr;
     for (const TerrainChunk& chunk : chunks_) {
+        const auto& min = chunk.boundsMinimum();
+        const auto& max = chunk.boundsMaximum();
+        if (!containsPoint(worldPosition, {min.x, min.z}, {max.x, max.z})) continue;
         for (const TerrainTile& tile : chunk.tiles()) {
             if (!tile.containsWorldPoint(worldPosition)) {
                 continue;

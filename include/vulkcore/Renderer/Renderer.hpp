@@ -22,6 +22,7 @@
 #include "vulkcore/Renderer/SceneEffects.hpp"
 #include "vulkcore/Renderer/ParticleSystem.hpp"
 #include "vulkcore/Renderer/Texture.hpp"
+#include "vulkcore/Terrain/Grass.hpp"
 
 #include "vulkcore/Platform/Window.hpp"
 
@@ -101,7 +102,8 @@ private:
     );
     void appendWaterToScene(const TerrainScene& terrain);
     void appendPlayerToScene();
-    void appendGrassToScene(const TerrainScene& terrain, const glm::vec3& center);
+    void appendGrassToScene(const TerrainScene& terrain);
+    void updateGrassCoverage();
     void updatePlayerController(float deltaSeconds, bool viewportHovered);
     void updatePlayerCamera();
     void clearSceneData();
@@ -217,7 +219,7 @@ private:
     VkPipeline graphicsPipelineForMaterial(
         const MaterialData& material, bool hdr, VkCullModeFlags cullMode
     );
-    void prepareTerrainPipelines();
+    void prepareTerrainAndGrassPipelines();
     VkPipeline computePipelineForMaterial(const MaterialData& material);
     std::string graphicsPipelineKey(
         const ShaderConfiguration& configuration,
@@ -292,6 +294,16 @@ private:
     std::vector<SceneRenderTarget> sceneRenderTargets_;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
+    GrassCoverage grassCoverage_;
+    std::uint64_t grassRevision_ = 0;
+    struct GrassFrameBuffer {
+        std::unique_ptr<Buffer> instances;
+        std::uint64_t uploadedRevision = 0;
+    };
+    std::array<GrassFrameBuffer, kMaxFramesInFlight> grassFrameBuffers_;
+    std::unique_ptr<Buffer> grassIndexBuffer_;
+    static constexpr std::uint32_t kGrassSceneNodeId = 0xE5000000u;
+    static constexpr std::uint32_t kGrassLodNodeBase = 0xE5100000u;
     bool terrainFrustumCullingEnabled_ = true;
     std::size_t terrainDrawCandidates_ = 0;
     std::size_t terrainDrawCulled_ = 0;

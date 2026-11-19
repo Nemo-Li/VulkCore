@@ -3,11 +3,12 @@
 
 layout(location = 0) in vec2 fragBladeUv;
 layout(location = 1) in vec3 fragNormal;
-layout(location = 2) in vec4 fragVariation;
+layout(location = 2) flat in vec4 fragTint;
 layout(location = 3) in vec3 fragWorldPosition;
-layout(location = 4) in float fragLodVisibility;
-layout(location = 5) in vec2 fragRoot;
+layout(location = 4) flat in float fragLodVisibility;
+layout(location = 5) flat in vec2 fragRoot;
 layout(location = 6) flat in float fragLod;
+layout(location = 7) flat in float fragColorVariation;
 
 #include "scene_fog.glsl"
 
@@ -42,7 +43,7 @@ void main() {
     float bladeHeight = fragLod < 0.5
         ? clamp(fragBladeUv.y, 0.0, 1.0)
         : clamp(1.0 - fragBladeUv.y, 0.0, 1.0);
-    float variation = clamp(fragVariation.r, 0.0, 1.0);
+    float variation = fragColorVariation;
     vec3 rootA = vec3(0.055, 0.17, 0.018);
     vec3 rootB = vec3(0.085, 0.235, 0.026);
     vec3 tipA = vec3(0.27, 0.52, 0.055);
@@ -66,6 +67,16 @@ void main() {
         }
     }
 
+    if (fragTint.a > 0.5) {
+        // Use the tile RGB as the mapped blade tint. The card texture supplies
+        // shape and neutral detail, so its own green does not override the map.
+        vec3 rgb = fragTint.rgb;
+        vec3 linearTint = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)),
+                              greaterThan(rgb, vec3(0.04045)));
+        float detail = smoothstep(0.0, 0.92, bladeHeight) * 0.60 + 0.45;
+        albedo = linearTint * detail * mix(0.9, 1.1, variation);
+    }
+
     vec3 normal = normalize(fragNormal);
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     vec3 viewDirection = normalize(ubo.cameraPosition.xyz - fragWorldPosition);
@@ -84,6 +95,6 @@ void main() {
     vec3 lighting = ambient * 0.72 + sunlight * (diffuseBand + backLight + rim);
     vec3 finalColor = albedo * lighting * material.baseColor.rgb;
     // Warm tips are a characteristic part of BOTW's readable grass mass.
-    finalColor += vec3(0.045, 0.034, 0.004) * bladeHeight * backLight;
+    finalColor += mix(vec3(0.045, 0.034, 0.004), albedo * 0.1, fragTint.a) * bladeHeight * backLight;
     outColor = vec4(applySceneFog(finalColor, sceneFogAt(fragWorldPosition)), material.opacity);
 }

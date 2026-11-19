@@ -387,6 +387,40 @@ void Renderer::createIndexBuffer() {
     context_->copyBuffer(indexStagingBuffer.handle(), indexBuffer_->handle(), bufferSize);
 }
 
+void Renderer::updateGrassCoverage() {
+    if (!terrainScene_) return;
+    const bool followPlayer = playerController_.active();
+    const glm::vec3 center = followPlayer ? playerController_.position()
+        : cameraPosition_ / modelScale_ + modelCenter_;
+    const float viewPadding = followPlayer ? PlayerController::kCameraDistance : 0.0f;
+    if (grassCoverage_.update(*terrainScene_, {center.x, center.z}, viewPadding)) {
+        ++grassRevision_;
+    }
+
+    const auto& instances = grassCoverage_.instances();
+    auto& frame = grassFrameBuffers_[currentFrame_];
+    if (instances.empty() || frame.uploadedRevision == grassRevision_) return;
+
+    const VkDeviceSize size = sizeof(GrassInstance) * instances.size();
+    constexpr auto memory =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    // drawFrame has already waited for this frame's fence. Allocations for
+    // other in-flight frames and the shared terrain buffers stay resident.
+    if (!frame.instances || frame.instances->size() < size) {
+        frame.instances = std::make_unique<Buffer>(
+            *context_, size + size / 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, memory
+        );
+    }
+    frame.instances->upload(instances.data(), size);
+    frame.uploadedRevision = grassRevision_;
+    if (!grassIndexBuffer_) {
+        grassIndexBuffer_ = std::make_unique<Buffer>(
+            *context_, sizeof(kGrassIndices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, memory
+        );
+        grassIndexBuffer_->upload(kGrassIndices.data(), sizeof(kGrassIndices));
+    }
+}
+
 void Renderer::createParticleBuffer() {
     const VkDeviceSize bufferSize = sizeof(ParticleVertex) *
         ParticleSystem::kMaximumSupportedParticles * ParticleSystem::kVerticesPerParticle *
