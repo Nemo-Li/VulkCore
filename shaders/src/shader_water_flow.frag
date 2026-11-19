@@ -182,7 +182,8 @@ void main() {
     );
     waterColor *= mix(vec3(0.9), movingTexture, 0.28);
     waterColor *= material.baseColor.rgb * fragVertexColor.rgb;
-    waterColor *= ambientLight + diffuseLight * diffuseFactor;
+    float sunlightVisibility = cloudSunVisibility(fragWorldPosition);
+    waterColor *= ambientLight + diffuseLight * diffuseFactor * sunlightVisibility;
 
     vec2 screenUv = gl_FragCoord.xy * ubo.viewport.zw;
     vec2 refractionUv = clamp(screenUv + normal.xy * 0.045, vec2(0.001), vec2(0.999));
@@ -197,7 +198,8 @@ void main() {
     vec3 refractedColor = mix(applySceneFog(waterColor, fog), sceneRefraction, 0.48);
     vec3 reflectedColor = mix(applySceneFog(vec3(0.08, 0.3, 0.42), fog), sceneReflection, 0.78);
     waterColor = mix(refractedColor, reflectedColor, 0.2 + fresnel * 0.7);
-    waterColor += specularLight * specular * mix(0.75, 1.15, metallic) * specularMapFactor * (1.0 - fog.a);
+    waterColor += specularLight * specular * mix(0.75, 1.15, metallic) * specularMapFactor *
+        (1.0 - fog.a) * sunlightVisibility;
 
     outColor = vec4(waterColor, (0.72 + fresnel * 0.2) * opacity);
 }

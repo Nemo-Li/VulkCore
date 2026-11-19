@@ -181,11 +181,14 @@ void main() {
     // Screen samples already contain the scene's fog. Apply it to the
     // water's own color and lighting contributions.
     vec4 fog = sceneFogAt(fragWorldPosition);
-    vec3 litWater = applySceneFog(waterColor * (ambientLight + diffuseLight * diffuseFactor), fog);
+    float sunlightVisibility = cloudSunVisibility(fragWorldPosition);
+    vec3 litWater = applySceneFog(waterColor *
+        (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility), fog);
     vec3 refractedColor = mix(litWater, sceneRefraction, 0.42);
     vec3 reflectedColor = mix(applySceneFog(skyReflection, fog), sceneReflection, 0.72);
     vec3 color = mix(refractedColor, reflectedColor, 0.22 + fresnel * 0.68);
-    color += specularLight * sparkle * mix(0.7, 1.1, metallic) * specularMapFactor * (1.0 - fog.a);
+    color += specularLight * sparkle * mix(0.7, 1.1, metallic) * specularMapFactor *
+        (1.0 - fog.a) * sunlightVisibility;
 
     outColor = vec4(color, (0.76 + fresnel * 0.18) * opacity);
 }

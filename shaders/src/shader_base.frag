@@ -83,8 +83,11 @@ void main() {
         float coverage = texel.a * material.baseColor.a * texture(alphaMask, fragTexCoord).r;
         if (coverage < material.waterFlow.x) discard;
     }
-    vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor) * (1.0 - metallic * 0.35);
-    litColor += specularLight * specularFactor * mix(0.12, 0.5, metallic) * specularMapFactor;
+    float sunlightVisibility = cloudSunVisibility(fragWorldPosition);
+    vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility) *
+        (1.0 - metallic * 0.35);
+    litColor += specularLight * specularFactor * mix(0.12, 0.5, metallic) *
+        specularMapFactor * sunlightVisibility;
     litColor += max(material.waterSurface.rgb, vec3(0.0)) * max(material.waterSurface.a, 0.0);
     outColor = vec4(applySceneFog(litColor, sceneFogAt(fragWorldPosition)), baseColor.a * opacity);
 }

@@ -552,35 +552,40 @@ void Renderer::recordCommandBuffer(
         }
     };
 
-    const auto drawOpaque = [&](bool hdr) {
-        // The skybox is a gameplay backdrop only. Effect/model showcase scenes
-        // should keep the neutral render-pass clear color instead of inheriting it.
-        if (currentScenePath_.filename() == "game.scene" &&
-            skyboxTexture_ != nullptr &&
-            currentFrame_ < skyboxDescriptorSets_.size()) {
-            vkCmdBindPipeline(
-                commandBuffer,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                hdr ? hdrSkyboxPipeline_ : skyboxPipeline_
-            );
-            const VkDescriptorSet& skyboxDescriptorSet =
-                skyboxDescriptorSets_[currentFrame_];
-            vkCmdBindDescriptorSets(
-                commandBuffer,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipelineLayout_,
-                0,
-                1,
-                &skyboxDescriptorSet,
-                0,
-                nullptr
-            );
-            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-        }
+    const bool drawDaylight = currentScenePath_.filename() == "game.scene" &&
+        skyboxTexture_ != nullptr && currentFrame_ < skyboxDescriptorSets_.size();
+    // Preserve the draw order when an opaque material deliberately skips depth writes.
+    const bool skyBeforeOpaque = drawDaylight && std::any_of(opaque.begin(), opaque.end(),
+        [&](const DrawItem& item) { return !meshData_.materials[item.materialIndex].depthWrite; });
+    const auto drawSky = [&](bool hdr) {
+        vkCmdBindPipeline(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            hdr ? hdrSkyboxPipeline_ : skyboxPipeline_
+        );
+        const VkDescriptorSet& skyboxDescriptorSet = skyboxDescriptorSets_[currentFrame_];
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_,
+            0,
+            1,
+            &skyboxDescriptorSet,
+            0,
+            nullptr
+        );
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        boundPipeline = VK_NULL_HANDLE;
+        boundSet = VK_NULL_HANDLE;
+    };
 
+    const auto drawOpaque = [&](bool hdr) {
+        if (skyBeforeOpaque) drawSky(hdr);
         boundPipeline = VK_NULL_HANDLE;
         boundSet = VK_NULL_HANDLE;
         for (const DrawItem& item : opaque) drawPart(item, hdr);
+        // Fill the remaining clear-depth pixels before capturing the scene for water.
+        if (drawDaylight && !skyBeforeOpaque) drawSky(hdr);
     };
 
     const auto drawParticles = [&](bool hdr) {

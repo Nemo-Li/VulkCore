@@ -81,7 +81,7 @@ void main() {
     vec3 ambient = max(ubo.ambientLight.rgb, vec3(0.0)) *
         max(ubo.ambientLight.a, 0.0);
     vec3 sunlight = max(ubo.sunLightColor.rgb, vec3(0.0)) *
-        max(ubo.sunLightDirection.w, 0.0);
+        max(ubo.sunLightDirection.w, 0.0) * cloudSunVisibility(fragWorldPosition);
     vec3 lighting = ambient * (nearBlade ? 1.0 : 0.72) +
         sunlight * (diffuseBand + (backLight + rim) * (nearBlade ? 0.35 : 1.0));
     vec3 finalColor = albedo * lighting * material.baseColor.rgb;

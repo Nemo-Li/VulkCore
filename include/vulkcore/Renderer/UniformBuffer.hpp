@@ -28,6 +28,7 @@ struct UniformBufferObject {
     glm::vec4 distanceFogParams{0.0f}; // start, half distance, max opacity, enabled
     glm::vec4 distanceFogHorizon{0.0f}; // linear RGB
     glm::vec4 distanceFogUpper{0.0f}; // linear RGB
+    glm::vec4 daylight{0.0f}; // enabled, cloud time in seconds, reserved, reserved
 };
 
 } // namespace VulkCore

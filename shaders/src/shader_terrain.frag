@@ -408,7 +408,8 @@ void main() {
     vec3 shadeTint = mix(vec3(1.0), vec3(0.53, 0.64, 0.80), shadedFace * relief);
     vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao * shadeTint * rockVisibility;
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse *
-                    mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility);
+                    mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility) *
+                    cloudSunVisibility(fragWorldPosition);
     vec3 litTerrain = albedo * (ambient + sunlight) * material.baseColor.rgb;
 
     vec4 fog = sceneFogAt(fragWorldPosition);
