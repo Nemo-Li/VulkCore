@@ -9,6 +9,7 @@ layout(location = 4) in vec3 fragTerrainPosition;
 layout(location = 5) in vec4 fragTerrainMapping;
 
 #include "scene_fog.glsl"
+#include "meadow_shading.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
@@ -31,6 +32,13 @@ const int kLandformCount = 8;
 const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
 const uint kMacroTexture = 32u;
+const int kGrassLayer = 0;
+const int kRockLayer = 2;
+const mat2x3 kProjectionBases[3] = mat2x3[3](
+    mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
+    mat2x3(vec3(1, 0, 0), vec3(0, 0, 1)),
+    mat2x3(vec3(1, 0, 0), vec3(0, 1, 0))
+);
 // Linear RGB averages of the generated albedo layers in array order.
 const vec3 kLandformAverages[kLandformCount] = vec3[kLandformCount](
     vec3(0.239, 0.358, 0.101), vec3(0.423, 0.276, 0.115),
@@ -38,6 +46,12 @@ const vec3 kLandformAverages[kLandformCount] = vec3[kLandformCount](
     vec3(0.627, 0.731, 0.765), vec3(0.170, 0.130, 0.063),
     vec3(0.316, 0.283, 0.191), vec3(0.173, 0.125, 0.102)
 );
+// Linear RGB from the reference swatches, scaled to allow for scene lighting and haze.
+const vec3 kDistantGrassAlbedoScale = vec3(0.88, 0.91, 0.84);
+const vec3 kDistantGrassDark = vec3(0.366, 0.527, 0.254) * kDistantGrassAlbedoScale;
+const vec3 kDistantGrassLight = vec3(0.413, 0.584, 0.279) * kDistantGrassAlbedoScale;
+const vec3 kFarMeadowAlbedo = vec3(0.32, 0.36, 0.25);
+const vec3 kLuminance = vec3(0.2126, 0.7152, 0.0722);
 
 float hash21(vec2 cell) {
     vec3 p = fract(vec3(cell.xyx) * 0.1031);
@@ -45,12 +59,30 @@ float hash21(vec2 cell) {
     return fract((p.x + p.y) * p.z);
 }
 
-float valueNoise(vec2 position) {
+vec3 valueNoiseWithGradient(vec2 position) {
     vec2 cell = floor(position);
     vec2 f = fract(position);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash21(cell), hash21(cell + vec2(1, 0)), f.x),
-               mix(hash21(cell + vec2(0, 1)), hash21(cell + vec2(1, 1)), f.x), f.y);
+    vec2 t = f * f * (3.0 - 2.0 * f);
+    float a = hash21(cell);
+    float b = hash21(cell + vec2(1, 0));
+    float c = hash21(cell + vec2(0, 1));
+    float d = hash21(cell + vec2(1, 1));
+    float bottom = mix(a, b, t.x);
+    float top = mix(c, d, t.x);
+    vec2 gradient = vec2(mix(b - a, d - c, t.y), top - bottom) * (6.0 * f * (1.0 - f));
+    return vec3(mix(bottom, top, t.y), gradient);
+}
+
+float valueNoise(vec2 position) {
+    return valueNoiseWithGradient(position).x;
+}
+
+vec3 distantGrassNoise(vec2 groundPosition, float footprint, float cellSize) {
+    // Suppress both color variation and bump gradients before the patches become subpixel.
+    float visibility = 1.0 - smoothstep(0.30, 0.85, footprint / cellSize);
+    if (visibility <= 0.0) return vec3(0.0);
+    vec3 noise = valueNoiseWithGradient(groundPosition / cellSize);
+    return (noise - vec3(0.5, 0.0, 0.0)) * visibility;
 }
 
 struct Projection {
@@ -224,12 +256,23 @@ void main() {
     float erosion = 0.27 * controls.b + 0.24 * patchNoise + 0.27 * (1.0 - controls.r) + 0.54 * brokenSlope;
     float dirt = ground * smoothstep(0.40, 0.66, erosion) * 0.86;
     float grass = ground - dirt;
+
+    // More exposed bedrock on mountain faces as they recede into the landscape.
+    float mountainSlope = smoothstep(0.035, 0.19, brokenSlope);
+    float mountain = max(mountainSlope, smoothstep(135.0, 395.0, elevation));
+    float distantMountain = smoothstep(60.0, 375.0, distanceWorld) * mountain;
+    float cliff = smoothstep(0.095, 0.32, brokenSlope);
+    float exposure = max(distantMountain * mix(0.96, 0.78, vegetation), cliff * 0.59);
+    float exposedGrass = grass * exposure;
+    float exposedDirt = dirt * exposure * mountainSlope * 0.79;
+    float stoneShare = mix(0.72, 0.96, mountainSlope);
+    grass -= exposedGrass;
+    rock += exposedGrass * stoneShare + exposedDirt;
+    dirt += exposedGrass * (1.0 - stoneShare) - exposedDirt;
     float landforms[kLandformCount] = float[kLandformCount](
         grass, dirt, rock, sand, snow, mud, gravel, ash
     );
 
-    const int grassLayer = 0;
-    const int rockLayer = 2;
     // Medium-scale deposits follow the slope and extend beyond the close-up textures.
     const mat2 turnRock = mat2(0.8, 0.6, -0.6, 0.8);
     vec2 mineralPosition = turnRock * facePosition;
@@ -240,30 +283,72 @@ void main() {
     float bedHeight = (elevation + (region - 0.5) * 50.0 + mineralWarp.y * 37.0) / 32.0;
     float bed = valueNoise(vec2(bedHeight, mineralPosition.x / 130.0 + mineralWarp.x));
     float weathering = 0.22 * (mineral - 0.5) + 0.13 * (brush - 0.5);
-    rockTint *= mix(0.91, 1.10, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
-    vec3 grassTint = mix(vec3(1.08, 1.01, 0.89), vec3(0.99, 1.16, 0.97), vegetation);
+    rockTint *= mix(0.82, 1.13, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
 
-    vec3 tints[kLandformCount];
+    vec3 axes = pow(abs(geometryNormal), vec3(4.0));
+    axes *= smoothstep(vec3(0.006), vec3(0.022), axes);
+    axes /= dot(axes, vec3(1.0));
+    bool hasSurfaceLayers = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo;
+
+    // Project the stone map at the scale of exposed slabs. The shorter vertical
+    // period reads as bedding, and the warp breaks up repeated fracture shapes.
+    vec3 rockPosition = terrainPosition / vec3(82.0, 42.0, 82.0) +
+                        0.27 * vec3(mineralWarp.x, mineral - 0.5, mineralWarp.y);
+    Projection rockProjections[3] = Projection[3](
+        projectUv(rockPosition.zy), projectUv(rockPosition.xz), projectUv(rockPosition.xy)
+    );
+    float rockDetail = (1.0 - smoothstep(4.0, 24.0, footprint)) *
+                       mix(0.65, 1.0, smoothstep(15.0, 100.0, distanceWorld));
+    vec3 slabBump = vec3(0.0);
+    float rockVisibility = 1.0;
+    if (rock > 0.01 && rockDetail > 0.0) {
+        vec3 slabColor = vec3(0.0);
+        vec3 slabGradient = vec3(0.0);
+        float cavity = 0.0;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (axes[axis] == 0.0) continue;
+            TerrainSample slab = sampleTerrain(kRockLayer, rockProjections[axis],
+                                               hasAlbedo, hasSurfaceLayers, 1.0);
+            slabColor += slab.albedo * axes[axis];
+            slabGradient += kProjectionBases[axis] * slab.gradient * axes[axis];
+            if (hasSurfaceLayers) cavity += (1.0 - slab.occlusion) * axes[axis];
+        }
+        float visibility = rockDetail * smoothstep(0.01, 0.10, rock);
+        vec3 stoneTexture = slabColor / kLandformAverages[kRockLayer];
+        rockTint *= mix(vec3(1.0), clamp((stoneTexture - 1.0) * 1.55 + 1.0, 0.42, 1.54), visibility);
+        slabBump = slabGradient * (2.6 * rock * visibility);
+        rockVisibility = 1.0 - rock * visibility * min(0.55, cavity * 2.5);
+    }
+
+    // The ground already shows the blade palette at the 30–40 unit mesh handoff.
+    float paleMeadow = smoothstep(45.0, 235.0, distanceWorld);
+    float farMeadow = smoothstep(245.0, 980.0, distanceWorld);
+    vec3 grassAlbedo = kMeadowAlbedo;
+    vec3 distantGrassBump = vec3(0.0);
+    if (grass > 0.0 && paleMeadow > 0.0) {
+        vec3 patches = distantGrassNoise(groundPosition, footprint, 24.0);
+        vec3 grain = distantGrassNoise(groundPosition + vec2(37.5, -16.0), footprint, 7.5);
+        float shade = clamp(0.5 + 0.36 * (vegetation - 0.5) + patches.x + 0.55 * grain.x, 0.0, 1.0);
+        vec3 paleGrass = mix(kDistantGrassDark, kDistantGrassLight, shade);
+        vec3 distantGrass = mix(paleGrass, kFarMeadowAlbedo, farMeadow) * (1.0 + 0.14 * grain.x);
+        grassAlbedo = mix(kMeadowAlbedo, distantGrass, paleMeadow);
+        vec2 bump = -(0.05 * patches.yz + 0.11 * grain.yz);
+        distantGrassBump = vec3(bump.x, 0.0, bump.y) * (grass * paleMeadow);
+    }
+
     vec3 macroAlbedo = vec3(0.0);
     for (int layer = 0; layer < kLandformCount; ++layer) {
-        tints[layer] = layer == rockLayer ? rockTint : layer == grassLayer ? grassTint : vec3(1.0);
-        macroAlbedo += landforms[layer] * tints[layer] * kLandformAverages[layer];
+        vec3 layerAlbedo = layer == kGrassLayer ? grassAlbedo : kLandformAverages[layer];
+        if (layer == kRockLayer) layerAlbedo *= rockTint;
+        macroAlbedo += landforms[layer] * layerAlbedo;
     }
 
     float surfaceFade = (1.0 - smoothstep(28.0, 110.0, distanceWorld)) * detailWeight;
-    bool hasSurface = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo && surfaceFade > 0.0;
+    float rockSurfaceFade = (1.0 - smoothstep(64.0, 280.0, distanceWorld)) * detailWeight;
     vec3 albedo = macroAlbedo;
     vec3 normalOffset = vec3(0.0);
     float ao = 1.0;
     if (detailWeight > 0.0) {
-        vec3 axes = pow(abs(geometryNormal), vec3(4.0));
-        axes *= smoothstep(vec3(0.001), vec3(0.017), axes);
-        axes /= dot(axes, vec3(1.0));
-        const mat2x3 bases[3] = mat2x3[3](
-            mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
-            mat2x3(vec3(1, 0, 0), vec3(0, 0, 1)),
-            mat2x3(vec3(1, 0, 0), vec3(0, 1, 0))
-        );
         vec3 detailAlbedo = vec3(0.0);
         float occlusion = 0.0;
         float sampledWeight = 0.0;
@@ -276,29 +361,54 @@ void main() {
                 float weight = landforms[layer] * axes[axis];
                 weight *= smoothstep(0.006, 0.028, weight);
                 if (weight <= 0.0) continue;
-                TerrainSample surface = sampleStochasticTerrain(layer, patches, hasAlbedo, hasSurface, gradientScale);
-                detailAlbedo += surface.albedo * tints[layer] * weight;
-                normalOffset += bases[axis] * surface.gradient * weight;
-                occlusion += surface.occlusion * weight;
+                bool isRock = layer == kRockLayer;
+                float layerSurfaceFade = isRock ? rockSurfaceFade : surfaceFade;
+                bool sampleSurface = hasSurfaceLayers && layerSurfaceFade > 0.0;
+                TerrainSample surface = sampleStochasticTerrain(layer, patches, hasAlbedo, sampleSurface, gradientScale);
+                vec3 layerAlbedo = surface.albedo;
+                if (layer == kGrassLayer) {
+                    // Keep the ground texture's contrast with the same hue as the blades.
+                    float relativeLuminance = dot(surface.albedo, kLuminance) /
+                                              dot(kLandformAverages[kGrassLayer], kLuminance);
+                    layerAlbedo = grassAlbedo * mix(1.0, relativeLuminance, 0.65);
+                } else if (isRock) {
+                    layerAlbedo *= rockTint;
+                }
+                detailAlbedo += layerAlbedo * weight;
+                if (sampleSurface) {
+                    float bumpStrength = layerSurfaceFade * (isRock ? 1.95 : 0.78);
+                    normalOffset += kProjectionBases[axis] * surface.gradient * (weight * bumpStrength);
+                    occlusion += (1.0 - surface.occlusion) * (weight * layerSurfaceFade);
+                }
                 sampledWeight += weight;
             }
         }
         float inverseWeight = 1.0 / max(sampledWeight, 0.0001);
         albedo = mix(macroAlbedo, detailAlbedo * inverseWeight, detailWeight);
         normalOffset *= inverseWeight;
-        if (hasSurface) ao = mix(1.0, occlusion * inverseWeight, surfaceFade);
+        ao = 1.0 - occlusion * inverseWeight;
     }
     albedo *= mix(0.85, 1.15, controls.a);
-    normalOffset -= geometryNormal * dot(geometryNormal, normalOffset);
-    vec3 normal = normalize(geometryNormal + normalOffset * (surfaceFade * 0.78));
+    vec3 bump = normalOffset + slabBump + distantGrassBump;
+    bump -= geometryNormal * dot(geometryNormal, bump);
+    vec3 normal = normalize(geometryNormal + bump);
 
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
-    // Smooth wrapped diffuse keeps broad painterly light shapes and soft
-    // shadow transitions as the small-scale normal detail fades out.
-    float diffuse = smoothstep(-0.38, 0.89, dot(normal, lightDirection));
-    float skyVisibility = mix(0.66, 1.0, up);
-    vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao;
-    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse * mix(0.85, 1.04, controls.a);
+    float facing = dot(normal, lightDirection);
+    // Give mountain faces a firmer sunlight terminator and cooler, darker fill on the shaded side.
+    float relief = clamp(0.68 * (1.0 - grass) + 0.66 * mountain, 0.0, 1.0);
+    float diffuse = mix(meadowDiffuse(facing), smoothstep(0.04, 0.82, facing), relief);
+    // A gently compressed cosine falloff keeps sun-facing slabs matte and
+    // gives raised facets and recessed joints different amounts of sunlight.
+    float stoneDiffuse = max(facing, 0.0);
+    stoneDiffuse *= 0.78 + 0.22 * stoneDiffuse;
+    diffuse = mix(diffuse, stoneDiffuse, rock);
+    float shadedFace = 1.0 - smoothstep(-0.18, 0.49, dot(geometryNormal, lightDirection));
+    float skyVisibility = mix(1.0, mix(0.70, 0.96, up), relief);
+    vec3 shadeTint = mix(vec3(1.0), vec3(0.53, 0.64, 0.80), shadedFace * relief);
+    vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao * shadeTint * rockVisibility;
+    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse *
+                    mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility);
     vec3 litTerrain = albedo * (ambient + sunlight) * material.baseColor.rgb;
 
     vec4 fog = sceneFogAt(fragWorldPosition);

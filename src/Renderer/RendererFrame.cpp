@@ -397,9 +397,7 @@ void Renderer::recordCommandBuffer(
     terrainDrawCandidates_ = 0;
     terrainDrawCulled_ = 0;
     for (const MeshPart& part : meshData_.parts) {
-        const auto grassLayer = part.nodeId - kGrassLodNodeBase;
-        const auto grassLod = grassLayer < static_cast<std::uint32_t>(GrassLod::Count)
-            ? std::optional(static_cast<GrassLod>(grassLayer)) : std::nullopt;
+        const auto grassLod = grassLodForLayer(part.nodeId - kGrassLodNodeBase);
         if ((!grassLod && part.indexCount == 0) || !isSceneNodeRenderEnabled(part.nodeId)) continue;
         if (grassLod && (grassCoverage_.ranges().empty() || !grassIndexBuffer_)) continue;
         const std::uint32_t index = materialIndexForPart(part);

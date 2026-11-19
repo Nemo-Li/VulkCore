@@ -572,7 +572,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
         material.name = name;
         material.roughness = 0.92f;
         material.doubleSided = true;
-        material.texturePath = assetsDirectory_ / "textures" / texture;
+        if (texture) material.texturePath = assetsDirectory_ / "textures" / texture;
         material.shaderConfiguration.shader(ShaderStage::Vertex) = kGrassVertexShader;
         material.shaderConfiguration.shader(ShaderStage::Fragment) = "shader_grass.frag";
 
@@ -580,7 +580,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
         meshData_.materials.push_back(std::move(material));
         return index;
     };
-    const auto grassMaterial = makeMaterial("World Grass", "botw_grass_clump.png");
+    const auto grassMaterial = makeMaterial("World Grass", nullptr);
     const auto flowerMaterial = makeMaterial("Meadow Wildflowers", "botw_wildflowers.png");
     ModelNode grassNode;
     grassNode.name = "World Grass";
@@ -590,19 +590,18 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
     grassNode.boundsMinimum = terrain.boundsMinimum();
     grassNode.boundsMaximum = terrain.boundsMaximum();
 
-    constexpr std::array<const char*, static_cast<std::size_t>(GrassLod::Count)> lodNames{
-        "LOD0 Near Curved Blades", "LOD1 Crossed Grass Cards",
-        "LOD2 Sparse Grass Cards", "Wildflower Cross Cards"
+    constexpr std::array<const char*, kGrassLods.size()> lodNames{
+        "LOD0 Near Curved Blades", "Wildflower Cross Cards"
     };
     for (std::size_t layer = 0; layer < lodNames.size(); ++layer) {
+        const auto lod = kGrassLods[layer];
         ModelNode node;
         node.name = lodNames[layer];
-        node.nodeId = kGrassLodNodeBase + static_cast<std::uint32_t>(layer);
+        node.nodeId = kGrassLodNodeBase + static_cast<std::uint32_t>(lod);
         node.globalTransform = glm::mat4(1.0f);
         node.meshCount = 1;
         node.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
-        const auto material = static_cast<GrassLod>(layer) == GrassLod::FlowerCard
-            ? flowerMaterial : grassMaterial;
+        const auto material = lod == GrassLod::FlowerCard ? flowerMaterial : grassMaterial;
         // Each layer has a regular scene part for material/visibility controls.
         // Its instance ranges live outside the shared scene mesh.
         meshData_.parts.push_back({0, 0, material, node.nodeId});

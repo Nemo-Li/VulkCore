@@ -263,9 +263,14 @@ void checkGrassCoverage() {
     require(near && near->tint == std::array<std::uint8_t, 4>{24, 150, 60, 255},
         "near grass must use the grass map tint");
     const auto startingRoot = near->rootHeight;
-    const auto* far = nearest({208.0f, 94.0f}, GrassLod::FarCard);
-    require(far && std::abs(far->rootHeight.x - 208.0f) < 3.0f && far->tint == near->tint,
-        "far grass cards must extend past the old patch and use the same map");
+    const auto nearFade = grassFadeDistances(GrassLod::NearMesh);
+    require(nearFade.z == 30.0f && nearFade.w == 40.0f,
+        "mesh blades must fade over the ground texture between 30 and 40 units");
+    require(!grassLodForLayer(1) && !grassLodForLayer(2) && grassLodForLayer(3) == GrassLod::FlowerCard,
+        "retiring grass cards must preserve the saved wildflower node ID");
+    const auto* expandedNear = nearest({124.0f, 96.0f}, GrassLod::NearMesh);
+    require(expandedNear && std::abs(expandedNear->rootHeight.x - 124.0f) < 1.0f,
+        "mesh blades must populate the start of the ground texture handoff");
     require(!grass.update(*scene, {97.0f, 97.0f}), "movement within an anchor must retain buffers");
     require(grass.update(*scene, {107.0f, 96.0f}) &&
         nearest({102.0f, 94.0f}, GrassLod::NearMesh)->rootHeight == startingRoot,
@@ -279,6 +284,19 @@ void checkGrassCoverage() {
         near->rootHeight.w < startingRoot.w && std::abs(near->rootHeight.x - 900.0f) < 2.0f,
         "grass coverage must follow long movement and adopt the new map");
 
+    require(grass.update(*scene, {96.0f, 900.0f}), "unmapped ground must update coverage");
+    float canopyHeight = 0.0f;
+    std::uint32_t bladeCount = 0;
+    for (const auto& range : grass.ranges()) {
+        if (range.lod != GrassLod::NearMesh) continue;
+        for (std::uint32_t i = 0; i < range.instanceCount; ++i) {
+            canopyHeight += grass.instances()[range.firstInstance + i].rootHeight.w;
+            ++bladeCount;
+        }
+    }
+    require(bladeCount > 0 && canopyHeight / bladeCount > 1.07f && canopyHeight / bladeCount < 1.22f,
+        "procedural grass must stand around chest height on the 1.58-unit character");
+
     std::filesystem::resize_file(greenPath, 100);
     bool rejected = false;
     try {
@@ -287,7 +305,7 @@ void checkGrassCoverage() {
         rejected = std::string(error.what()).find("grass map") != std::string::npos;
     }
     require(rejected, "a truncated grass map must fail with a clear error");
-    std::cout << "PASS: grass map height/RGB, bare cells, distant cards and moving coverage\n";
+    std::cout << "PASS: grass map height/RGB, bare cells, near canopy height and movement\n";
 }
 
 void checkFrustum() {

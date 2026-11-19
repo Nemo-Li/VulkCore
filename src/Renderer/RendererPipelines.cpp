@@ -708,9 +708,7 @@ void Renderer::prepareTerrainAndGrassPipelines() {
     const bool hdr = hdrComposition_ != nullptr;
     std::unordered_set<std::uint32_t> preparedMaterials;
     for (const MeshPart& part : meshData_.parts) {
-        const bool grassPart = part.nodeId - kGrassLodNodeBase <
-            static_cast<std::uint32_t>(GrassLod::Count);
-        if (!part.terrainBounds && !grassPart) continue;
+        if (!part.terrainBounds && !grassLodForLayer(part.nodeId - kGrassLodNodeBase)) continue;
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= meshData_.materials.size() || !preparedMaterials.insert(index).second) continue;
         const MaterialData& material = meshData_.materials[index];
