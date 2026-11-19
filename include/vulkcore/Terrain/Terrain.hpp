@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,6 +17,7 @@ namespace VulkCore {
 
 inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
 inline constexpr std::uint32_t kTerrainWaterResolution = 64;
+inline constexpr std::uint32_t kTerrainGrassResolution = 64;
 inline constexpr std::uint32_t kTerrainRenderSampleStride = 2;
 
 struct TerrainMaterialInfo {
@@ -131,6 +133,11 @@ struct WaterTileData {
     std::vector<WaterSample> samples;
 };
 
+struct GrassSample {
+    float height = 0.0f; // Normalized blade height, with zero indicating bare ground.
+    glm::vec3 color{0.0f}; // RGB in the map's encoding, normalized to [0, 1].
+};
+
 class TerrainChunk {
 public:
     TerrainChunk(std::uint32_t lod, glm::ivec2 coordinate);
@@ -186,6 +193,9 @@ public:
     const glm::vec3& boundsMaximum() const { return boundsMaximum_; }
     std::size_t tileCount() const;
     std::size_t waterTileCount() const;
+    std::size_t grassTileCount() const { return grassTiles_.size(); }
+    std::optional<GrassSample> grassAtWorld(const glm::vec2& worldPosition) const;
+    std::optional<float> waterHeightAtWorld(const glm::vec2& worldPosition) const;
 
     std::optional<float> heightAtWorld(const glm::vec2& worldPosition) const;
     std::optional<float> renderedHeightAtWorld(const glm::vec2& worldPosition) const;
@@ -201,6 +211,15 @@ private:
     std::vector<TerrainMaterialInfo> materialInfos_;
     std::vector<TerrainChunk> chunks_;
     std::vector<WaterTileData> waterTiles_;
+    struct GrassTile {
+        glm::vec2 minimum;
+        glm::vec2 maximum;
+        std::uint32_t lod;
+        std::vector<std::uint8_t> bytes;
+    };
+    std::vector<GrassTile> grassTiles_;
+    std::map<std::pair<int, int>, std::vector<std::size_t>> grassTilesByCell_;
+    std::map<std::pair<int, int>, std::vector<std::size_t>> waterTilesByCell_;
     glm::vec3 boundsMinimum_{0.0f};
     glm::vec3 boundsMaximum_{0.0f};
 };

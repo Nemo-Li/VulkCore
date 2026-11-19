@@ -531,15 +531,29 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         shaderStages.push_back(stageInfo);
     }
 
-    const auto bindingDescription = Vertex::bindingDescription();
+    auto bindingDescription = Vertex::bindingDescription();
     const auto attributeDescriptions = Vertex::attributeDescriptions();
+
+    const bool instancedGrass = configuration.shader(ShaderStage::Vertex) == kGrassVertexShader;
+    const std::array<VkVertexInputAttributeDescription, 4> grassAttributes{{
+        {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, rootHeight)},
+        {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, normalWidth)},
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, motion)},
+        {3, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(GrassInstance, tint)}
+    }};
+    if (instancedGrass) {
+        bindingDescription = {0, sizeof(GrassInstance), VK_VERTEX_INPUT_RATE_INSTANCE};
+    }
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(
+        instancedGrass ? grassAttributes.size() : attributeDescriptions.size()
+    );
+    vertexInputInfo.pVertexAttributeDescriptions = instancedGrass
+        ? grassAttributes.data() : attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -664,8 +678,10 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
     if (const auto existing = nodeGraphicsPipelines_.find(key); existing != nodeGraphicsPipelines_.end()) {
         return existing->second;
     }
+    const bool instancedGrass = material.shaderConfiguration.shader(ShaderStage::Vertex) ==
+        kGrassVertexShader;
     if (failedNodeGraphicsPipelineKeys_.contains(key)) {
-        return hdr ? VK_NULL_HANDLE : graphicsPipeline_;
+        return hdr || instancedGrass ? VK_NULL_HANDLE : graphicsPipeline_;
     }
 
     const VkRenderPass pass = hdr ? hdrComposition_->geometryPass() : renderPass_;
@@ -679,6 +695,7 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
         failedNodeGraphicsPipelineKeys_.insert(key);
         std::cerr << "warning: material '" << material.name
                   << "' shader pipeline failed: " << error.what() << '\n';
+        if (instancedGrass) return VK_NULL_HANDLE;
         if (!hdr) return graphicsPipeline_;
         const VkPipeline fallback = createMaterialGraphicsPipeline({}, material, pass, cullMode);
         nodeGraphicsPipelines_.emplace(key, fallback);
@@ -686,12 +703,14 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
     }
 }
 
-void Renderer::prepareTerrainPipelines() {
-    // Compile terrain pipelines at scene load, even when the initial view sees sky.
+void Renderer::prepareTerrainAndGrassPipelines() {
+    // Compile pipelines at scene load, even when the initial view sees sky.
     const bool hdr = hdrComposition_ != nullptr;
     std::unordered_set<std::uint32_t> preparedMaterials;
     for (const MeshPart& part : meshData_.parts) {
-        if (!part.terrainBounds) continue;
+        const bool grassPart = part.nodeId - kGrassLodNodeBase <
+            static_cast<std::uint32_t>(GrassLod::Count);
+        if (!part.terrainBounds && !grassPart) continue;
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= meshData_.materials.size() || !preparedMaterials.insert(index).second) continue;
         const MaterialData& material = meshData_.materials[index];

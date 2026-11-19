@@ -389,6 +389,7 @@ void Renderer::recordCommandBuffer(
     struct DrawItem {
         const MeshPart* part;
         std::uint32_t materialIndex;
+        std::optional<GrassLod> grassLod;
     };
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
@@ -396,10 +397,16 @@ void Renderer::recordCommandBuffer(
     terrainDrawCandidates_ = 0;
     terrainDrawCulled_ = 0;
     for (const MeshPart& part : meshData_.parts) {
-        if (part.indexCount == 0 || !isSceneNodeRenderEnabled(part.nodeId)) continue;
+        const auto grassLayer = part.nodeId - kGrassLodNodeBase;
+        const auto grassLod = grassLayer < static_cast<std::uint32_t>(GrassLod::Count)
+            ? std::optional(static_cast<GrassLod>(grassLayer)) : std::nullopt;
+        if ((!grassLod && part.indexCount == 0) || !isSceneNodeRenderEnabled(part.nodeId)) continue;
+        if (grassLod && (grassCoverage_.ranges().empty() || !grassIndexBuffer_)) continue;
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= materialCount || index >= materialTextures_.size()) continue;
         const MaterialData& material = meshData_.materials[index];
+        if ((material.shaderConfiguration.shader(ShaderStage::Vertex) == kGrassVertexShader)
+            != grassLod.has_value()) continue;
         if (material.transitionOpacity && transitionSettings_.enabled &&
             (transitionPlayer_.progress < material.transitionVisibleFrom ||
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
@@ -426,7 +433,7 @@ void Renderer::recordCommandBuffer(
             isWaterShaderConfiguration(material.shaderConfiguration);
         needsOpaqueSnapshot |= readsOpaque;
         auto& queue = readsOpaque || isTransparentMaterial(material) ? transparent : opaque;
-        queue.push_back({&part, index});
+        queue.push_back({&part, index, grassLod});
     }
 
     VkPipeline boundPipeline = VK_NULL_HANDLE;
@@ -491,6 +498,10 @@ void Renderer::recordCommandBuffer(
             materialPushConstants.textureFlags |= kAlphaTestFlag;
             materialPushConstants.waterFlow.x = material.alphaCutoff;
         }
+        if (item.grassLod) {
+            materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
+            materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
+        }
         vkCmdPushConstants(
             commandBuffer,
             pipelineLayout_,
@@ -506,7 +517,34 @@ void Renderer::recordCommandBuffer(
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                 boundPipeline = pipeline;
             }
-            vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+            if (!item.grassLod) {
+                vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+                return;
+            }
+
+            const VkBuffer instanceBuffer = grassFrameBuffers_[currentFrame_].instances->handle();
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &instanceBuffer, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, grassIndexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT16);
+            const std::uint32_t indexCount = *item.grassLod == GrassLod::NearMesh
+                ? static_cast<std::uint32_t>(kGrassIndices.size()) : 6u;
+            const auto clipFromGrass = clipFromScene
+                ? std::optional(*clipFromScene * materialPushConstants.nodeTransform) : std::nullopt;
+            std::uint32_t first = 0;
+            std::uint32_t count = 0;
+            for (const auto& range : grassCoverage_.ranges()) {
+                if (range.lod != *item.grassLod) continue;
+                if (clipFromGrass && isOutsideVulkanFrustum(
+                    *clipFromGrass, range.minimum, range.maximum)) continue;
+                if (count && first + count != range.firstInstance) {
+                    vkCmdDrawIndexed(commandBuffer, indexCount, count, 0, 0, first);
+                    count = 0;
+                }
+                if (!count) first = range.firstInstance;
+                count += range.instanceCount;
+            }
+            if (count) vkCmdDrawIndexed(commandBuffer, indexCount, count, 0, 0, first);
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
         };
         if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
             drawFaces(VK_CULL_MODE_FRONT_BIT);
@@ -828,6 +866,7 @@ bool Renderer::drawFrame() {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
     const auto clipFromScene = updateUniformBuffer();
+    updateGrassCoverage();
     updateParticleBuffer();
     updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {

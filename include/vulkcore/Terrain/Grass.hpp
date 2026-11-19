@@ -3,55 +3,73 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
-
-#include "vulkcore/Renderer/Vertex.hpp"
 
 namespace VulkCore {
 
 class TerrainScene;
 
-// The three representations overlap slightly. The grass shader uses a
-// screen-door dissolve in those overlap bands, so changing representation
-// does not produce a hard ring around the camera.
-enum class GrassLod : std::size_t {
-    NearMesh = 0,
+enum class GrassLod : std::uint32_t {
+    NearMesh,
     MidCluster,
     FarCard,
     FlowerCard,
     Count,
 };
 
-struct GrassLodMeshRange {
-    std::size_t indexOffset = 0;
-    std::size_t indexCount = 0;
-    std::uint32_t primitiveCount = 0;
+// Per-instance vertex stream shared by the curved blade and card templates.
+struct GrassInstance {
+    glm::vec4 rootHeight;
+    glm::vec4 normalWidth;
+    glm::vec4 motion; // yaw, lean, wind phase, color variation
+    std::array<std::uint8_t, 4> tint; // RGB plus a map-presence flag
 };
 
-struct GrassPatchOptions {
-    float radius = 40.0f;
-    float plantingSpacing = 0.52f;
-    float denseRadius = 22.0f;
-    std::uint32_t seed = 0xB07F123u;
+struct GrassDrawRange {
+    GrassLod lod;
+    std::uint32_t firstInstance;
+    std::uint32_t instanceCount;
+    glm::vec3 minimum;
+    glm::vec3 maximum;
 };
 
-struct GrassPatchMesh {
-    std::vector<Vertex> vertices;
-    std::vector<std::uint32_t> indices;
-    std::array<GrassLodMeshRange, static_cast<std::size_t>(GrassLod::Count)> lods{};
-    glm::vec3 boundsMinimum{0.0f};
-    glm::vec3 boundsMaximum{0.0f};
+inline constexpr char kGrassVertexShader[] = "shader_grass.vert";
+inline constexpr std::array<std::uint16_t, 21> kGrassIndices{
+    0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 4, 5, 6, 5, 7, 6, 6, 7, 8
 };
 
-// Builds a deterministic BOTW-inspired grass patch on the rendered terrain
-// surface. Near blades are curved triangle meshes; the lower LODs use grouped
-// ribbons and sparse cards while retaining the same shader deformation ABI.
-GrassPatchMesh buildBotwGrassPatch(
-    const TerrainScene& terrain,
-    const glm::vec3& center,
-    const GrassPatchOptions& options = {}
-);
+glm::vec4 grassFadeDistances(GrassLod lod);
+
+class GrassCoverage {
+public:
+    // Returns true when the active cells change. Distance fades and frustum
+    // visibility use the actual camera every frame, including when stationary.
+    bool update(const TerrainScene& terrain, glm::vec2 center, float viewPadding = 0.0f);
+
+    const std::vector<GrassInstance>& instances() const { return instances_; }
+    const std::vector<GrassDrawRange>& ranges() const { return ranges_; }
+
+private:
+    struct Cell {
+        std::uint64_t lastUse = 0;
+        std::vector<GrassInstance> instances;
+        glm::vec3 minimum{0.0f};
+        glm::vec3 maximum{0.0f};
+    };
+    using CellCoordinate = std::pair<int, int>;
+
+    static Cell buildCell(const TerrainScene& terrain, GrassLod lod, CellCoordinate coordinate);
+
+    std::optional<CellCoordinate> anchor_;
+    std::uint64_t generation_ = 0;
+    std::array<std::map<CellCoordinate, Cell>, static_cast<std::size_t>(GrassLod::Count)> cells_;
+    std::vector<GrassInstance> instances_;
+    std::vector<GrassDrawRange> ranges_;
+};
 
 } // namespace VulkCore

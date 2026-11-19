@@ -1,4 +1,5 @@
 #include "vulkcore/Renderer/Frustum.hpp"
+#include "vulkcore/Terrain/Grass.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -202,6 +203,93 @@ void checkStitchedChunkBounds() {
     }
 }
 
+void checkGrassCoverage() {
+    using namespace VulkCore;
+    Fixture fixture;
+    fixture.create(false);
+    const auto directory = fixture.root / "terrain_grass";
+    const auto group = directory / "5400000000.grass.extm";
+    std::filesystem::create_directories(group);
+    const auto greenPath = group / "5400000000.grass.extm";
+    const auto writeMap = [](const std::filesystem::path& path,
+                             std::array<unsigned char, 4> sample, bool split) {
+        std::ofstream file(path, std::ios::binary);
+        for (std::uint32_t z = 0; z < kTerrainGrassResolution; ++z) {
+            for (std::uint32_t x = 0; x < kTerrainGrassResolution; ++x) {
+                auto pixel = sample;
+                if (split && x >= kTerrainGrassResolution / 2u) pixel = {0, 255, 0, 0};
+                file.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+            }
+        }
+    };
+    writeMap(greenPath, {128, 24, 150, 60}, true);
+    writeMap(directory / "5400000001.grass.extm", {64, 180, 72, 16}, false);
+
+    const auto scene = TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    require(scene->grassTileCount() == 2, "flat and grouped grass maps must both load");
+    const auto green = scene->grassAtWorld({96.0f, 96.0f});
+    const auto interpolation = scene->grassAtWorld({312.5f, 96.0f});
+    const auto bare = scene->grassAtWorld({400.0f, 96.0f});
+    require(green && std::abs(green->height - 128.0f / 255.0f) < 0.00001f &&
+        std::abs(green->color.g - 150.0f / 255.0f) < 0.00001f,
+        "grass height and tint decode incorrectly");
+    require(interpolation && std::abs(interpolation->height - 64.0f / 255.0f) < 0.00001f &&
+        glm::distance(interpolation->color, green->color) < 0.00001f,
+        "empty map cells must fade height without tinting nearby grass");
+    require(bare && bare->height == 0.0f, "zero-height map cells must remain bare");
+    require(!scene->grassAtWorld({96.0f, 900.0f}), "missing and empty grass data must differ");
+
+    GrassCoverage grass;
+    require(grass.update(*scene, {96.0f, 96.0f}), "initial grass coverage must populate");
+    const auto nearest = [&](glm::vec2 position, GrassLod lod) -> const GrassInstance* {
+        const GrassInstance* bestInstance = nullptr;
+        float distance = std::numeric_limits<float>::max();
+        for (const auto& range : grass.ranges()) {
+            if (range.lod != lod) continue;
+            for (std::uint32_t i = 0; i < range.instanceCount; ++i) {
+                const auto& instance = grass.instances()[range.firstInstance + i];
+                const float next = glm::distance(
+                    glm::vec2(instance.rootHeight.x, instance.rootHeight.z), position
+                );
+                if (next < distance) {
+                    distance = next;
+                    bestInstance = &instance;
+                }
+            }
+        }
+        return bestInstance;
+    };
+    const auto* near = nearest({102.0f, 94.0f}, GrassLod::NearMesh);
+    require(near && near->tint == std::array<std::uint8_t, 4>{24, 150, 60, 255},
+        "near grass must use the grass map tint");
+    const auto startingRoot = near->rootHeight;
+    const auto* far = nearest({208.0f, 94.0f}, GrassLod::FarCard);
+    require(far && std::abs(far->rootHeight.x - 208.0f) < 3.0f && far->tint == near->tint,
+        "far grass cards must extend past the old patch and use the same map");
+    require(!grass.update(*scene, {97.0f, 97.0f}), "movement within an anchor must retain buffers");
+    require(grass.update(*scene, {107.0f, 96.0f}) &&
+        nearest({102.0f, 94.0f}, GrassLod::NearMesh)->rootHeight == startingRoot,
+        "retained grass roots must not jump when the coverage shifts");
+    require(grass.update(*scene, {435.0f, 96.0f}) &&
+        nearest({435.0f, 96.0f}, GrassLod::NearMesh) == nullptr,
+        "moving onto mapped bare ground must not generate near grass");
+    require(grass.update(*scene, {900.0f, 96.0f}), "long movement must update grass coverage");
+    near = nearest({900.0f, 96.0f}, GrassLod::NearMesh);
+    require(near && near->tint == std::array<std::uint8_t, 4>{180, 72, 16, 255} &&
+        near->rootHeight.w < startingRoot.w && std::abs(near->rootHeight.x - 900.0f) < 2.0f,
+        "grass coverage must follow long movement and adopt the new map");
+
+    std::filesystem::resize_file(greenPath, 100);
+    bool rejected = false;
+    try {
+        TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()).find("grass map") != std::string::npos;
+    }
+    require(rejected, "a truncated grass map must fail with a clear error");
+    std::cout << "PASS: grass map height/RGB, bare cells, distant cards and moving coverage\n";
+}
+
 void checkFrustum() {
     using VulkCore::isOutsideVulkanFrustum;
     const glm::mat4 identity(1.0f);
@@ -248,6 +336,7 @@ int main() {
         checkFixture(false);
         checkFixture(true);
         checkStitchedChunkBounds();
+        checkGrassCoverage();
         checkFrustum();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

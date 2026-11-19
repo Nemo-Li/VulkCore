@@ -43,6 +43,7 @@ class PlayerController {
 public:
     static constexpr float kBotwLinkHeight = 1.58f;
     static constexpr float kBotwLinkRadius = 0.27f;
+    static constexpr float kCameraDistance = 5.0f;
 
     void clear();
     void reset(

@@ -102,6 +102,8 @@ Renderer::~Renderer() {
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();
+    grassIndexBuffer_.reset();
+    for (auto& frame : grassFrameBuffers_) frame.instances.reset();
     vertexBuffers_.clear();
     particleVertexBuffers_.clear();
     boundingBoxVertexBuffers_.clear();
