@@ -36,11 +36,14 @@ class HdrComposition;
 
 class Renderer {
 public:
+    enum class Mode { Scene, ModelViewer };
+
     explicit Renderer(
         Window* window,
         const std::filesystem::path& startupScene = {},
         bool hideTools = false,
-        const std::function<void()>& onSceneLoading = {}
+        const std::function<void()>& onSceneLoading = {},
+        Mode mode = Mode::Scene
     );
     ~Renderer();
 
@@ -49,6 +52,7 @@ public:
 
     // Returns true once the presentation queue accepts the frame.
     bool drawFrame();
+    void queueModelViewerDrop(std::vector<std::filesystem::path> paths);
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
 private:
@@ -81,6 +85,10 @@ private:
     void initializeImGui();
     void shutdownImGui();
     bool buildImGuiFrame();
+    bool drawModelViewerUi();
+    void loadModelViewerDrop();
+    void selectViewerModel(std::size_t index);
+    void fitViewerModel();
     void drawMiniMap();
     void loadResourceSettings();
     void loadTransformSettings();
@@ -236,6 +244,11 @@ private:
     static void framebufferResizeCallback(Window* window, int width, int height);
 
     Window* window_ = nullptr;
+    Mode mode_ = Mode::Scene;
+    std::vector<std::filesystem::path> viewerDropPaths_;
+    std::string viewerFilename_;
+    std::string viewerError_;
+    std::size_t viewerModelIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;

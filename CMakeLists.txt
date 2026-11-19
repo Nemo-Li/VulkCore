@@ -273,6 +273,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
     src/Renderer/RendererFrame.cpp
+    src/Renderer/RendererModelViewer.cpp
     src/Renderer/HdrComposition.cpp
     src/Renderer/RendererPipelines.cpp
     src/Renderer/RendererPrivate.cpp
@@ -294,6 +295,7 @@ set(VULKCORE_RUNTIME_SOURCES
 )
 
 if(VULKCORE_OHOS)
+    set(VULKCORE_RUNTIME_TARGET VulkCore)
     add_library(VulkCore SHARED ${VULKCORE_RUNTIME_SOURCES}
         src/Platform/OhosWindow.cpp src/Platform/OhosRuntime.cpp)
     target_compile_definitions(VulkCore PRIVATE VULKCORE_OHOS VK_USE_PLATFORM_OHOS NDEBUG)
@@ -311,10 +313,15 @@ else()
     target_compile_definitions(vulkcore_export PRIVATE
         VULKCORE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"
         VULKCORE_EXPORT_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\")
-    add_executable(VulkCore ${VULKCORE_RUNTIME_SOURCES}
-        src/main.cpp src/Application.cpp src/Platform/DesktopWindow.cpp)
-    target_link_libraries(VulkCore PRIVATE vulkcore_export)
-    add_dependencies(VulkCore VulkCoreShaders)
+    set(VULKCORE_RUNTIME_TARGET vulkcore_runtime)
+    add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES} src/Platform/DesktopWindow.cpp)
+    target_link_libraries(vulkcore_runtime PRIVATE vulkcore_export)
+    add_dependencies(vulkcore_runtime VulkCoreShaders)
+
+    add_executable(VulkCore src/main.cpp src/Application.cpp)
+    target_link_libraries(VulkCore PRIVATE vulkcore_runtime vulkcore_export)
+    add_executable(sbfres_viewer src/Tools/SbfresViewer.cpp)
+    target_link_libraries(sbfres_viewer PRIVATE vulkcore_runtime)
 endif()
 
 if(WIN32)
@@ -326,37 +333,43 @@ if(WIN32)
     )
 endif()
 
-target_include_directories(VulkCore
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+target_include_directories(${VULKCORE_RUNTIME_TARGET}
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
-target_compile_definitions(VulkCore
-    PRIVATE
+target_compile_definitions(${VULKCORE_RUNTIME_TARGET}
+    PUBLIC
         VULKCORE_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\"
         VULKCORE_ASSET_DIR=\"${VULKCORE_ASSET_DIR}\"
         VULKCORE_MODEL_PATH=\"${VULKCORE_MODEL_PATH}\"
         VULKCORE_CONFIG_PATH=\"${VULKCORE_CONFIG_PATH}\"
 )
 
-target_link_libraries(VulkCore
-    PRIVATE
+target_link_libraries(${VULKCORE_RUNTIME_TARGET}
+    PUBLIC
         Vulkan::Vulkan
         ${VULKCORE_GLFW_TARGET}
         ${VULKCORE_GLM_TARGET}
+    PRIVATE
         ${VULKCORE_ASSIMP_TARGET}
         vulkcore_imgui
         vulkcore_physics
 )
 
-if(MSVC)
-    target_compile_options(VulkCore PRIVATE /W4 /permissive- /utf-8)
-    target_compile_definitions(VulkCore PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    set_property(TARGET VulkCore PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-else()
-    target_compile_options(VulkCore PRIVATE -Wall -Wextra -Wpedantic)
+set(VULKCORE_BUILD_TARGETS ${VULKCORE_RUNTIME_TARGET})
+if(NOT VULKCORE_OHOS)
+    list(APPEND VULKCORE_BUILD_TARGETS VulkCore sbfres_viewer)
 endif()
+foreach(target IN LISTS VULKCORE_BUILD_TARGETS)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endforeach()
 
 set_target_properties(VulkCore PROPERTIES
     OUTPUT_NAME "vulkcore"

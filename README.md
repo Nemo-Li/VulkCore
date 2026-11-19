@@ -157,6 +157,16 @@ CMake 会优先使用 GLFW/GLM 导出的 CMake package，其次使用 pkg-config
 `shaders/src` 下的 GLSL 编译到 `build/shaders`，运行时通过构建配置读取该目录，
 不依赖当前工作目录。
 
+### SBFRES 模型查看器
+
+```bash
+cmake -S . -B build
+cmake --build build --target sbfres_viewer --parallel
+./build/sbfres_viewer
+```
+
+把 `.sbfres` 或 `.bfres` 模型拖入窗口即可渲染。同目录同名的 `.Tex` 贴图包会自动加载，也可以把模型和贴图包一起拖入。按住鼠标左键拖动可环绕模型，滚轮可缩放，按 **F** 恢复构图。多模型文件可以在左上角切换子模型。也可以用 `./build/sbfres_viewer path/to/model.sbfres` 启动时打开模型。格式支持范围见 [SBFRES 导入文档](docs/09-sbfres-import.md)。
+
 ### 导出鸿蒙手机工程
 
 在 Resource Manager 中填写新的工程输出目录，点击 **Export HarmonyOS**，即可保存当前编辑状态并导出独立的 DevEco Studio 工程。也可以导出已保存的场景：

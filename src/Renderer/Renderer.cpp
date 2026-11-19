@@ -19,9 +19,10 @@ Renderer::Renderer(
     Window* window,
     const std::filesystem::path& startupScene,
     bool hideTools,
-    const std::function<void()>& onSceneLoading
+    const std::function<void()>& onSceneLoading,
+    Mode mode
 )
-    : window_(window), startTime_(std::chrono::steady_clock::now()) {
+    : window_(window), mode_(mode), startTime_(std::chrono::steady_clock::now()) {
     if (window == nullptr) {
         throw std::invalid_argument("Renderer requires a valid platform window!");
     }
@@ -42,12 +43,16 @@ Renderer::Renderer(
     createBoundingBoxPipeline();
     createParticlePipelines();
     swapChain_->createFramebuffers(renderPass_);
-    loadResourceSettings();
+    if (mode_ == Mode::Scene) loadResourceSettings();
     createMeshData();
-    discoverModelResources();
-    discoverSceneResources();
-    loadTransformSettings();
-    createSkyboxTexture();
+    if (mode_ == Mode::Scene) {
+        discoverModelResources();
+        discoverSceneResources();
+        loadTransformSettings();
+        createSkyboxTexture();
+    } else {
+        ambientLightColor_ = glm::vec3(0.45f, 0.47f, 0.48f);
+    }
     createVertexBuffer();
     createIndexBuffer();
     createParticleBuffer();
@@ -61,6 +66,7 @@ Renderer::Renderer(
     createSyncObjects();
     initializeImGui();
     toolUiVisible_ = !hideTools;
+    if (mode_ == Mode::ModelViewer) return;
     if (onSceneLoading) onSceneLoading();
     if (!startupScene.empty() && !loadSceneResource(startupScene)) {
         throw std::runtime_error(
@@ -76,7 +82,7 @@ Renderer::~Renderer() {
         return;
     }
 
-    if (fixedFrameOutput_.empty()) saveTransformSettings();
+    if (mode_ == Mode::Scene && fixedFrameOutput_.empty()) saveTransformSettings();
     context_->waitIdle();
     shutdownImGui();
     hdrComposition_.reset();

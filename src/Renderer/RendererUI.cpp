@@ -12,6 +12,7 @@ void Renderer::initializeImGui() {
     ImGui::CreateContext();
 
     ImGuiIO& io = ImGui::GetIO();
+    if (mode_ == Mode::ModelViewer) io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
 
@@ -1481,6 +1482,12 @@ bool Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     newWindowImGuiFrame(context_->window(), swapChain_->extent());
     ImGui::NewFrame();
+
+    if (mode_ == Mode::ModelViewer) {
+        const bool viewportHovered = drawModelViewerUi();
+        ImGui::Render();
+        return viewportHovered;
+    }
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         toolUiVisible_ = !toolUiVisible_;

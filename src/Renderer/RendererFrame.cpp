@@ -732,6 +732,7 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
 }
 
 bool Renderer::drawFrame() {
+    if (mode_ == Mode::ModelViewer) loadModelViewerDrop();
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a
     // changed XComponent, rather than presenting one frame at the old ratio.
