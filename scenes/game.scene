@@ -11,6 +11,7 @@ ambient_intensity 0.579999983
 sun_light_direction 0.435540557 0.532327354 0.725900888
 sun_light_color 1 0.949999988 0.819999993
 sun_light_intensity 0.860000014
+distance_fog 95 1200 0.82 0.43 0.60 0.72 0.28 0.46 0.66
 shader_demo 0 1 0.25 0.5 0
 material 8 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
 material_textures 8 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_distortion.png" ""

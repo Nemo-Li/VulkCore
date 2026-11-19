@@ -271,6 +271,7 @@ private:
     VkPipeline hdrParticleAdditivePipeline_ = VK_NULL_HANDLE;
     std::unique_ptr<HdrComposition> hdrComposition_;
     HdrSettings hdrSettings_;
+    DistanceFogSettings distanceFogSettings_;
     AuthoredView authoredView_;
     bool cameraOrbitDragging_ = false;
     TransitionSettings transitionSettings_;

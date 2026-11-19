@@ -19,6 +19,15 @@ struct HdrSettings {
     glm::vec3 clearColor{0.0f};
 };
 
+struct DistanceFogSettings {
+    bool enabled = false;
+    float startDistance = 0.0f;
+    float halfDistance = 1.0f;
+    float maxOpacity = 0.0f;
+    glm::vec3 horizonColor{0.0f};
+    glm::vec3 upperColor{0.0f};
+};
+
 struct AuthoredView {
     bool enabled = false;
     glm::vec3 target{0.0f};

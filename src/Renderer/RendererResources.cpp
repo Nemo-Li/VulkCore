@@ -1460,6 +1460,12 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
+    if (distanceFogSettings_.enabled) {
+        const auto& fog = distanceFogSettings_;
+        ubo.distanceFogParams = glm::vec4(fog.startDistance, fog.halfDistance, fog.maxOpacity, 1.0f);
+        ubo.distanceFogHorizon = glm::vec4(fog.horizonColor, 0.0f);
+        ubo.distanceFogUpper = glm::vec4(fog.upperColor, 0.0f);
+    }
     if (playerController_.active()) {
         const glm::vec3 normalizedPlayerPosition = modelScale_ * (
             playerController_.position() - modelCenter_

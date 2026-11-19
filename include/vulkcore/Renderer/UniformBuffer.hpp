@@ -25,6 +25,9 @@ struct UniformBufferObject {
     // xyz remains in terrain-world units because grass only needs its
     // direction and relative speed when choosing a trampling direction.
     glm::vec4 playerVelocity{0.0f};
+    glm::vec4 distanceFogParams{0.0f}; // start, half distance, max opacity, enabled
+    glm::vec4 distanceFogHorizon{0.0f}; // linear RGB
+    glm::vec4 distanceFogUpper{0.0f}; // linear RGB
 };
 
 } // namespace VulkCore

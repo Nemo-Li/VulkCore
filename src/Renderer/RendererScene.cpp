@@ -760,6 +760,7 @@ void Renderer::clearSceneData() {
     particleDrawRanges_.clear();
     particleVertices_.clear();
     hdrSettings_ = {};
+    distanceFogSettings_ = {};
     authoredView_ = {};
     cameraOrbitDragging_ = false;
     transitionSettings_ = {};
@@ -1574,6 +1575,7 @@ void Renderer::loadTransformSettings() {
     };
     std::vector<MaterialEffect> materialEffects;
     HdrSettings hdr;
+    DistanceFogSettings fog;
     AuthoredView authored;
     TransitionSettings transition;
     std::vector<PendingNodeMaterial> pendingNodeMaterials;
@@ -1758,6 +1760,22 @@ void Renderer::loadTransformSettings() {
             }
             hdr.enabled = true;
             hdr.smaa = smaa != 0;
+        } else if (key == "distance_fog") {
+            const auto validColor = [](const glm::vec3& color) {
+                return glm::all(glm::greaterThanEqual(color, glm::vec3(0.0f))) &&
+                    glm::all(glm::lessThanEqual(color, glm::vec3(1.0f)));
+            };
+            if (!(file >> fog.startDistance >> fog.halfDistance >> fog.maxOpacity >>
+                         fog.horizonColor.r >> fog.horizonColor.g >> fog.horizonColor.b >>
+                         fog.upperColor.r >> fog.upperColor.g >> fog.upperColor.b) ||
+                !std::isfinite(fog.startDistance) || fog.startDistance < 0.0f ||
+                !std::isfinite(fog.halfDistance) || fog.halfDistance <= 0.0f ||
+                !std::isfinite(fog.maxOpacity) || fog.maxOpacity < 0.0f || fog.maxOpacity > 1.0f ||
+                !validColor(fog.horizonColor) || !validColor(fog.upperColor)) {
+                valid = false;
+                break;
+            }
+            fog.enabled = true;
         } else if (key == "authored_view") {
             if (!(file >> authored.target.x >> authored.target.y >> authored.target.z >>
                          authored.up.x >> authored.up.y >> authored.up.z >>
@@ -2047,6 +2065,7 @@ void Renderer::loadTransformSettings() {
         ? glm::vec3(0.0f, 0.0f, 4.0f)
         : cameraPosition;
     hdrSettings_ = hdr;
+    distanceFogSettings_ = fog;
     authoredView_ = authored;
     cameraOrbitDragging_ = false;
     if (authored.enabled) cameraTarget_ = authored.target;
@@ -2383,6 +2402,13 @@ bool Renderer::saveTransformSettings() const {
              << h.bloomSmoothing << ' ' << h.bloomIntensity << ' ' << h.bloomRadius << ' '
              << h.exposure << ' ' << h.smaa << ' ' << h.clearColor.r << ' '
              << h.clearColor.g << ' ' << h.clearColor.b << "\n";
+    }
+    if (distanceFogSettings_.enabled) {
+        const auto& fog = distanceFogSettings_;
+        file << "distance_fog " << fog.startDistance << ' ' << fog.halfDistance << ' '
+             << fog.maxOpacity << ' ' << fog.horizonColor.r << ' ' << fog.horizonColor.g << ' '
+             << fog.horizonColor.b << ' ' << fog.upperColor.r << ' ' << fog.upperColor.g << ' '
+             << fog.upperColor.b << "\n";
     }
     if (authoredView_.enabled) {
         const auto& v = authoredView_;
