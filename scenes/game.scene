@@ -5,17 +5,14 @@ player_spawn_position 937.5 0 -937.5
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
 distance_fog 220 2500 0.319999993 0.389999986 0.569999993 0.689999998 0.239999995 0.430000007 0.639999986
-sun_present 1
-camera_position -0.148104608 -0.0132628782 -0.514545798
+sun_present 0
+camera_position -0.148104608 -0.0132628707 -0.514545798
 ambient_color 0.180000007 0.209999993 0.239999995
 ambient_intensity 1
 sun_light_direction 0.435540557 0.532327354 0.725900888
 sun_light_color 0.819999993 0.860000014 0.899999976
 sun_light_intensity 1
 shader_demo 0 1 0.25 0.5 0
-node_transform 4026531840 0 0 0 0 0 0 3
+node_removed 4026531840
 material 8 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
 material_textures 8 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_distortion.png" ""
-material 9 "Sun" 1 0.550000012 0.0599999987 1 0 0.239999995 1 0 1 1 "" - - - - shader_sun.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 1 0.219999999 0.0149999997 3.5
-material_textures 9 "" ""
-node_material 4026531840 9
