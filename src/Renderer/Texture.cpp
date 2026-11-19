@@ -123,9 +123,11 @@ Texture::Texture(
     const std::vector<std::uint8_t>& rgbaPixels,
     std::uint32_t width,
     std::uint32_t height,
-    bool arrayView
+    bool arrayView,
+    TextureColorSpace colorSpace
 )
-    : context_(context), arrayView_(arrayView) {
+    : context_(context), arrayView_(arrayView),
+      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB) {
     if (width == 0 || height == 0) {
         throw std::runtime_error("raw texture dimensions must be non-zero");
     }

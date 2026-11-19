@@ -288,6 +288,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
     src/Utils/ModelLoader.cpp
+    src/Utils/SbfresLoader.cpp
     src/Utils/Screenshot.cpp
     src/Utils/StbImage.cpp
 )

@@ -4,7 +4,7 @@
 namespace VulkCore {
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 1 + kMaterialImageBindingCount> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -54,6 +54,8 @@ void Renderer::createDescriptorSetLayout() {
 
     bindings[7] = bindings[6];
     bindings[7].binding = 7;
+    bindings[kAlphaMaskBinding] = bindings[6];
+    bindings[kAlphaMaskBinding].binding = kAlphaMaskBinding;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

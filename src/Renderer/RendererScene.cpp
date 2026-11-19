@@ -2146,6 +2146,8 @@ void Renderer::loadTransformSettings() {
             // fields. Preserve the imported defaults unless a separate
             // material_textures record explicitly overrides them.
             const MaterialData& importedMaterial = meshData_.materials[pending.materialIndex];
+            pending.material.alphaCutoff = importedMaterial.alphaCutoff;
+            pending.material.embeddedAlphaMask = importedMaterial.embeddedAlphaMask;
             if (pending.keepEmbeddedBaseColor) {
                 pending.material.embeddedTexture = importedMaterial.embeddedTexture;
             }

@@ -23,6 +23,10 @@ namespace VulkCore {
 
 namespace renderer_detail {
 
+constexpr std::uint32_t kMaterialImageBindingCount = 8;
+constexpr std::uint32_t kAlphaMaskBinding = 8;
+constexpr std::uint32_t kAlphaTestFlag = 64u;
+
 struct MaterialPushConstants {
     glm::mat4 nodeTransform{1.0f};
     glm::vec4 baseColor;

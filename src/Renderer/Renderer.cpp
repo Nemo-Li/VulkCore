@@ -87,6 +87,7 @@ Renderer::~Renderer() {
     materialTextures_.clear();
     normalTextures_.clear();
     specularTextures_.clear();
+    alphaMaskTextures_.clear();
     terrainAlbedoLayers_.reset();
     terrainSurfaceLayers_.reset();
     fallbackTerrainLayers_.reset();

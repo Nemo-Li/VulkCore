@@ -17,6 +17,7 @@ struct EmbeddedTextureData {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool compressed = false;
+    bool srgb = true;
 
     bool empty() const {
         return data.empty() || width == 0 || height == 0;
@@ -154,6 +155,8 @@ struct MaterialData {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float opacity = 1.0f;
+    // Negative disables alpha masking in the base shader.
+    float alphaCutoff = -1.0f;
     glm::vec3 emissionColor{0.0f};
     float emissionStrength = 0.0f;
     enum class BlendMode : std::uint8_t {
@@ -185,6 +188,7 @@ struct MaterialData {
     EmbeddedTextureData embeddedNormalTexture;
     std::filesystem::path specularTexturePath;
     EmbeddedTextureData embeddedSpecularTexture;
+    EmbeddedTextureData embeddedAlphaMask;
 };
 
 struct MeshPart {
