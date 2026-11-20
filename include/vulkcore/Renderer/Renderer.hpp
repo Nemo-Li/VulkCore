@@ -91,6 +91,7 @@ private:
             bool move = false;
         };
         std::filesystem::path root, directory, selected, dragged;
+        std::filesystem::path pendingModelImport, pendingTrash;
         std::vector<Entry> entries;
         std::vector<DropZone> dropZones;
         std::vector<Transfer> transfers;
@@ -144,6 +145,10 @@ private:
     void drawResourceBrowser();
     void scanResourceDirectory();
     void processResourceTransfers();
+    void processResourceTrash();
+    bool editorDeletePressed() const;
+    void acceptSceneModelDrop();
+    void processSceneModelDrop();
     void drawResourcePreview();
     void loadResourcePreview();
     void createResourcePreviewBuffers();
@@ -201,7 +206,8 @@ private:
         const std::filesystem::path& modelPath,
         ModelResourceCacheEntry& cache
     );
-    void createNewEmptyScene();
+    bool createNewEmptyScene();
+    std::filesystem::path createSceneFile();
     void discoverSceneResources();
     bool saveSceneResource(const std::filesystem::path& path);
     bool loadSceneResource(const std::filesystem::path& path);
@@ -453,10 +459,13 @@ private:
 #ifndef VULKCORE_OHOS
     ResourceBrowser resourceBrowser_;
     ResourcePreview resourcePreview_;
+    std::optional<std::uint32_t> pendingSceneNodeRemoval_;
 #endif
+    enum class EditorSceneChange { None, Open, Create };
+    EditorSceneChange pendingSceneChange_ = EditorSceneChange::None;
     std::filesystem::path pendingSceneOpen_;
     bool editorDirty_ = false;
-    bool editorOpenConfirmed_ = false;
+    bool editorSceneChangeConfirmed_ = false;
     enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerEffect };
     EditorSelection editorSelection_ = EditorSelection::None;
     std::optional<std::uint32_t> editorPart_;

@@ -4,6 +4,8 @@
 #include "../Platform/EditorFileDialog.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
+#include <imgui_internal.h>
+
 namespace VulkCore {
 namespace {
 
@@ -23,7 +25,8 @@ void Renderer::queueSceneOpen(const std::filesystem::path& path) {
         return;
     }
     pendingSceneOpen_ = normalizedPath(path);
-    editorOpenConfirmed_ = false;
+    pendingSceneChange_ = EditorSceneChange::Open;
+    editorSceneChangeConfirmed_ = false;
     toolUiVisible_ = true;
 }
 
@@ -121,25 +124,34 @@ bool Renderer::drawGameEditor() {
     ImGui::PushStyleColor(ImGuiCol_PopupBg, kEditorPopup);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, kEditorPopup);
 
+    const auto newScene = [&] {
+        pendingSceneOpen_.clear();
+        pendingSceneChange_ = EditorSceneChange::Create;
+        editorSceneChangeConfirmed_ = false;
+    };
     const auto openScene = [&] {
         openEditorFilePicker("Open Scene", true, currentScenePath_.empty() ?
             scenesDirectory_ : currentScenePath_.parent_path(),
             [this](const auto& path) { queueSceneOpen(path); });
     };
+    const bool canSave = editorDirty_ || !currentScenePath_.empty();
     const auto saveScene = [&] {
-        if (!currentScenePath_.empty() && saveSceneResource(currentScenePath_)) editorDirty_ = false;
+        if (saveSceneResource(currentScenePath_)) editorDirty_ = false;
     };
     const bool modalOpen = ImGui::IsPopupOpen(nullptr,
         ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     const auto& io = ImGui::GetIO();
 #ifdef __APPLE__
     const bool shortcut = io.KeySuper;
+    constexpr const char* newSceneShortcut = "Cmd+N";
 #else
     const bool shortcut = io.KeyCtrl;
+    constexpr const char* newSceneShortcut = "Ctrl+N";
 #endif
     if (shortcut && !io.WantTextInput && !modalOpen) {
-        if (ImGui::IsKeyPressed(ImGuiKey_O, false)) openScene();
-        if (ImGui::IsKeyPressed(ImGuiKey_S, false)) saveScene();
+        if (ImGui::IsKeyPressed(ImGuiKey_N, false)) newScene();
+        else if (ImGui::IsKeyPressed(ImGuiKey_O, false)) openScene();
+        else if (canSave && ImGui::IsKeyPressed(ImGuiKey_S, false)) saveScene();
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
@@ -148,8 +160,9 @@ bool Renderer::drawGameEditor() {
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     if (ImGui::BeginChild("SceneToolbar", ImVec2(width, toolbarHeight),
             ImGuiChildFlags_Borders, toolbarFlags) && ImGui::BeginMenuBar()) {
+        if (ImGui::MenuItem("New Scene", newSceneShortcut)) newScene();
         if (ImGui::MenuItem("Open Scene...")) openScene();
-        if (ImGui::MenuItem("Save", nullptr, false, !currentScenePath_.empty())) saveScene();
+        if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Capture screenshot", "F12")) screenshotFromToolbar_ = true;
             if (ImGui::MenuItem("Hide editor", "F1")) toolUiVisible_ = false;
@@ -164,8 +177,10 @@ bool Renderer::drawGameEditor() {
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        const std::string title = currentScenePath_.empty() ? "Drop a .scene file to open" :
-            currentScenePath_.filename().string() + (editorDirty_ ? " *" : "");
+        const std::string sceneName = currentScenePath_.empty()
+            ? (editorDirty_ ? "Untitled" : "Drop a .scene file to open")
+            : currentScenePath_.filename().string();
+        const std::string title = sceneName + (editorDirty_ ? " *" : "");
         ImGui::TextDisabled("%s", title.c_str());
         ImGui::EndMenuBar();
     }
@@ -174,9 +189,22 @@ bool Renderer::drawGameEditor() {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 10));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7, 7));
+    const bool acceptModelDrop = resourcesAvailable && !modalOpen &&
+        pendingSceneChange_ == EditorSceneChange::None;
     ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, panelY));
     if (ImGui::BeginChild("Outliner", ImVec2(left, panelHeight), ImGuiChildFlags_Borders)) drawGameOutliner();
     ImGui::EndChild();
+    if (acceptModelDrop && ImGui::BeginDragDropTarget()) {
+        acceptSceneModelDrop();
+        ImGui::EndDragDropTarget();
+    }
+    const ImRect sceneViewport(ImVec2(origin.x + margin + left, panelY),
+        ImVec2(origin.x + margin + width - right, panelY + panelHeight));
+    if (acceptModelDrop && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::BeginDragDropTargetCustom(sceneViewport, ImGui::GetID("##SceneViewport"))) {
+        acceptSceneModelDrop();
+        ImGui::EndDragDropTarget();
+    }
     ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + width - right, panelY));
     if (ImGui::BeginChild("Inspector", ImVec2(right, panelHeight), ImGuiChildFlags_Borders)) drawGameInspector();
     ImGui::EndChild();
@@ -190,27 +218,33 @@ bool Renderer::drawGameEditor() {
     }
     ImGui::PopStyleVar(3);
 
-    if (!pendingSceneOpen_.empty() && editorDirty_ && !editorOpenConfirmed_) {
-        ImGui::OpenPopup("Open another scene?");
+    if (pendingSceneChange_ != EditorSceneChange::None && editorDirty_ && !editorSceneChangeConfirmed_) {
+        ImGui::OpenPopup("Unsaved scene changes");
     }
-    if (ImGui::BeginPopupModal("Open another scene?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Unsaved scene changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("The current scene has unsaved changes.");
-        if (ImGui::Button("Save and open")) {
+        const bool creating = pendingSceneChange_ == EditorSceneChange::Create;
+        if (ImGui::Button(creating ? "Save and create" : "Save and open")) {
             saveScene();
-            if (!editorDirty_) {
-                editorOpenConfirmed_ = true;
-                ImGui::CloseCurrentPopup();
-            }
+            if (!editorDirty_) ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Discard changes")) {
-            editorOpenConfirmed_ = true;
+            editorSceneChangeConfirmed_ = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) {
+            pendingSceneChange_ = EditorSceneChange::None;
             pendingSceneOpen_.clear();
             ImGui::CloseCurrentPopup();
+        }
+        if (sceneStatusFailed_) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kEditorFailure);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 360.0f);
+            ImGui::TextUnformatted(sceneStatus_.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
         }
         ImGui::EndPopup();
     }
@@ -221,6 +255,18 @@ bool Renderer::drawGameEditor() {
     ImGui::PopStyleColor(5);
     ImGui::End();
     return hovered;
+}
+
+bool Renderer::editorDeletePressed() const {
+    const auto& io = ImGui::GetIO();
+    if (io.KeyMods != 0 || io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        return false;
+    }
+#ifdef __APPLE__
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) return true;
+#endif
+    return ImGui::IsKeyPressed(ImGuiKey_Delete, false);
 }
 
 void Renderer::drawGameOutliner() {
@@ -240,10 +286,12 @@ void Renderer::drawGameOutliner() {
         editorPart_ = part;
         selectedModelNode_ = &node;
     };
-    const auto drawRoot = [&](ModelNode& root) {
-        if (root.name.empty() || (root.children.empty() && root.meshPartIndices.empty() &&
-            root.objectType != SceneObjectType::ParticleSystem)) return;
+    const auto drawRoot = [&](const auto& self, ModelNode& root) -> void {
+        if (removedSceneNodeIds_.contains(root.nodeId) || root.name.empty() ||
+            (root.children.empty() && root.meshPartIndices.empty() &&
+                root.objectType != SceneObjectType::ParticleSystem)) return;
         ImGui::PushID(static_cast<int>(root.nodeId));
+        const bool sceneRoot = &root == &meshData_.hierarchy && root.name == "Scene";
         const bool grass = root.nodeId == kGrassSceneNodeId;
         const bool expand = grass || !root.children.empty() || !root.meshPartIndices.empty();
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
@@ -251,9 +299,17 @@ void Renderer::drawGameOutliner() {
         if (editorSelection_ == EditorSelection::Node && selectedModelNode_ == &root && !editorPart_) {
             flags |= ImGuiTreeNodeFlags_Selected;
         }
-        const bool open = ImGui::TreeNodeEx("##object", flags, "%s", root.name.c_str());
+        const auto* resource = sceneModelResourceForNode(root);
+        const auto name = resource && resource->rootNodeId == root.nodeId && !resource->playerModel
+            ? resource->path.stem().u8string() : std::u8string{};
+        if (sceneRoot) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+        const bool open = ImGui::TreeNodeEx("##object", flags, "%s",
+            name.empty() ? root.name.c_str() : reinterpret_cast<const char*>(name.c_str()));
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) selectNode(root);
-        if (open) {
+        if (open && sceneRoot) {
+            for (auto& object : root.children) self(self, object);
+            ImGui::TreePop();
+        } else if (open) {
             // Flatten deep authoring hierarchies into mesh rows. Every mesh remains reachable.
             const auto drawParts = [&](const auto& self, ModelNode& node) -> void {
                 for (const auto part : node.meshPartIndices) {
@@ -275,8 +331,8 @@ void Renderer::drawGameOutliner() {
         }
         ImGui::PopID();
     };
-    drawRoot(meshData_.hierarchy);
-    for (auto& object : meshData_.additionalNodes) drawRoot(object);
+    drawRoot(drawRoot, meshData_.hierarchy);
+    for (auto& object : meshData_.additionalNodes) drawRoot(drawRoot, object);
     for (const auto effectId : {kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId}) {
         if (!particleSystems_.contains(effectId)) continue;
         const char* label = effectId == kPlayerLightningParticleNodeId
@@ -287,6 +343,20 @@ void Renderer::drawGameOutliner() {
             editorPlayerEffect_ = effectId;
             selectedModelNode_ = nullptr;
             editorPart_.reset();
+        }
+    }
+
+    if (pendingSceneChange_ == EditorSceneChange::None && ImGui::IsWindowFocused() &&
+        editorSelection_ == EditorSelection::Node && selectedModelNode_ && editorDeletePressed()) {
+        const auto id = selectedModelNode_->nodeId;
+        if (selectedModelNode_ == &meshData_.hierarchy) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Select an object inside the scene group to remove it.";
+        } else if (id >= kTerrainSceneNodeId && id < kPlayerSceneNodeId) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "The terrain and its chunks are managed by the physics world.";
+        } else {
+            pendingSceneNodeRemoval_ = id;
         }
     }
 }
