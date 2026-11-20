@@ -1,4 +1,6 @@
 #include "RendererImplementation.hpp"
+#include "vulkcore/Physics/PhysicsWorld.hpp"
+#include "vulkcore/Terrain/Terrain.hpp"
 
 #include <cctype>
 
@@ -1142,6 +1144,53 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         }, configure);
 }
 
+bool Renderer::translateSceneNode(ModelNode& node, const glm::mat4& parentTransform, const glm::vec3& movement) {
+    // Convert normalized scene displacement to the node's authored pivot axes.
+    const glm::mat3 basis(parentTransform * node.globalTransform);
+    if (glm::determinant(basis) == 0.0f) return false;
+    const glm::vec3 position = node.transformTranslation + glm::inverse(basis) * movement;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) return false;
+    node.transformTranslation = position;
+    return true;
+}
+
+void Renderer::updateModelGravity(
+    ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform, bool visible
+) {
+    const auto gravity = modelGravity_.find(node.nodeId);
+    if (gravity == modelGravity_.end()) return;
+    auto& lastTransform = gravity->second;
+    if (!visible) {
+        if (lastTransform) {
+            physicsWorld_->removeGravityBox(node.nodeId);
+            lastTransform.reset();
+        }
+        return;
+    }
+
+    const glm::vec3 center(transform * glm::vec4((node.boundsMinimum + node.boundsMaximum) * 0.5f, 1.0f));
+    if (!lastTransform || *lastTransform != transform) {
+        const glm::vec3 halfSize = (node.boundsMaximum - node.boundsMinimum) * 0.5f;
+        const glm::vec3 halfExtents = glm::max(glm::vec3(0.02f),
+            glm::abs(glm::vec3(transform[0])) * halfSize.x +
+            glm::abs(glm::vec3(transform[1])) * halfSize.y +
+            glm::abs(glm::vec3(transform[2])) * halfSize.z);
+        glm::vec3 bodyCenter = center;
+        // An editor move or resize can place the box under a rising terrain surface.
+        if (const auto ground = terrainScene_->renderedHeightAtWorld({center.x, center.z});
+            ground && center.y - halfExtents.y < *ground - 0.03f) {
+            bodyCenter.y = *ground + halfExtents.y + 0.02f;
+        }
+        physicsWorld_->placeGravityBox(node.nodeId, bodyCenter, halfExtents);
+    }
+    if (const auto position = physicsWorld_->gravityBoxRenderCenter(node.nodeId);
+        position && *position != center &&
+        translateSceneNode(node, parentTransform, (*position - center) * modelScale_)) {
+        transform = parentTransform * nodeManualTransform(node);
+    }
+    lastTransform = transform;
+}
+
 void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement) {
     updateSkeletalAnimations(deltaSeconds);
     sceneNodeTransforms_.clear();
@@ -1158,28 +1207,23 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
             objectTransform *= playerVisualTransform();
         }
         if (&node == selectedModelNode_ && editMovement != glm::vec3(0.0f)) {
-            // Translation is stored in the node's pivot axes, while edit movement uses scene axes.
-            const glm::mat3 basis(objectTransform * node.globalTransform);
-            if (glm::determinant(basis) != 0.0f) {
-                const glm::vec3 position = node.transformTranslation + glm::inverse(basis) * editMovement;
-                if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z)) {
-                    node.transformTranslation = position;
-                    editorDirty_ = true;
-                }
-            }
+            editorDirty_ |= translateSceneNode(node, objectTransform, editMovement);
         }
         const bool isTornadoMesh = node.nodeId == kPlayerTornadoMeshNodeId;
+        const bool renderEnabled = parentRenderEnabled && node.renderEnabled &&
+            !removedSceneNodeIds_.contains(node.nodeId) &&
+            (!isTornadoMesh || tornadoMeshVisible_);
         glm::mat4 transform = isTornadoMesh
             ? tornadoMeshTransform_
             : objectTransform * nodeManualTransform(node);
+        if (terrainScene_ && !modelGravity_.empty()) {
+            updateModelGravity(node, objectTransform, transform, renderEnabled);
+        }
         if (!isTornadoMesh && node.rotationAnimationEnabled) {
             // Parent animation is applied after child-local animation, so
             // transforms are accumulated in hierarchy order from root to leaf.
             transform *= nodeAnimationTransform(node, elapsedSeconds);
         }
-        const bool renderEnabled = parentRenderEnabled && node.renderEnabled &&
-            !removedSceneNodeIds_.contains(node.nodeId) &&
-            (!isTornadoMesh || tornadoMeshVisible_);
         sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
         sceneNodeRenderEnabled_.insert_or_assign(node.nodeId, renderEnabled);
         for (ModelNode& child : node.children) {

@@ -225,6 +225,7 @@ void Renderer::initializeEmptyScene() {
     if (physicsWorld_) {
         physicsWorld_->clear();
     }
+    modelGravity_.clear();
     terrainScene_.reset();
     grassCoverage_ = {};
     terrainResourcePath_.clear();
@@ -612,6 +613,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
 
 void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) {
     if (!terrainScene_ || !playerController_.active()) {
+        if (terrainScene_ && !modelGravity_.empty()) physicsWorld_->simulate(deltaSeconds);
         return;
     }
     postProcessSplitView_ = false;
@@ -1136,9 +1138,18 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         sceneStatus_ = "Scene file could not be opened: " + resolvedScenePath.string();
         return false;
     }
+    std::vector<std::uint32_t> gravityNodeIds;
     std::string key;
     while (sceneFile >> key) {
-        if (key == "model_resource_path") {
+        if (key == "node_gravity") {
+            std::uint32_t id = 0;
+            if (!(sceneFile >> id)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid gravity node ID.";
+                return false;
+            }
+            gravityNodeIds.push_back(id);
+        } else if (key == "model_resource_path") {
             std::string configuredPath;
             if (!(sceneFile >> std::quoted(configuredPath))) {
                 sceneStatusFailed_ = true;
@@ -1425,6 +1436,12 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         }
     }
     loadTransformSettings();
+    for (const auto& resource : sceneModelResources_) {
+        if (!resource.playerModel && std::find(gravityNodeIds.begin(), gravityNodeIds.end(),
+            resource.rootNodeId) != gravityNodeIds.end()) {
+            modelGravity_.try_emplace(resource.rootNodeId);
+        }
+    }
     recalculateSceneBounds();
     configureHdrComposition();
     prepareTerrainAndGrassPipelines();
@@ -2389,6 +2406,7 @@ bool Renderer::saveTransformSettings() const {
         file << "model_resource_path "
              << std::quoted((relativeError || relativePath.empty() ? model.path : relativePath).generic_string())
              << ' ' << model.rootNodeId << "\n";
+        if (modelGravity_.contains(model.rootNodeId)) file << "node_gravity " << model.rootNodeId << '\n';
     }
     if (hdrSettings_.enabled) {
         const auto& h = hdrSettings_;
@@ -2618,6 +2636,7 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
 
     for (const std::uint32_t removedNodeId : removedNodeIds) {
         removedSceneNodeIds_.insert(removedNodeId);
+        if (modelGravity_.erase(removedNodeId)) physicsWorld_->removeGravityBox(removedNodeId);
         particleSystems_.erase(removedNodeId);
         particleTextures_.erase(removedNodeId);
         const auto descriptorIt = particleDescriptorSets_.find(removedNodeId);

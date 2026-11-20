@@ -175,6 +175,7 @@ void Renderer::processSceneModelDrop() {
     }
 
     const glm::vec3 worldTarget = cameraTarget_ / modelScale_ + modelCenter_;
+    const glm::vec2 viewDirection(cameraTarget_.x - cameraPosition_.x, cameraTarget_.z - cameraPosition_.z);
     if (!importModelResource(path)) {
         sceneStatusFailed_ = true;
         sceneStatus_ = resourceImportStatus_;
@@ -182,12 +183,33 @@ void Renderer::processSceneModelDrop() {
     }
 
     auto* node = findSceneNodeById(meshData_, sceneModelResources_.back().rootNodeId);
-    if (node && terrainScene_ && node->hasBounds) {
-        if (const auto height = terrainScene_->renderedHeightAtWorld({worldTarget.x, worldTarget.z})) {
-            const glm::vec3 groundTarget{worldTarget.x, *height, worldTarget.z};
-            auto modelBase = (node->boundsMinimum + node->boundsMaximum) * 0.5f;
-            modelBase.y = node->boundsMinimum.y;
-            node->transformTranslation = (groundTarget - modelBase) * modelScale_;
+    if (node && node->hasBounds) {
+        modelGravity_.try_emplace(node->nodeId);
+        if (terrainScene_) {
+            const glm::mat4 parentTransform = nodeManualTransform(meshData_.hierarchy);
+            const glm::vec3 halfSize = (node->boundsMaximum - node->boundsMinimum) * 0.5f;
+            const glm::vec3 halfExtents = glm::abs(glm::vec3(parentTransform[0])) * halfSize.x +
+                glm::abs(glm::vec3(parentTransform[1])) * halfSize.y +
+                glm::abs(glm::vec3(parentTransform[2])) * halfSize.z;
+            glm::vec3 dropPoint = worldTarget;
+            if (playerController_.active() && glm::length(viewDirection) > 0.00001f) {
+                // Leave room for both the model and the player's capsule.
+                const float clearance = 2.0f + glm::length(glm::vec2(halfExtents.x, halfExtents.z));
+                const glm::vec2 ahead = glm::normalize(viewDirection) * clearance;
+                dropPoint.x = playerController_.position().x + ahead.x;
+                dropPoint.z = playerController_.position().z + ahead.y;
+            }
+            if (const auto height = terrainScene_->renderedHeightAtWorld({dropPoint.x, dropPoint.z})) {
+                dropPoint.y = std::max(dropPoint.y, *height + 0.75f);
+            } else {
+                dropPoint = terrainScene_->centerPosition();
+                dropPoint.y += 0.75f;
+            }
+
+            const glm::vec3 modelCenter(parentTransform *
+                glm::vec4((node->boundsMinimum + node->boundsMaximum) * 0.5f, 1.0f));
+            const glm::vec3 modelBase = modelCenter - glm::vec3(0.0f, halfExtents.y, 0.0f);
+            translateSceneNode(*node, parentTransform, (dropPoint - modelBase) * modelScale_);
         }
     }
 

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <glm/glm.hpp>
 
@@ -33,6 +35,11 @@ public:
         float maxDistance,
         float radius
     ) const;
+
+    // Imported models use upright box colliders. Repositioning resets their velocity.
+    void placeGravityBox(std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents);
+    void removeGravityBox(std::uint32_t id);
+    std::optional<glm::vec3> gravityBoxRenderCenter(std::uint32_t id) const;
 
     // Player positions use the bottom center of the upright capsule, matching
     // the renderer's existing player mesh coordinate convention.

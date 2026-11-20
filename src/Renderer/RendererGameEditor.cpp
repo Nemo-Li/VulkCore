@@ -759,6 +759,20 @@ void Renderer::drawGameInspector() {
             return;
         }
         ImGui::SeparatorText("Transform");
+        const auto* resource = sceneModelResourceForNode(node);
+        if (resource && !resource->playerModel && resource->rootNodeId == node.nodeId) {
+            bool useGravity = modelGravity_.contains(node.nodeId);
+            if (ImGui::Checkbox("Use Gravity", &useGravity)) {
+                if (useGravity) {
+                    modelGravity_.try_emplace(node.nodeId);
+                } else {
+                    modelGravity_.erase(node.nodeId);
+                    physicsWorld_->removeGravityBox(node.nodeId);
+                }
+                editorDirty_ = true;
+            }
+            if (!terrainScene_) ImGui::SetItemTooltip("Gravity requires scene terrain.");
+        }
         editorDirty_ |= ImGui::DragFloat3("Position", &node.transformTranslation.x, 0.005f);
         editorDirty_ |= ImGui::DragFloat3("Rotation", &node.transformRotationDegrees.x, 1.0f);
         editorDirty_ |= ImGui::SliderFloat("Scale", &node.transformScaleFactor,
