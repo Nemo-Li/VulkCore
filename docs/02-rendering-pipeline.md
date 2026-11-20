@@ -44,7 +44,7 @@ HDR 路径直接合成到交换链，省掉旧路径的整屏颜色和深度拷�
 |---|---|
 | `hdr_composition` | Bloom 级数、阈值、阈值平滑宽度、强度、升采样半径、材质曝光、SMAA 开关、线性背景 RGB。级数为 0 时跳过 Bloom。 |
 | `authored_view` | 相机目标 XYZ、向上向量 XYZ、垂直 FOV、最小构图宽高比。启用时按模型的原始场景单位绘制，位置由 `camera_position` 指定。 |
-| `camera_orbit` | 最小、最大仰角，单位为度。为 `authored_view` 启用视口左键拖拽。 |
+| `camera_orbit` | 最小、最大仰角，单位为度。启用视口左键环绕，可配合 `authored_view` 使用。仅设置 `camera_orbit` 时沿用场景的默认归一化坐标及相机目标。 |
 | `material_transition` | 正向延迟、时长、循环停留时长、启动时循环开关、激活 FOV、激活机位距离偏移。时间单位为秒，FOV 为 0 时跳过相机过渡。 |
 | `material_effect` | 材质索引、透明背面优先双绘制、深度比较 LessEqual、采样不透明快照、绑定进度、可见起止进度、自定义向量开关、两个 `vec4`。 |
 
