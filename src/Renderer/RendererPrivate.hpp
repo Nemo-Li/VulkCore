@@ -23,7 +23,9 @@ namespace VulkCore {
 
 namespace renderer_detail {
 
-constexpr std::uint32_t kMaterialImageBindingCount = 8;
+constexpr std::uint32_t kMaterialImageBindingCount = 9;
+constexpr std::uint32_t kGrassGroundBinding = 9;
+constexpr std::uint32_t kGrassGroundTextureFlag = 64u;
 constexpr std::uint32_t kAlphaMaskBinding = 8;
 constexpr std::uint32_t kAlphaTestFlag = 64u;
 
@@ -55,6 +57,10 @@ constexpr float kMaximumModelScaleFactor = 3.0f;
 // it independent from imported and particle node allocation makes scene
 // files portable across model switches.
 constexpr std::uint32_t kSunSceneNodeId = 0xF0000000u;
+constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
+constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
+constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
+constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
 constexpr std::uint32_t kParticleSceneNodeBase = 0xD0000000u;
 constexpr std::uint32_t kPlayerTornadoMeshNodeId = 0xDFFFFFF3u;
 constexpr std::uint32_t kSceneModelNodeStride = 1'000'000u;

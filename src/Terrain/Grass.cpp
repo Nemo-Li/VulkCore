@@ -1,6 +1,5 @@
 #include "vulkcore/Terrain/Grass.hpp"
 
-#include "vulkcore/Gameplay/Player.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <algorithm>
@@ -18,8 +17,7 @@ struct GrassLodSettings {
 
 constexpr GrassLodSettings kNearMeshSettings{8.0f, 16, {0.0f, 0.0f, 30.0f, 40.0f}};
 constexpr GrassLodSettings kFlowerSettings{8.0f, 8, {0.0f, 0.0f, 19.0f, 27.0f}};
-constexpr float kCanopyHeight = PlayerController::kBotwLinkHeight * 0.73f;
-constexpr float kMappedGrassHeight = kCanopyHeight * 1.18f;
+constexpr float kMappedGrassHeight = kDefaultGrassHeight * 1.18f;
 constexpr float kAnchorSize = 4.0f;
 constexpr float kAnchorPadding = 3.0f; // Half the anchor cell's diagonal, rounded up.
 constexpr float kPi = 3.14159265358979323846f;
@@ -136,7 +134,7 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             const float heightVariation = hash01(seed + 4u);
             const float yaw = hash01(seed + 5u) * 2.0f * kPi;
             if (!flower) {
-                const float canopyHeight = kCanopyHeight * (0.91f + heightVariation * 0.18f);
+                const float canopyHeight = kDefaultGrassHeight * (0.91f + heightVariation * 0.18f);
                 constexpr int blades = 14;
                 for (int blade = 0; blade < blades; ++blade) {
                     const auto bladeSeed = hashBits(seed + static_cast<std::uint32_t>(blade + 1));

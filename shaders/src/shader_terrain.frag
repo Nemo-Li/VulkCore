@@ -14,6 +14,7 @@ layout(location = 5) in vec4 fragTerrainMapping;
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
 layout(set = 0, binding = 7) uniform sampler2DArray surfaceLayers;
+layout(set = 0, binding = 9) uniform sampler2D grassGroundTexture;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -32,6 +33,7 @@ const int kLandformCount = 8;
 const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
 const uint kMacroTexture = 32u;
+const uint kGrassGroundTexture = 64u;
 const int kGrassLayer = 0;
 const int kRockLayer = 2;
 const mat2x3 kProjectionBases[3] = mat2x3[3](
@@ -334,6 +336,12 @@ void main() {
         grassAlbedo = mix(kMeadowAlbedo, distantGrass, paleMeadow);
         vec2 bump = -(0.05 * patches.yz + 0.11 * grain.yz);
         distantGrassBump = vec3(bump.x, 0.0, bump.y) * (grass * paleMeadow);
+    }
+
+    if ((material.textureFlags & kGrassGroundTexture) != 0u) {
+        vec3 authoredGrass = texture(grassGroundTexture, groundPosition * 0.15).rgb;
+        float lodBlend = smoothstep(30.0, 40.0, distanceWorld) * (1.0 - farMeadow);
+        grassAlbedo = mix(grassAlbedo, authoredGrass, lodBlend);
     }
 
     vec3 macroAlbedo = vec3(0.0);

@@ -162,9 +162,7 @@ std::filesystem::path locateAssetsDirectory() {
 
 bool isWaterShaderConfiguration(const ShaderConfiguration& configuration) {
     const std::string& fragmentShader = configuration.shader(ShaderStage::Fragment);
-    return fragmentShader == "shader_water.frag" ||
-        fragmentShader == "shader_water_flow.frag" ||
-        fragmentShader == "shader_water_foam.frag";
+    return fragmentShader == "shader_water.frag" || fragmentShader.starts_with("shader_water_");
 }
 
 bool isTransparentMaterial(const MaterialData& material) {
