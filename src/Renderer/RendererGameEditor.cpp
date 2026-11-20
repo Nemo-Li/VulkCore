@@ -107,7 +107,11 @@ bool Renderer::drawGameEditor() {
     const float width = std::max(1.0f, available.x - 2.0f * margin);
     const float toolbarHeight = ImGui::GetFrameHeight() + 2.0f;
     const float panelY = origin.y + toolbarHeight + 2.0f * margin;
-    const float panelHeight = std::max(1.0f, available.y - toolbarHeight - 3.0f * margin);
+    const bool resourcesAvailable = !resourceBrowser_.root.empty();
+    const float resourceHeight = !resourcesAvailable ? 0.0f :
+        (resourceBrowser_.open ? std::min(370.0f, available.y * 0.44f) : toolbarHeight + 20.0f);
+    const float panelHeight = std::max(1.0f, available.y - toolbarHeight - 3.0f * margin -
+        (resourcesAvailable ? resourceHeight + margin : 0.0f));
     const float left = std::min(235.0f, width * 0.24f);
     const float right = std::min(340.0f, width * 0.35f);
 
@@ -176,6 +180,14 @@ bool Renderer::drawGameEditor() {
     ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + width - right, panelY));
     if (ImGui::BeginChild("Inspector", ImVec2(right, panelHeight), ImGuiChildFlags_Borders)) drawGameInspector();
     ImGui::EndChild();
+    if (resourcesAvailable) {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, origin.y + available.y - margin - resourceHeight));
+        if (ImGui::BeginChild("Resource Manager", ImVec2(width, resourceHeight),
+                ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            drawResourceBrowser();
+        }
+        ImGui::EndChild();
+    }
     ImGui::PopStyleVar(3);
 
     if (!pendingSceneOpen_.empty() && editorDirty_ && !editorOpenConfirmed_) {

@@ -83,6 +83,10 @@ Renderer::~Renderer() {
     }
 
     context_->waitIdle();
+#ifndef VULKCORE_OHOS
+    destroyResourcePreviewTargets();
+    destroyResourcePreviewBuffers();
+#endif
     shutdownImGui();
     hdrComposition_.reset();
     swapChain_->cleanupFramebuffers();

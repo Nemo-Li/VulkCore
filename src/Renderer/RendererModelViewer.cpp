@@ -11,18 +11,58 @@ constexpr float kViewerFov = 45.0f;
 constexpr float kMinViewerDistance = 0.2f;
 constexpr float kMaxViewerDistance = 60.0f;
 
-// Use double for fit calculations so that squaring a large model's extent
-// cannot overflow before the geometry is normalized for display.
-double boundsRadius(const ModelNode& node) {
-    return glm::length(glm::dvec3(node.boundsMaximum) - glm::dvec3(node.boundsMinimum)) * 0.5;
-}
-
 std::string utf8Filename(const std::filesystem::path& path) {
     const auto name = path.filename().u8string();
     return {reinterpret_cast<const char*>(name.data()), name.size()};
 }
 
 } // namespace
+
+double renderer_detail::modelBoundsRadius(const ModelNode& node) {
+    return glm::length(glm::dvec3(node.boundsMaximum) - glm::dvec3(node.boundsMinimum)) * 0.5;
+}
+
+std::size_t renderer_detail::defaultPreviewModel(const MeshData& mesh, bool preferAnimated) {
+    const auto& models = mesh.hierarchy.children;
+    std::size_t selected = models.size();
+    double bestRadius = -1.0;
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        if (!models[i].hasBounds) continue;
+        const bool animated = preferAnimated && std::any_of(mesh.skeletalAnimationInstances.begin(),
+            mesh.skeletalAnimationInstances.end(),
+            [&](const auto& instance) { return instance.rootNodeId == models[i].nodeId; });
+        if (animated) return i;
+        const double radius = modelBoundsRadius(models[i]);
+        if (radius > bestRadius) {
+            selected = i;
+            bestRadius = radius;
+        }
+    }
+    if (selected == models.size()) throw std::runtime_error("The file contains no mesh to display.");
+    return selected;
+}
+
+bool renderer_detail::drawPreviewModelPicker(const MeshData& mesh, std::size_t& selected) {
+    const auto& models = mesh.hierarchy.children;
+    const auto& current = models[selected];
+    ImGui::SetNextItemWidth(-1.0f);
+    if (!ImGui::BeginCombo("##FMDL model", current.name.empty() ? "Unnamed model" : current.name.c_str())) {
+        return false;
+    }
+    const auto previous = selected;
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        const auto& model = models[i];
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(model.name.empty() ? "Unnamed model" : model.name.c_str(), i == previous,
+                model.hasBounds ? ImGuiSelectableFlags_None : ImGuiSelectableFlags_Disabled)) {
+            selected = i;
+        }
+        if (i == previous) ImGui::SetItemDefaultFocus();
+        ImGui::PopID();
+    }
+    ImGui::EndCombo();
+    return selected != previous;
+}
 
 void Renderer::queueModelViewerDrop(std::vector<std::filesystem::path> paths) {
     if (mode_ == Mode::ModelViewer) viewerDropPaths_ = std::move(paths);
@@ -58,17 +98,7 @@ void Renderer::loadModelViewerDrop() {
             throw std::runtime_error("Drop the model file along with its optional .Tex and animation files.");
         }
         imported = loadSbfresMesh(modelPath, texturePath, animationPath);
-        double largestRadius = -1.0;
-        for (std::size_t i = 0; i < imported.hierarchy.children.size(); ++i) {
-            const auto& node = imported.hierarchy.children[i];
-            if (!node.hasBounds) continue;
-            const double radius = boundsRadius(node);
-            if (radius > largestRadius) {
-                largestRadius = radius;
-                initialModel = i;
-            }
-        }
-        if (largestRadius < 0.0) throw std::runtime_error("The file contains no mesh to display.");
+        initialModel = defaultPreviewModel(imported);
     } catch (const std::exception& error) {
         viewerError_ = error.what();
         return;
@@ -95,7 +125,7 @@ void Renderer::selectViewerModel(std::size_t index) {
 void Renderer::fitViewerModel() {
     const auto& model = meshData_.hierarchy.children[viewerModelIndex_];
     modelCenter_ = model.boundsMinimum * 0.5f + model.boundsMaximum * 0.5f;
-    modelScale_ = static_cast<float>(1.0 / std::max(1e-9, boundsRadius(model)));
+    modelScale_ = static_cast<float>(1.0 / std::max(1e-9, modelBoundsRadius(model)));
     const VkExtent2D extent = swapChain_->extent();
     const float aspect = extent.height == 0 ? 1.0f : static_cast<float>(extent.width) / extent.height;
     const float halfFov = glm::radians(kViewerFov * 0.5f);
@@ -128,22 +158,8 @@ bool Renderer::drawModelViewerUi() {
         if (hasModel) {
             ImGui::TextWrapped("%s", viewerFilename_.c_str());
             auto& models = meshData_.hierarchy.children;
-            const auto& current = models[viewerModelIndex_];
-            ImGui::SetNextItemWidth(-1.0f);
-            if (ImGui::BeginCombo("##FMDL model", current.name.empty() ? "Unnamed model" : current.name.c_str())) {
-                for (std::size_t i = 0; i < models.size(); ++i) {
-                    const auto& model = models[i];
-                    const bool selected = i == viewerModelIndex_;
-                    ImGui::PushID(static_cast<int>(i));
-                    if (ImGui::Selectable(model.name.empty() ? "Unnamed model" : model.name.c_str(), selected,
-                            model.hasBounds ? ImGuiSelectableFlags_None : ImGuiSelectableFlags_Disabled)) {
-                        selectViewerModel(i);
-                    }
-                    if (selected) ImGui::SetItemDefaultFocus();
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
+            auto index = viewerModelIndex_;
+            if (drawPreviewModelPicker(meshData_, index)) selectViewerModel(index);
             if (ImGui::Button("Fit view (F)")) fitViewerModel();
             ImGui::TextDisabled("Left drag to orbit / Scroll to zoom");
             if (!viewerAnimationFilename_.empty()) {

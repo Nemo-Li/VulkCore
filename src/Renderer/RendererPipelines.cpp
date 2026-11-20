@@ -140,8 +140,6 @@ void Renderer::createRenderPass() {
 }
 
 void Renderer::createSceneRenderResources() {
-    const VkExtent2D extent = swapChain_->extent();
-
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = swapChain_->imageFormat();
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -207,6 +205,28 @@ void Renderer::createSceneRenderResources() {
         throw std::runtime_error("failed to create scene render pass!");
     }
 
+    try {
+        sceneRenderTargets_.resize(kMaxFramesInFlight);
+        for (auto& target : sceneRenderTargets_) {
+            createSceneRenderTarget(target, swapChain_->extent(), true);
+        }
+    } catch (...) {
+        destroySceneRenderResources();
+        throw;
+    }
+}
+
+void Renderer::destroySceneRenderResources() {
+    if (!context_) return;
+    for (auto& target : sceneRenderTargets_) destroySceneRenderTarget(target);
+    sceneRenderTargets_.clear();
+    if (sceneRenderPass_ != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(context_->device(), sceneRenderPass_, nullptr);
+        sceneRenderPass_ = VK_NULL_HANDLE;
+    }
+}
+
+void Renderer::createSceneRenderTarget(SceneRenderTarget& target, VkExtent2D extent, bool sampleDepth) {
     const auto createImage = [&](VkFormat format,
                                  VkImageUsageFlags usage,
                                  VkImage& image,
@@ -274,136 +294,119 @@ void Renderer::createSceneRenderResources() {
         return imageView;
     };
 
-    try {
-        sceneRenderTargets_.resize(kMaxFramesInFlight);
-        for (SceneRenderTarget& target : sceneRenderTargets_) {
-            createImage(
-                swapChain_->imageFormat(),
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_SAMPLED_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                target.colorImage,
-                target.colorMemory
-            );
-            target.colorImageView = createImageView(
-                target.colorImage,
-                swapChain_->imageFormat(),
-                VK_IMAGE_ASPECT_COLOR_BIT
-            );
+    createImage(
+        swapChain_->imageFormat(),
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        target.colorImage,
+        target.colorMemory
+    );
+    target.colorImageView = createImageView(
+        target.colorImage,
+        swapChain_->imageFormat(),
+        VK_IMAGE_ASPECT_COLOR_BIT
+    );
 
-            VkSamplerCreateInfo samplerInfo{};
-            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-            samplerInfo.magFilter = VK_FILTER_LINEAR;
-            samplerInfo.minFilter = VK_FILTER_LINEAR;
-            samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-            samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            samplerInfo.maxAnisotropy = 1.0f;
-            samplerInfo.maxLod = 0.0f;
-            if (vkCreateSampler(context_->device(), &samplerInfo, nullptr, &target.colorSampler) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create scene render sampler!");
-            }
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.maxLod = 0.0f;
+    if (vkCreateSampler(context_->device(), &samplerInfo, nullptr, &target.colorSampler) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create scene render sampler!");
+    }
 
-            createImage(
-                swapChain_->depthFormat(),
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                    VK_IMAGE_USAGE_SAMPLED_BIT,
-                target.depthImage,
-                target.depthMemory
-            );
-            target.depthImageView = createImageView(
-                target.depthImage,
-                swapChain_->depthFormat(),
-                VK_IMAGE_ASPECT_DEPTH_BIT
-            );
+    createImage(
+        swapChain_->depthFormat(),
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+            (sampleDepth ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
+        target.depthImage,
+        target.depthMemory
+    );
+    target.depthImageView = createImageView(
+        target.depthImage,
+        swapChain_->depthFormat(),
+        VK_IMAGE_ASPECT_DEPTH_BIT
+    );
 
-            VkSamplerCreateInfo depthSamplerInfo{};
-            depthSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-            depthSamplerInfo.magFilter = VK_FILTER_NEAREST;
-            depthSamplerInfo.minFilter = VK_FILTER_NEAREST;
-            depthSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-            depthSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            depthSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            depthSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            depthSamplerInfo.maxAnisotropy = 1.0f;
-            depthSamplerInfo.maxLod = 0.0f;
-            if (vkCreateSampler(
-                    context_->device(),
-                    &depthSamplerInfo,
-                    nullptr,
-                    &target.depthSampler
-                ) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create scene depth sampler!");
-            }
-
-            const std::array<VkImageView, 2> framebufferAttachments = {
-                target.colorImageView,
-                target.depthImageView
-            };
-            VkFramebufferCreateInfo framebufferInfo{};
-            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebufferInfo.renderPass = sceneRenderPass_;
-            framebufferInfo.attachmentCount = static_cast<uint32_t>(framebufferAttachments.size());
-            framebufferInfo.pAttachments = framebufferAttachments.data();
-            framebufferInfo.width = extent.width;
-            framebufferInfo.height = extent.height;
-            framebufferInfo.layers = 1;
-            if (vkCreateFramebuffer(
-                    context_->device(),
-                    &framebufferInfo,
-                    nullptr,
-                    &target.framebuffer
-                ) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create scene render framebuffer!");
-            }
+    if (sampleDepth) {
+        VkSamplerCreateInfo depthSamplerInfo{};
+        depthSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        depthSamplerInfo.magFilter = VK_FILTER_NEAREST;
+        depthSamplerInfo.minFilter = VK_FILTER_NEAREST;
+        depthSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        depthSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        depthSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        depthSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        depthSamplerInfo.maxAnisotropy = 1.0f;
+        depthSamplerInfo.maxLod = 0.0f;
+        if (vkCreateSampler(
+                context_->device(),
+                &depthSamplerInfo,
+                nullptr,
+                &target.depthSampler
+            ) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create scene depth sampler!");
         }
-    } catch (...) {
-        destroySceneRenderResources();
-        throw;
+    }
+
+    const std::array<VkImageView, 2> framebufferAttachments = {
+        target.colorImageView,
+        target.depthImageView
+    };
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = sceneRenderPass_;
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(framebufferAttachments.size());
+    framebufferInfo.pAttachments = framebufferAttachments.data();
+    framebufferInfo.width = extent.width;
+    framebufferInfo.height = extent.height;
+    framebufferInfo.layers = 1;
+    if (vkCreateFramebuffer(
+            context_->device(),
+            &framebufferInfo,
+            nullptr,
+            &target.framebuffer
+        ) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create scene render framebuffer!");
     }
 }
 
-void Renderer::destroySceneRenderResources() {
-    if (!context_) {
-        return;
+void Renderer::destroySceneRenderTarget(SceneRenderTarget& target) {
+    if (target.framebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(context_->device(), target.framebuffer, nullptr);
     }
-    for (SceneRenderTarget& target : sceneRenderTargets_) {
-        if (target.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(context_->device(), target.framebuffer, nullptr);
-        }
-        if (target.colorSampler != VK_NULL_HANDLE) {
-            vkDestroySampler(context_->device(), target.colorSampler, nullptr);
-        }
-        if (target.depthSampler != VK_NULL_HANDLE) {
-            vkDestroySampler(context_->device(), target.depthSampler, nullptr);
-        }
-        if (target.colorImageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(context_->device(), target.colorImageView, nullptr);
-        }
-        if (target.depthImageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(context_->device(), target.depthImageView, nullptr);
-        }
-        if (target.colorImage != VK_NULL_HANDLE) {
-            vkDestroyImage(context_->device(), target.colorImage, nullptr);
-        }
-        if (target.depthImage != VK_NULL_HANDLE) {
-            vkDestroyImage(context_->device(), target.depthImage, nullptr);
-        }
-        if (target.colorMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(context_->device(), target.colorMemory, nullptr);
-        }
-        if (target.depthMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(context_->device(), target.depthMemory, nullptr);
-        }
-        target = SceneRenderTarget{};
+    if (target.colorSampler != VK_NULL_HANDLE) {
+        vkDestroySampler(context_->device(), target.colorSampler, nullptr);
     }
-    sceneRenderTargets_.clear();
-    if (sceneRenderPass_ != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(context_->device(), sceneRenderPass_, nullptr);
-        sceneRenderPass_ = VK_NULL_HANDLE;
+    if (target.depthSampler != VK_NULL_HANDLE) {
+        vkDestroySampler(context_->device(), target.depthSampler, nullptr);
     }
+    if (target.colorImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(context_->device(), target.colorImageView, nullptr);
+    }
+    if (target.depthImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(context_->device(), target.depthImageView, nullptr);
+    }
+    if (target.colorImage != VK_NULL_HANDLE) {
+        vkDestroyImage(context_->device(), target.colorImage, nullptr);
+    }
+    if (target.depthImage != VK_NULL_HANDLE) {
+        vkDestroyImage(context_->device(), target.depthImage, nullptr);
+    }
+    if (target.colorMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(context_->device(), target.colorMemory, nullptr);
+    }
+    if (target.depthMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(context_->device(), target.depthMemory, nullptr);
+    }
+    target = {};
 }
 
 void Renderer::discoverShaderBinaries() {

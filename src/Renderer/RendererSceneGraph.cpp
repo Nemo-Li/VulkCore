@@ -693,52 +693,52 @@ void Renderer::drawSkeletalAnimationControls(
         );
         return;
     }
-    ImGui::Checkbox("Animation Enabled", &instance->enabled);
-    ImGui::Checkbox("Loop", &instance->looping);
+    drawAnimationPlayback(meshData_, *instance);
+}
+
+void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimationInstance& instance) {
+    ImGui::Checkbox("Animation Enabled", &instance.enabled);
+    ImGui::Checkbox("Loop", &instance.looping);
     ImGui::DragFloat(
         "Playback Speed",
-        &instance->playbackSpeed,
+        &instance.playbackSpeed,
         0.01f,
         -4.0f,
         4.0f,
         "%.2fx"
     );
-    if (instance->playbackSpeed == 0.0f) {
-        instance->playbackSpeed = 1.0f;
+    if (instance.playbackSpeed == 0.0f) {
+        instance.playbackSpeed = 1.0f;
     }
 
-    const std::size_t animationStart = instance->animationStart;
-    const std::size_t animationEnd = animationStart + instance->animationCount;
-    if (animationStart >= meshData_.skeletalAnimations.size() ||
-        animationEnd > meshData_.skeletalAnimations.size()) {
+    const std::size_t animationStart = instance.animationStart;
+    const std::size_t animationEnd = animationStart + instance.animationCount;
+    if (animationStart >= mesh.skeletalAnimations.size() ||
+        animationEnd > mesh.skeletalAnimations.size()) {
         ImGui::TextUnformatted("Animation data is incomplete for this instance.");
         return;
     }
-    instance->activeClip = std::min<std::uint32_t>(
-        instance->activeClip,
-        instance->animationCount - 1
+    instance.activeClip = std::min<std::uint32_t>(
+        instance.activeClip,
+        instance.animationCount - 1
     );
-    const SkeletalAnimationClip& activeClip = meshData_.skeletalAnimations[
-        animationStart + instance->activeClip
-    ];
-    const char* activeClipName = activeClip.name.empty()
-        ? "Unnamed clip"
-        : activeClip.name.c_str();
+    const auto& currentName = mesh.skeletalAnimations[animationStart + instance.activeClip].name;
+    const char* activeClipName = currentName.empty() ? "Unnamed clip" : currentName.c_str();
     if (ImGui::BeginCombo("Clip", activeClipName)) {
         for (std::uint32_t clipIndex = 0;
-             clipIndex < instance->animationCount;
+             clipIndex < instance.animationCount;
              ++clipIndex) {
-            const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
+            const SkeletalAnimationClip& clip = mesh.skeletalAnimations[
                 animationStart + clipIndex
             ];
-            const bool selected = clipIndex == instance->activeClip;
+            const bool selected = clipIndex == instance.activeClip;
             const std::string label = clip.name.empty()
                 ? "Animation " + std::to_string(clipIndex)
                 : clip.name;
             if (ImGui::Selectable(label.c_str(), selected)) {
-                instance->activeClip = clipIndex;
-                instance->timeSeconds = 0.0f;
-                instance->playing = true;
+                instance.activeClip = clipIndex;
+                instance.timeSeconds = 0.0f;
+                instance.playing = true;
             }
             if (selected) {
                 ImGui::SetItemDefaultFocus();
@@ -747,19 +747,20 @@ void Renderer::drawSkeletalAnimationControls(
         ImGui::EndCombo();
     }
 
-    if (instance->playing) {
+    if (instance.playing) {
         if (ImGui::Button("Pause")) {
-            instance->playing = false;
+            instance.playing = false;
         }
     } else if (ImGui::Button("Play")) {
-        instance->playing = true;
+        instance.playing = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Restart")) {
-        instance->timeSeconds = 0.0f;
-        instance->playing = true;
+        instance.timeSeconds = 0.0f;
+        instance.playing = true;
     }
 
+    const auto& activeClip = mesh.skeletalAnimations[animationStart + instance.activeClip];
     const double ticksPerSecond = activeClip.ticksPerSecond > 0.0
         ? activeClip.ticksPerSecond
         : 25.0;
@@ -767,10 +768,10 @@ void Renderer::drawSkeletalAnimationControls(
         ? static_cast<float>(activeClip.durationTicks / ticksPerSecond)
         : 0.0f;
     if (durationSeconds > 0.0f) {
-        instance->timeSeconds = std::clamp(instance->timeSeconds, 0.0f, durationSeconds);
+        instance.timeSeconds = std::clamp(instance.timeSeconds, 0.0f, durationSeconds);
         ImGui::SliderFloat(
             "Time",
-            &instance->timeSeconds,
+            &instance.timeSeconds,
             0.0f,
             durationSeconds,
             "%.3f s"
@@ -896,10 +897,14 @@ glm::mat4 Renderer::nodeAnimationTransform(
     return node.globalTransform * rotation * glm::inverse(node.globalTransform);
 }
 
-void Renderer::updateSkeletalAnimations(float deltaSeconds) {
-    if (meshData_.skeletalAnimationInstances.empty() ||
-        meshData_.bindPoseVertices.size() != meshData_.vertices.size() ||
-        meshData_.skinSourceVertices.size() != meshData_.vertices.size()) {
+void renderer_detail::updateSkeletalMesh(
+    MeshData& mesh, float deltaSeconds, std::uint32_t frameCount,
+    const std::function<void(std::size_t, std::size_t)>& upload,
+    const std::function<void(SkeletalAnimationInstance&)>& configure
+) {
+    if (mesh.skeletalAnimationInstances.empty() ||
+        mesh.bindPoseVertices.size() != mesh.vertices.size() ||
+        mesh.skinSourceVertices.size() != mesh.vertices.size()) {
         return;
     }
 
@@ -908,51 +913,26 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         std::size_t count = 0;
     };
     std::vector<UpdatedVertexRange> updatedVertexRanges;
-    updatedVertexRanges.reserve(meshData_.skeletalAnimationInstances.size());
-    for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
-        if (instance.rootNodeId == kPlayerSceneNodeId) {
-            const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
-                *playerRunAnimationClipIndex_ < instance.animationCount;
-            const std::optional<std::uint32_t>* activeAttackClip = nullptr;
-            if (playerController_.activeAttack() == PlayerAttack::Tornado) {
-                activeAttackClip = &playerAttackAnimationClipIndex_;
-            } else if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
-                activeAttackClip = &playerLightningAnimationClipIndex_;
-            } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
-                activeAttackClip = &playerFlameAnimationClipIndex_;
-            }
-            const bool hasAttackClip = activeAttackClip != nullptr &&
-                activeAttackClip->has_value() &&
-                **activeAttackClip < instance.animationCount;
-            instance.enabled = (hasAttackClip && playerController_.attacking()) ||
-                (hasRunClip && playerController_.moving());
-            instance.playing = false;
-            instance.looping = !playerController_.attacking();
-            if (hasAttackClip && playerController_.attacking()) {
-                instance.timeSeconds = playerController_.attackAnimationTimeSeconds();
-                instance.activeClip = **activeAttackClip;
-            } else if (hasRunClip) {
-                instance.timeSeconds = playerController_.runAnimationTimeSeconds();
-                instance.activeClip = *playerRunAnimationClipIndex_;
-            }
-        }
+    updatedVertexRanges.reserve(mesh.skeletalAnimationInstances.size());
+    for (SkeletalAnimationInstance& instance : mesh.skeletalAnimationInstances) {
+        if (configure) configure(instance);
         const std::size_t vertexStart = instance.vertexStart;
         const std::size_t vertexCount = instance.vertexCount;
-        if (vertexCount == 0 || vertexStart >= meshData_.vertices.size() ||
-            vertexCount > meshData_.vertices.size() - vertexStart) {
+        if (vertexCount == 0 || vertexStart >= mesh.vertices.size() ||
+            vertexCount > mesh.vertices.size() - vertexStart) {
             continue;
         }
         const std::size_t vertexEnd = vertexStart + vertexCount;
         if (!instance.enabled) {
             if (!instance.bindPoseApplied) {
                 std::copy_n(
-                    meshData_.bindPoseVertices.begin() + vertexStart,
+                    mesh.bindPoseVertices.begin() + vertexStart,
                     vertexCount,
-                    meshData_.vertices.begin() + vertexStart
+                    mesh.vertices.begin() + vertexStart
                 );
                 instance.bindPoseApplied = true;
                 instance.bindPoseUploadFramesRemaining =
-                    static_cast<std::uint32_t>(vertexBuffers_.size());
+                    frameCount;
             }
             if (instance.bindPoseUploadFramesRemaining > 0) {
                 updatedVertexRanges.push_back({vertexStart, vertexCount});
@@ -961,9 +941,9 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
             continue;
         }
         std::copy_n(
-            meshData_.bindPoseVertices.begin() + vertexStart,
+            mesh.bindPoseVertices.begin() + vertexStart,
             vertexCount,
-            meshData_.vertices.begin() + vertexStart
+            mesh.vertices.begin() + vertexStart
         );
         updatedVertexRanges.push_back({vertexStart, vertexCount});
         instance.bindPoseApplied = true;
@@ -973,15 +953,15 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         }
         const std::size_t animationStart = instance.animationStart;
         const std::size_t animationEnd = animationStart + instance.animationCount;
-        if (animationStart >= meshData_.skeletalAnimations.size() ||
-            animationEnd > meshData_.skeletalAnimations.size()) {
+        if (animationStart >= mesh.skeletalAnimations.size() ||
+            animationEnd > mesh.skeletalAnimations.size()) {
             continue;
         }
         const std::size_t clipIndex = std::min<std::size_t>(
             instance.activeClip,
             instance.animationCount - 1
         );
-        const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
+        const SkeletalAnimationClip& clip = mesh.skeletalAnimations[
             animationStart + clipIndex
         ];
         const double ticksPerSecond = clip.ticksPerSecond > 0.0
@@ -1015,9 +995,9 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         }
         const double timeTicks = static_cast<double>(instance.timeSeconds) * ticksPerSecond;
 
-        const ModelNode* root = findModelNodeById(meshData_.hierarchy, instance.rootNodeId);
+        const ModelNode* root = findModelNodeById(mesh.hierarchy, instance.rootNodeId);
         if (root == nullptr) {
-            for (ModelNode& additionalNode : meshData_.additionalNodes) {
+            for (ModelNode& additionalNode : mesh.additionalNodes) {
                 root = findModelNodeById(additionalNode, instance.rootNodeId);
                 if (root != nullptr) {
                     break;
@@ -1057,11 +1037,11 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         evaluateNode(evaluateNode, *root, glm::mat4(1.0f));
 
         const std::size_t boneStart = instance.boneStart;
-        if (boneStart >= meshData_.skeletonBones.size()) {
+        if (boneStart >= mesh.skeletonBones.size()) {
             continue;
         }
         const std::size_t boneEnd = std::min<std::size_t>(
-            meshData_.skeletonBones.size(),
+            mesh.skeletonBones.size(),
             boneStart + instance.boneCount
         );
         const std::size_t boneMatrixCount = boneEnd - boneStart;
@@ -1069,7 +1049,7 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         std::vector<glm::mat3> boneNormalMatrices(boneMatrixCount, glm::mat3(1.0f));
         std::vector<bool> validBoneMatrices(boneMatrixCount, false);
         for (std::size_t boneIndex = boneStart; boneIndex < boneEnd; ++boneIndex) {
-            const SkeletonBone& bone = meshData_.skeletonBones[boneIndex];
+            const SkeletonBone& bone = mesh.skeletonBones[boneIndex];
             const auto globalIt = animatedGlobals.find(bone.nodeId);
             const glm::mat4 animatedGlobal = globalIt == animatedGlobals.end()
                 ? bone.bindPoseGlobalTransform
@@ -1086,8 +1066,8 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         for (std::size_t vertexIndex = vertexStart;
              vertexIndex < vertexEnd;
              ++vertexIndex) {
-            Vertex& vertex = meshData_.vertices[vertexIndex];
-            const Vertex& sourceVertex = meshData_.skinSourceVertices[vertexIndex];
+            Vertex& vertex = mesh.vertices[vertexIndex];
+            const Vertex& sourceVertex = mesh.skinSourceVertices[vertexIndex];
             glm::vec4 skinnedPosition(0.0f);
             glm::vec3 skinnedNormal(0.0f);
             float totalWeight = 0.0f;
@@ -1122,15 +1102,44 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         instance.bindPoseUploadFramesRemaining = 0;
     }
 
-    if (currentFrame_ < vertexBuffers_.size()) {
-        for (const UpdatedVertexRange& range : updatedVertexRanges) {
-            vertexBuffers_[currentFrame_]->upload(
-                meshData_.vertices.data() + range.start,
-                sizeof(Vertex) * range.count,
-                sizeof(Vertex) * range.start
-            );
+    for (const auto& range : updatedVertexRanges) upload(range.start, range.count);
+}
+
+void Renderer::updateSkeletalAnimations(float deltaSeconds) {
+    if (currentFrame_ >= vertexBuffers_.size()) return;
+    const auto configure = [this](SkeletalAnimationInstance& instance) {
+        if (instance.rootNodeId == kPlayerSceneNodeId) {
+            const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
+                *playerRunAnimationClipIndex_ < instance.animationCount;
+            const std::optional<std::uint32_t>* activeAttackClip = nullptr;
+            if (playerController_.activeAttack() == PlayerAttack::Tornado) {
+                activeAttackClip = &playerAttackAnimationClipIndex_;
+            } else if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
+                activeAttackClip = &playerLightningAnimationClipIndex_;
+            } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
+                activeAttackClip = &playerFlameAnimationClipIndex_;
+            }
+            const bool hasAttackClip = activeAttackClip != nullptr &&
+                activeAttackClip->has_value() &&
+                **activeAttackClip < instance.animationCount;
+            instance.enabled = (hasAttackClip && playerController_.attacking()) ||
+                (hasRunClip && playerController_.moving());
+            instance.playing = false;
+            instance.looping = !playerController_.attacking();
+            if (hasAttackClip && playerController_.attacking()) {
+                instance.timeSeconds = playerController_.attackAnimationTimeSeconds();
+                instance.activeClip = **activeAttackClip;
+            } else if (hasRunClip) {
+                instance.timeSeconds = playerController_.runAnimationTimeSeconds();
+                instance.activeClip = *playerRunAnimationClipIndex_;
+            }
         }
-    }
+    };
+    updateSkeletalMesh(meshData_, deltaSeconds, static_cast<std::uint32_t>(vertexBuffers_.size()),
+        [this](std::size_t start, std::size_t count) {
+            vertexBuffers_[currentFrame_]->upload(
+                meshData_.vertices.data() + start, sizeof(Vertex) * count, sizeof(Vertex) * start);
+        }, configure);
 }
 
 void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds) {

@@ -366,6 +366,9 @@ void Renderer::recordCommandBuffer(
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
+#ifndef VULKCORE_OHOS
+    if (resourcePreview_.draw) recordResourcePreview(commandBuffer);
+#endif
     const VkExtent2D extent = swapChain_->extent();
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
 
@@ -811,6 +814,12 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
 bool Renderer::drawFrame() {
     if (mode_ == Mode::ModelViewer) loadModelViewerDrop();
 #ifndef VULKCORE_OHOS
+    if (!resourceBrowser_.root.empty()) {
+        processResourceTransfers();
+        if (toolUiVisible_ && resourceBrowser_.open) loadResourcePreview();
+        resourceBrowser_.dropZones.clear();
+        resourcePreview_.draw = false;
+    }
     if (editorShaderApplyRequested_) {
         editorShaderApplyRequested_ = false;
         applyEditorShader();
@@ -882,6 +891,15 @@ bool Renderer::drawFrame() {
     updatePlayerController(particleDeltaSeconds, viewportHovered);
     updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
     updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
+#ifndef VULKCORE_OHOS
+    if (resourcePreview_.draw) {
+        updateSkeletalMesh(resourcePreview_.mesh, particleDeltaSeconds, kMaxFramesInFlight,
+            [this](std::size_t start, std::size_t count) {
+                resourcePreview_.vertices[currentFrame_]->upload(resourcePreview_.mesh.vertices.data() + start,
+                    sizeof(Vertex) * count, sizeof(Vertex) * start);
+            });
+    }
+#endif
     lastFrameElapsedSeconds_ = elapsedSeconds;
     updateCameraBasis();
     updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
@@ -978,6 +996,9 @@ void Renderer::recreateSwapChain() {
 #endif
 
     context_->waitIdle();
+#ifndef VULKCORE_OHOS
+    destroyResourcePreviewTargets();
+#endif
     destroySceneRenderResources();
     hdrComposition_.reset();
     swapChain_->recreate(renderPass_);

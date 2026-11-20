@@ -143,16 +143,14 @@ cmake --build build --parallel
 工具面板中的 `Terrain frustum culling` 可切换此功能并查看提交的地形块数。使用 `--capture-frame`
 截图对比时，可加 `--no-terrain-culling` 关闭剔除。
 
-程序启动时默认显示空场景，不会自动导入 `assets/models` 中的模型。模型需要在运行时由
-Resource Manager 导入，或通过场景文件恢复。
+程序启动时默认显示空场景。场景中的模型由场景文件加载，底部 Resource Manager 提供独立资源预览。
 
 `loadModelMesh()` 会将 FBX 中的所有网格合并为一个 32 位索引网格，并应用节点变换、
 三角化、平滑法线生成、首个 UV 通道、顶点颜色和材质信息读取；同时保留 FBX 原始节点
 层级，供右侧 Model Hierarchy 面板展示。没有 UV 的顶点会使用 `(0, 0)`。每个材质对应
 一个绘制分段，材质纹理不可用时使用其 Base Color/Diffuse 颜色。
 模型中的骨骼绑定、骨骼层级、动画 Clip、节点通道和 Position/Rotation/Scale 关键帧会
-一并解析并缓存；带动画的导入模型默认播放第一个 Clip，Resource Manager 的 Inspector
-会显示骨骼与动画摘要，选中场景中的模型节点后可切换 Clip、播放/暂停、循环、速度和时间。
+一并解析并缓存。带动画的导入模型默认播放第一个 Clip，选中场景中的模型节点后可切换 Clip、播放/暂停、循环、速度和时间。
 渲染器会根据模型包围盒自动居中缩放，并启用深度测试和基于法线的基础光照。
 
 CMake 会优先使用 GLFW/GLM 导出的 CMake package，其次使用 pkg-config，
@@ -256,24 +254,12 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 新建 Material 与 Node 绑定会保存为 `material`、`material_textures` 和 `node_material`
 配置。
 
-页面底部的 Resource Manager 是统一的资源导入与检查工作区：
+页面底部的 Resource Manager 会在桌面可执行文件旁创建 `resource/`，通常是 `build/resource/`。
 
-- 输入模型路径即可在运行时向当前场景追加模型；成功导入后会重建网格、材质纹理和 Vulkan
-  descriptor 资源，已保存的当前场景会同步记录全部模型路径。
-- 资源列表会递归扫描 `assets` 下的模型文件，并按 Model、Material、Texture 分类。
-- 选中任意 Model 资源后，路径会自动填入上方 Import Model 输入框，右侧 Inspector 和中间
-  层级面板会展开显示该模型的导入信息；模型解析结果会缓存，重复切换时直接显示缓存信息；
-  点击 `Import Model` 可将其追加到当前场景。
-- Model Inspector 会展示骨骼数量、蒙皮网格/权重、骨骼父子关系，以及每个动画 Clip 的时长、
-  通道和三类关键帧数量。
-- 选中 Model 后，Materials 和 Textures 会切换到该模型自己的资源；材质支持编辑 Base Color、
-  Normal、Specular 三个纹理槽。模型同级 `tex` 文件夹中的图片会递归出现在候选列表，也可以
-  手动输入图片路径；修改后的材质配置会随当前场景保存，并同步到该模型的所有场景实例。
-- 场景文件默认保存在项目根目录的 `scenes/*.scene`；可在 Resource Manager 中保存当前
-  场景；`New Empty Scene` 会自动命名并保存空场景，或从 Scenes 列表加载已有场景。
-- 选择 Model 后可沿原始层级检查节点的导入材质与实际生效材质。
-- 选择 Material 或 Texture 后可查看三类纹理槽的加载/回退状态并重新指定资源。
-- `Apply engine-safe defaults` 可恢复当前引擎默认 Shader ABI、Opaque 混合和深度写入要求。
+- 点击 **New Folder** 在当前目录新建文件夹，双击文件夹进入，点击 **Up** 返回上级。
+- 将系统文件拖到左侧列表或某个文件夹行，会复制到对应目录。在面板内将文件拖到文件夹行或 **Up**，会移动该文件。同名文件会保留并显示提示。
+- 单击 `.sbfres` 或 `.bfres` 模型，在右侧预览。可以切换模型、左键拖动环绕、滚轮缩放。将同名 `.Tex` 贴图包和 `_Animation` 骨骼动画包放在模型同一目录，即可自动加载。
+- 单击独立骨骼动画包，可使用同目录的配套模型预览，也可从下拉框选择其他模型。动画支持切换片段、播放、暂停、循环、调速和时间轴定位。
 
 #### Particle System
 
