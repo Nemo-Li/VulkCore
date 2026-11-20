@@ -406,7 +406,7 @@ float snorm(unsigned value, unsigned bits) {
 }
 
 struct AttributeFormat {
-    enum class Type { Float, Half, Unorm, Snorm, PackedNormal };
+    enum class Type { Float, Half, Unorm, Snorm, Unsigned, PackedNormal };
     Type type;
     unsigned components;
     unsigned componentBytes;
@@ -427,8 +427,10 @@ AttributeFormat attributeFormat(const Binary& file, unsigned format) {
     case 0x0215: return {Type::Snorm, 4, 2};
     case 0x0109: return {Type::Unorm, 2, 1};
     case 0x0209: return {Type::Snorm, 2, 1};
+    case 0x0309: return {Type::Unsigned, 2, 1};
     case 0x010b: return {Type::Unorm, 4, 1};
     case 0x020b: return {Type::Snorm, 4, 1};
+    case 0x030b: return {Type::Unsigned, 4, 1};
     case 0x020e: return {Type::PackedNormal, 4, 1};
     default: file.fail("unsupported vertex attribute format " + std::to_string(format));
     }
@@ -454,6 +456,9 @@ glm::vec4 readAttribute(const Binary& buffer, std::size_t offset, const Attribut
             result[c] = format.componentBytes == 1 ? snorm(buffer.u8(offset), 8) :
                 snorm(buffer.u16(offset), 16);
             break;
+        case Type::Unsigned:
+            result[c] = static_cast<float>(buffer.u8(offset));
+            break;
         case Type::PackedNormal: break;
         }
         if (!std::isfinite(result[c])) buffer.fail("non-finite vertex attribute");
@@ -463,8 +468,19 @@ glm::vec4 readAttribute(const Binary& buffer, std::size_t offset, const Attribut
 
 struct VertexStream { Binary buffer; std::size_t stride; };
 
-void appendVertices(const Binary& file, const Binary& gpu, std::size_t offset,
-                    std::size_t count, const glm::mat4& transform, MeshData& meshData) {
+void appendVertices(
+    const Binary& file,
+    const Binary& gpu,
+    std::size_t offset,
+    std::size_t count,
+    const glm::mat4& transform,
+    std::size_t skinCount,
+    std::size_t skeletonBoneCount,
+    const std::vector<std::uint16_t>& matrixToBoneIndices,
+    std::size_t skeletonBoneOffset,
+    MeshData& meshData
+) {
+    if (skinCount > 4) file.fail("BFRES vertex skinning has more than four influences");
     const auto attributeCount = file.u8(offset + 0x54);
     const auto streamCount = file.u8(offset + 0x55);
     const auto attributes = file.table(offset + 0x10, attributeCount, 16);
@@ -487,7 +503,10 @@ void appendVertices(const Binary& file, const Binary& gpu, std::size_t offset,
     for (std::size_t i = 0; i < attributeCount; ++i) {
         const auto attribute = attributes + i * 16;
         const auto name = file.string(attribute);
-        if (name != "_p0" && name != "_n0" && name != "_u0" && name != "_c0") continue;
+        if (name != "_p0" && name != "_n0" && name != "_u0" && name != "_c0" &&
+            name != "_i0" && name != "_i1" && name != "_w0" && name != "_w1") {
+            continue;
+        }
         const auto type = (file.u8(attribute + 8) << 8) | file.u8(attribute + 9);
         const auto format = attributeFormat(file, type);
         const auto index = file.u16(attribute + 14);
@@ -504,6 +523,34 @@ void appendVertices(const Binary& file, const Binary& gpu, std::size_t offset,
             if (name == "_n0") vertex.normal = glm::vec3(value);
             if (name == "_u0") vertex.texCoord = glm::vec2(value);
             if (name == "_c0") vertex.color = value;
+            if (skinCount > 0 && (name == "_i0" || name == "_i1")) {
+                const int firstInfluence = name == "_i0" ? 0 : 4;
+                for (std::size_t influence = 0; influence < 4 &&
+                     firstInfluence + static_cast<int>(influence) < static_cast<int>(skinCount);
+                     ++influence) {
+                    // Vertex skin attributes address the matrix palette. BFRES stores
+                    // the corresponding skeleton bone in MatrixToBoneList.
+                    const auto localIndex = static_cast<std::size_t>(std::lround(value[influence]));
+                    if (localIndex >= matrixToBoneIndices.size()) {
+                        file.fail("vertex skin matrix index outside FSKL");
+                    }
+                    const auto boneIndex = matrixToBoneIndices[localIndex];
+                    if (boneIndex >= skeletonBoneCount) {
+                        file.fail("vertex skin bone index outside FSKL");
+                    }
+                    vertex.boneIndices[firstInfluence + static_cast<int>(influence)] =
+                        static_cast<int>(skeletonBoneOffset + boneIndex);
+                }
+            }
+            if (skinCount > 0 && (name == "_w0" || name == "_w1")) {
+                const int firstInfluence = name == "_w0" ? 0 : 4;
+                for (std::size_t influence = 0; influence < 4 &&
+                     firstInfluence + static_cast<int>(influence) < static_cast<int>(skinCount);
+                     ++influence) {
+                    vertex.boneWeights[firstInfluence + static_cast<int>(influence)] =
+                        std::max(0.0f, value[influence]);
+                }
+            }
         }
     }
     if (!hasPositions) file.fail("FVTX has no _p0 position");
@@ -524,13 +571,33 @@ glm::vec3 readVec3(const Binary& file, std::size_t offset) {
     return result;
 }
 
-std::vector<glm::mat4> boneTransforms(const Binary& file, std::size_t skeleton) {
-    if (skeleton == 0) return {};
+struct SbfresSkeleton {
+    std::vector<std::string> names;
+    std::vector<std::int32_t> parents;
+    std::vector<std::uint16_t> matrixToBoneIndices;
+    std::vector<glm::mat4> localTransforms;
+    std::vector<glm::mat4> globalTransforms;
+};
+
+SbfresSkeleton readSkeleton(const Binary& file, std::size_t skeleton) {
+    SbfresSkeleton result;
+    if (skeleton == 0) return result;
     file.magic(skeleton, "FSKL");
     const auto count = file.u16(skeleton + 0x3c);
     const auto bones = file.table(skeleton + 0x18, count, 0x50);
-    std::vector<glm::mat4> transforms;
-    transforms.reserve(count);
+    const auto matrixCount = static_cast<std::size_t>(file.u16(skeleton + 0x3e)) +
+        file.u16(skeleton + 0x40);
+    const auto matrixToBone = file.table(skeleton + 0x20, matrixCount, 2);
+    result.matrixToBoneIndices.reserve(matrixCount);
+    for (std::size_t i = 0; i < matrixCount; ++i) {
+        const auto boneIndex = file.u16(matrixToBone + i * 2);
+        if (boneIndex >= count) file.fail("FSKL matrix-to-bone index outside skeleton");
+        result.matrixToBoneIndices.push_back(boneIndex);
+    }
+    result.names.reserve(count);
+    result.parents.reserve(count);
+    result.localTransforms.reserve(count);
+    result.globalTransforms.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         const auto bone = bones + i * 0x50;
         const auto parent = file.u16(bone + 0x1a);
@@ -544,16 +611,49 @@ std::vector<glm::mat4> boneTransforms(const Binary& file, std::size_t skeleton) 
             orientation = glm::quat(file.f32(bone + 0x40), rotation);
         }
         const float length = glm::length(orientation);
-        if (!std::isfinite(length) || length == 0.0f || scale.x == 0 || scale.y == 0 || scale.z == 0) {
+        if (!std::isfinite(length) || length == 0.0f ||
+            scale.x == 0.0f || scale.y == 0.0f || scale.z == 0.0f) {
             file.fail("invalid rigid bone transform");
         }
         const glm::mat4 local = glm::translate(glm::mat4(1.0f), translation) *
-            glm::mat4_cast(orientation / length) * glm::scale(glm::mat4(1.0f), scale);
+            glm::mat4_cast(orientation / length) *
+            glm::scale(glm::mat4(1.0f), scale);
         if (parent != 0xffff && parent >= i) file.fail("invalid or unordered bone parent");
-        transforms.push_back(parent == 0xffff ? local : transforms[parent] * local);
+        result.names.push_back(file.string(bone));
+        result.parents.push_back(parent == 0xffff ? -1 : static_cast<std::int32_t>(parent));
+        result.localTransforms.push_back(local);
+        result.globalTransforms.push_back(
+            parent == 0xffff ? local : result.globalTransforms[parent] * local
+        );
     }
-    return transforms;
+    return result;
 }
+
+void appendSkeletonNodes(
+    const SbfresSkeleton& skeleton,
+    const std::vector<std::uint32_t>& nodeIds,
+    ModelNode& model
+) {
+    const auto buildNode = [&skeleton, &nodeIds](const auto& self, std::size_t index) -> ModelNode {
+        ModelNode node;
+        node.name = skeleton.names[index];
+        node.nodeId = nodeIds[index];
+        node.localTransform = skeleton.localTransforms[index];
+        node.globalTransform = skeleton.globalTransforms[index];
+        for (std::size_t childIndex = 0; childIndex < skeleton.parents.size(); ++childIndex) {
+            if (skeleton.parents[childIndex] == static_cast<std::int32_t>(index)) {
+                node.children.push_back(self(self, childIndex));
+            }
+        }
+        return node;
+    };
+    for (std::size_t index = 0; index < skeleton.parents.size(); ++index) {
+        if (skeleton.parents[index] < 0) {
+            model.children.push_back(buildNode(buildNode, index));
+        }
+    }
+}
+
 
 void addBounds(ModelNode& node, const glm::vec3& p) {
     if (node.hasBounds) {
@@ -565,15 +665,38 @@ void addBounds(ModelNode& node, const glm::vec3& p) {
     }
 }
 
-void appendShape(const Binary& file, const Binary& gpu, std::size_t shape, std::size_t vertexTable,
-                 std::size_t vertexBufferCount, std::size_t materialStart, std::size_t materialCount,
-                 const std::vector<glm::mat4>& bones, ModelNode& node, MeshData& result) {
+void appendShape(
+    const Binary& file,
+    const Binary& gpu,
+    std::size_t shape,
+    std::size_t vertexTable,
+    std::size_t vertexBufferCount,
+    std::size_t materialStart,
+    std::size_t materialCount,
+    const SbfresSkeleton& skeleton,
+    std::size_t skeletonBoneOffset,
+    ModelNode& node,
+    MeshData& result
+) {
     file.magic(shape, "FSHP");
     node.name = file.string(shape + 0x10);
-    if (file.u8(shape + 0x66) != 0) file.fail("weighted skinning is unsupported");
     const auto lodCount = file.u8(shape + 0x67);
-    if (lodCount == 0) return;
+    const auto skinCount = file.u8(shape + 0x66);
+    const auto skinBoneCount = file.u16(shape + 0x64);
+    if (skinCount > 4) file.fail("BFRES shape has more than four skin influences");
+    if (skinCount > 0 && skinBoneCount == 0) file.fail("skinned BFRES shape has no skin bone table");
+    const auto skinBoneTable = file.table(shape + 0x28, skinBoneCount, 2);
+    std::vector<std::uint16_t> skinBoneIndices;
+    skinBoneIndices.reserve(skinBoneCount);
+    for (std::size_t i = 0; i < skinBoneCount; ++i) {
+        const auto boneIndex = file.u16(skinBoneTable + i * 2);
+        if (boneIndex >= skeleton.globalTransforms.size()) {
+            file.fail("FSHP skin bone index outside FSKL");
+        }
+        skinBoneIndices.push_back(boneIndex);
+    }
     const auto lod = file.table(shape + 0x20, lodCount, 0x38);
+    if (lodCount == 0) return;
     const auto indexCount = file.u32(lod + 0x2c);
     if (indexCount == 0) return;
     if (file.u32(lod + 0x24) != 3 || indexCount % 3 != 0) file.fail("expected triangle-list LOD0");
@@ -581,7 +704,9 @@ void appendShape(const Binary& file, const Binary& gpu, std::size_t shape, std::
     const auto boneIndex = file.u16(shape + 0x60);
     const auto vertexIndex = file.u16(shape + 0x62);
     if (materialIndex >= materialCount || vertexIndex >= vertexBufferCount ||
-        (!bones.empty() && boneIndex >= bones.size())) file.fail("invalid FSHP reference");
+        (!skeleton.globalTransforms.empty() && boneIndex >= skeleton.globalTransforms.size())) {
+        file.fail("invalid FSHP reference");
+    }
     const auto vertex = vertexTable + vertexIndex * 0x60;
     file.magic(vertex, "FVTX");
     const auto vertexCount = file.u32(vertex + 0x58);
@@ -595,8 +720,38 @@ void appendShape(const Binary& file, const Binary& gpu, std::size_t shape, std::
     const Binary indices{gpu.slice(file.u32(lod + 0x20), bufferSize), "FSHP indices"};
     const auto baseVertex = file.u32(lod + 0x30);
     const auto start = static_cast<std::uint32_t>(result.vertices.size());
-    node.localTransform = node.globalTransform = bones.empty() ? glm::mat4(1.0f) : bones[boneIndex];
-    appendVertices(file, gpu, vertex, vertexCount, node.globalTransform, result);
+    const glm::mat4 geometryTransform = skinCount == 0
+        ? (skeleton.globalTransforms.empty() ? glm::mat4(1.0f) : skeleton.globalTransforms[boneIndex])
+        : glm::mat4(1.0f);
+    node.localTransform = node.globalTransform = geometryTransform;
+    appendVertices(
+        file,
+        gpu,
+        vertex,
+        vertexCount,
+        geometryTransform,
+        skinCount,
+        skeleton.globalTransforms.size(),
+        skeleton.matrixToBoneIndices,
+        skeletonBoneOffset,
+        result
+    );
+
+    if (skinCount > 0) {
+        ++result.skinnedMeshCount;
+        for (std::size_t vertexIndex = start; vertexIndex < result.vertices.size(); ++vertexIndex) {
+            const Vertex& skinnedVertex = result.vertices[vertexIndex];
+            for (std::size_t influence = 0; influence < 4; ++influence) {
+                if (skinnedVertex.boneWeights[influence] <= 0.0f) continue;
+                ++result.skinWeightCount;
+                const auto globalBoneIndex = skinnedVertex.boneIndices[influence];
+                if (globalBoneIndex >= 0 &&
+                    static_cast<std::size_t>(globalBoneIndex) < result.skeletonBones.size()) {
+                    ++result.skeletonBones[static_cast<std::size_t>(globalBoneIndex)].influenceCount;
+                }
+            }
+        }
+    }
 
     const auto firstIndex = static_cast<std::uint32_t>(result.indices.size());
     for (std::size_t i = 0; i < indexCount; ++i) {
@@ -613,7 +768,257 @@ void appendShape(const Binary& file, const Binary& gpu, std::size_t shape, std::
     result.parts.push_back({firstIndex, indexCount, static_cast<std::uint32_t>(materialStart + materialIndex), node.nodeId});
 }
 
-MeshData parseModel(const Binary& file, TexturePacks& textures) {
+struct BfresCurve {
+    std::uint16_t flags = 0;
+    std::uint32_t target = 0;
+    float startFrame = 0.0f;
+    float endFrame = 0.0f;
+    float scale = 1.0f;
+    float offset = 0.0f;
+    std::vector<float> frames;
+    std::vector<std::array<float, 4>> keys;
+
+    unsigned curveType() const { return (flags >> 4) & 7; }
+
+    float sample(float frame) const {
+        if (frames.empty()) return offset;
+        if (frames.size() == 1 || frame <= frames.front()) {
+            return keys.front()[0] * scale + offset;
+        }
+        if (frame >= frames.back()) {
+            return keys.back()[0] * scale + offset;
+        }
+        const auto upper = std::upper_bound(frames.begin(), frames.end(), frame);
+        const std::size_t rightIndex = static_cast<std::size_t>(upper - frames.begin());
+        const std::size_t leftIndex = rightIndex - 1;
+        const float span = frames[rightIndex] - frames[leftIndex];
+        const float factor = span <= std::numeric_limits<float>::epsilon()
+            ? 0.0f
+            : (frame - frames[leftIndex]) / span;
+        const auto& left = keys[leftIndex];
+        if (curveType() == 0) {
+            const float a = left[0] * scale + offset;
+            const float b = left[1] * scale;
+            const float c = left[2] * scale;
+            const float d = left[3] * scale;
+            return ((d * factor + c) * factor + b) * factor + a;
+        }
+        if (curveType() == 1) {
+            return left[0] * scale + offset + left[1] * scale * factor;
+        }
+        if (curveType() == 2 || curveType() == 5 || curveType() == 7) {
+            const auto index = std::min<std::size_t>(
+                keys.size() - 1,
+                static_cast<std::size_t>(std::floor(frame - startFrame))
+            );
+            return keys[index][0] * scale + offset;
+        }
+        return left[0] * scale + offset;
+    }
+};
+
+float readCurveKey(const Binary& file, std::size_t offset, unsigned keyType, unsigned curveType) {
+    if (curveType == 4 || curveType == 6) {
+        return static_cast<float>(file.u32(offset));
+    }
+    switch (keyType) {
+    case 0: return file.f32(offset);
+    case 1: return static_cast<float>(static_cast<std::int16_t>(file.u16(offset)));
+    case 2: return static_cast<float>(static_cast<std::int8_t>(file.u8(offset)));
+    default: file.fail("unsupported FSKA curve key type");
+    }
+}
+
+BfresCurve readCurve(const Binary& file, std::size_t offset) {
+    BfresCurve result;
+    result.flags = file.u16(offset + 0x10);
+    const auto frameCount = file.u16(offset + 0x12);
+    result.target = file.u32(offset + 0x14);
+    result.startFrame = file.f32(offset + 0x18);
+    result.endFrame = file.f32(offset + 0x1c);
+    result.scale = file.f32(offset + 0x20);
+    result.offset = file.f32(offset + 0x24);
+    const auto frameType = result.flags & 3;
+    const auto keyType = (result.flags >> 2) & 3;
+    const auto type = result.curveType();
+    const auto frameData = file.pointer(offset);
+    const auto keyData = file.pointer(offset + 8);
+    if (frameCount == 0 || frameData == 0 || keyData == 0 ||
+        !std::isfinite(result.startFrame) || !std::isfinite(result.endFrame) ||
+        !std::isfinite(result.scale) || !std::isfinite(result.offset)) {
+        file.fail("invalid FSKA curve");
+    }
+    result.frames.reserve(frameCount);
+    for (std::size_t i = 0; i < frameCount; ++i) {
+        float frame = 0.0f;
+        switch (frameType) {
+        case 0: frame = file.f32(frameData + i * 4); break;
+        case 1: frame = static_cast<float>(static_cast<std::int16_t>(file.u16(frameData + i * 2))) / 32.0f; break;
+        case 2: frame = static_cast<float>(file.u8(frameData + i)); break;
+        default: file.fail("unsupported FSKA curve frame type");
+        }
+        if (!std::isfinite(frame)) file.fail("non-finite FSKA curve frame");
+        result.frames.push_back(frame);
+    }
+    const std::size_t elements = type == 0 ? 4 : type == 1 ? 2 : 1;
+    const std::size_t elementBytes = keyType == 0 ? 4 : keyType == 1 ? 2 : 1;
+    result.keys.resize(frameCount);
+    for (std::size_t i = 0; i < frameCount; ++i) {
+        for (std::size_t element = 0; element < elements; ++element) {
+            result.keys[i][element] = readCurveKey(
+                file,
+                keyData + (i * elements + element) * elementBytes,
+                keyType,
+                type
+            );
+            if (!std::isfinite(result.keys[i][element])) file.fail("non-finite FSKA curve key");
+        }
+    }
+    return result;
+}
+
+std::vector<SkeletalAnimationClip> readSkeletalAnimations(const Binary& file) {
+    const auto animationCount = file.u16(0xbe);
+    if (animationCount == 0) return {};
+    const auto animations = file.table(0x38, animationCount, 0x60);
+    std::vector<SkeletalAnimationClip> result;
+    result.reserve(animationCount);
+    for (std::size_t animationIndex = 0; animationIndex < animationCount; ++animationIndex) {
+        const auto animation = animations + animationIndex * 0x60;
+        SkeletalAnimationClip clip;
+        clip.name = file.string(animation + 0x10);
+        clip.durationTicks = static_cast<double>(file.u32(animation + 0x4c));
+        clip.ticksPerSecond = 30.0;
+        const auto boneCount = file.u16(animation + 0x58);
+        const auto bones = file.table(animation + 0x30, boneCount, 0x28);
+        const bool looping = (file.u32(animation + 0x48) & 4) != 0;
+        clip.channels.reserve(boneCount);
+        for (std::size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
+            const auto bone = bones + boneIndex * 0x28;
+            const auto curveCount = file.u8(bone + 0x1e);
+            if (curveCount == 0) continue;
+            const auto boneFlags = file.u32(bone + 0x18);
+            const auto baseData = file.pointer(bone + 0x10);
+            glm::vec3 baseScale(1.0f);
+            glm::vec3 baseTranslation(0.0f);
+            glm::vec4 baseRotation(0.0f, 0.0f, 0.0f, 1.0f);
+            if (baseData != 0) {
+                std::size_t cursor = baseData;
+                if (boneFlags & (1u << 3)) {
+                    baseScale = readVec3(file, cursor);
+                    cursor += 12;
+                }
+                if (boneFlags & (1u << 4)) {
+                    baseRotation = glm::vec4(
+                        file.f32(cursor), file.f32(cursor + 4),
+                        file.f32(cursor + 8), file.f32(cursor + 12)
+                    );
+                    cursor += 16;
+                }
+                if (boneFlags & (1u << 5)) baseTranslation = readVec3(file, cursor);
+            }
+            const auto curveTable = file.table(bone + 8, curveCount, 0x30);
+            std::vector<BfresCurve> curves;
+            curves.reserve(curveCount);
+            for (std::size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex) {
+                curves.push_back(readCurve(file, curveTable + curveIndex * 0x30));
+            }
+            const auto findCurve = [&curves](std::uint32_t target) -> const BfresCurve* {
+                for (const BfresCurve& curve : curves) {
+                    if (curve.target == target) return &curve;
+                }
+                return nullptr;
+            };
+            const bool hasPosition = findCurve(0x10) != nullptr ||
+                findCurve(0x14) != nullptr || findCurve(0x18) != nullptr;
+            const bool hasScale = findCurve(0x04) != nullptr ||
+                findCurve(0x08) != nullptr || findCurve(0x0c) != nullptr;
+            const bool hasRotation = findCurve(0x20) != nullptr ||
+                findCurve(0x24) != nullptr || findCurve(0x28) != nullptr ||
+                findCurve(0x2c) != nullptr;
+            if (!hasPosition && !hasScale && !hasRotation) continue;
+
+            SkeletalAnimationChannel channel;
+            channel.nodeName = file.string(bone);
+            channel.preBehavior = looping ? AnimationBehavior::Repeat : AnimationBehavior::Default;
+            channel.postBehavior = looping ? AnimationBehavior::Repeat : AnimationBehavior::Default;
+            const auto sample = [&findCurve](std::uint32_t target, float frame, float fallback) {
+                const BfresCurve* curve = findCurve(target);
+                return curve == nullptr ? fallback : curve->sample(frame);
+            };
+            const auto frameCount = static_cast<std::size_t>(clip.durationTicks);
+            for (std::size_t frame = 0; frame <= frameCount; ++frame) {
+                const float time = static_cast<float>(frame);
+                if (hasPosition) {
+                    channel.positionKeys.push_back({
+                        static_cast<double>(frame),
+                        glm::vec3(
+                            sample(0x10, time, baseTranslation.x),
+                            sample(0x14, time, baseTranslation.y),
+                            sample(0x18, time, baseTranslation.z)
+                        )
+                    });
+                }
+                if (hasScale) {
+                    channel.scalingKeys.push_back({
+                        static_cast<double>(frame),
+                        glm::vec3(
+                            sample(0x04, time, baseScale.x),
+                            sample(0x08, time, baseScale.y),
+                            sample(0x0c, time, baseScale.z)
+                        )
+                    });
+                }
+                if (hasRotation) {
+                    if ((file.u32(animation + 0x48) & 0x7000) == 0x1000) {
+                        const glm::vec3 euler(
+                            sample(0x20, time, baseRotation.x),
+                            sample(0x24, time, baseRotation.y),
+                            sample(0x28, time, baseRotation.z)
+                        );
+                        const glm::quat rotation = glm::normalize(glm::quat(euler));
+                        channel.rotationKeys.push_back({
+                            static_cast<double>(frame),
+                            glm::vec4(rotation.x, rotation.y, rotation.z, rotation.w)
+                        });
+                    } else {
+                        const glm::vec4 rotation(
+                            sample(0x20, time, baseRotation.x),
+                            sample(0x24, time, baseRotation.y),
+                            sample(0x28, time, baseRotation.z),
+                            sample(0x2c, time, baseRotation.w)
+                        );
+                        const glm::quat normalized = glm::normalize(glm::quat(
+                            rotation.w, rotation.x, rotation.y, rotation.z
+                        ));
+                        channel.rotationKeys.push_back({
+                            static_cast<double>(frame),
+                            glm::vec4(normalized.x, normalized.y, normalized.z, normalized.w)
+                        });
+                    }
+                }
+            }
+            clip.channels.push_back(std::move(channel));
+        }
+        result.push_back(std::move(clip));
+    }
+    return result;
+}
+
+struct ImportedModelRange {
+    std::uint32_t rootNodeId = 0;
+    std::size_t vertexStart = 0;
+    std::size_t vertexCount = 0;
+    std::size_t boneStart = 0;
+    std::size_t boneCount = 0;
+    std::vector<std::string> boneNames;
+};
+
+MeshData parseModel(
+    const Binary& file,
+    TexturePacks& textures,
+    std::vector<SkeletalAnimationClip> animations
+) {
     const auto modelCount = file.u16(0xbc);
     if (modelCount == 0 || modelCount > 1024) file.fail("invalid FMDL count");
     const auto models = file.table(0x28, modelCount, 0x78);
@@ -623,6 +1028,8 @@ MeshData parseModel(const Binary& file, TexturePacks& textures) {
     const Binary gpu{file.slice(gpuStart, file.u32(bufferInfo + 4)), "BFRES GPU section"};
     MeshData result;
     result.hierarchy.name = file.string(0x20);
+    std::vector<ImportedModelRange> ranges;
+    ranges.reserve(modelCount);
     std::uint32_t nextNode = 1;
     for (std::size_t i = 0; i < modelCount; ++i) {
         const auto model = models + i * 0x78;
@@ -636,7 +1043,7 @@ MeshData parseModel(const Binary& file, TexturePacks& textures) {
         const auto vertices = file.table(model + 0x28, vertexCount, 0x60);
         const auto shapes = file.table(model + 0x30, shapeCount, 0x70);
         const auto materials = file.table(model + 0x40, materialCount, 0xb8);
-        const auto bones = boneTransforms(file, file.pointer(model + 0x20));
+        const SbfresSkeleton skeleton = readSkeleton(file, file.pointer(model + 0x20));
         const auto materialStart = result.materials.size();
         for (std::size_t j = 0; j < materialCount; ++j) {
             result.materials.push_back(readMaterial(file, materials + j * 0xb8, textures));
@@ -644,11 +1051,40 @@ MeshData parseModel(const Binary& file, TexturePacks& textures) {
         ModelNode node;
         node.name = file.string(model + 0x10);
         node.nodeId = nextNode++;
+        const auto vertexStart = result.vertices.size();
+        const auto boneStart = result.skeletonBones.size();
+        std::vector<std::uint32_t> boneNodeIds;
+        boneNodeIds.reserve(skeleton.names.size());
+        for (std::size_t boneIndex = 0; boneIndex < skeleton.names.size(); ++boneIndex) {
+            const auto nodeId = nextNode++;
+            boneNodeIds.push_back(nodeId);
+            SkeletonBone bone;
+            bone.name = skeleton.names[boneIndex];
+            bone.nodeId = nodeId;
+            bone.parentIndex = skeleton.parents[boneIndex] < 0
+                ? -1
+                : static_cast<std::int32_t>(boneStart + skeleton.parents[boneIndex]);
+            bone.bindPoseGlobalTransform = skeleton.globalTransforms[boneIndex];
+            bone.offsetMatrix = glm::inverse(bone.bindPoseGlobalTransform);
+            result.skeletonBones.push_back(std::move(bone));
+        }
+        appendSkeletonNodes(skeleton, boneNodeIds, node);
         for (std::size_t j = 0; j < shapeCount; ++j) {
             ModelNode shape;
             shape.nodeId = nextNode++;
-            appendShape(file, gpu, shapes + j * 0x70, vertices, vertexCount, materialStart, materialCount,
-                        bones, shape, result);
+            appendShape(
+                file,
+                gpu,
+                shapes + j * 0x70,
+                vertices,
+                vertexCount,
+                materialStart,
+                materialCount,
+                skeleton,
+                boneStart,
+                shape,
+                result
+            );
             if (shape.hasBounds) {
                 addBounds(node, shape.boundsMinimum);
                 addBounds(node, shape.boundsMaximum);
@@ -659,9 +1095,69 @@ MeshData parseModel(const Binary& file, TexturePacks& textures) {
             addBounds(result.hierarchy, node.boundsMinimum);
             addBounds(result.hierarchy, node.boundsMaximum);
         }
+        ranges.push_back({
+            node.nodeId,
+            vertexStart,
+            result.vertices.size() - vertexStart,
+            boneStart,
+            skeleton.names.size(),
+            skeleton.names
+        });
         result.hierarchy.children.push_back(std::move(node));
     }
     if (result.indices.empty()) file.fail("no renderable triangles");
+
+    if (!animations.empty()) {
+        std::size_t targetRange = 0;
+        std::size_t bestMatchCount = 0;
+        for (std::size_t rangeIndex = 0; rangeIndex < ranges.size(); ++rangeIndex) {
+            std::size_t matchCount = 0;
+            for (const SkeletalAnimationClip& animation : animations) {
+                for (const SkeletalAnimationChannel& channel : animation.channels) {
+                    if (std::find(
+                            ranges[rangeIndex].boneNames.begin(),
+                            ranges[rangeIndex].boneNames.end(),
+                            channel.nodeName
+                        ) != ranges[rangeIndex].boneNames.end()) {
+                        ++matchCount;
+                    }
+                }
+            }
+            if (matchCount > bestMatchCount) {
+                bestMatchCount = matchCount;
+                targetRange = rangeIndex;
+            }
+        }
+        if (bestMatchCount == 0) file.fail("FSKA bones do not match any model skeleton");
+        const ImportedModelRange& range = ranges[targetRange];
+        for (SkeletalAnimationClip& animation : animations) {
+            for (SkeletalAnimationChannel& channel : animation.channels) {
+                const auto boneIt = std::find(
+                    range.boneNames.begin(), range.boneNames.end(), channel.nodeName
+                );
+                if (boneIt == range.boneNames.end()) continue;
+                const auto localBoneIndex = static_cast<std::size_t>(boneIt - range.boneNames.begin());
+                channel.boneIndex = static_cast<std::int32_t>(range.boneStart + localBoneIndex);
+                channel.nodeId = result.skeletonBones[range.boneStart + localBoneIndex].nodeId;
+            }
+        }
+        result.skeletalAnimations = std::move(animations);
+        SkeletalAnimationInstance instance;
+        instance.rootNodeId = range.rootNodeId;
+        instance.vertexStart = static_cast<std::uint32_t>(range.vertexStart);
+        instance.vertexCount = static_cast<std::uint32_t>(range.vertexCount);
+        instance.boneStart = static_cast<std::uint32_t>(range.boneStart);
+        instance.boneCount = static_cast<std::uint32_t>(range.boneCount);
+        instance.animationStart = 0;
+        instance.animationCount = static_cast<std::uint32_t>(result.skeletalAnimations.size());
+        instance.globalInverseTransform = glm::mat4(1.0f);
+        instance.enabled = true;
+        instance.playing = true;
+        instance.looping = true;
+        result.skeletalAnimationInstances.push_back(instance);
+    }
+    result.bindPoseVertices = result.vertices;
+    result.skinSourceVertices = result.vertices;
     return result;
 }
 
@@ -681,7 +1177,17 @@ bool isBfresTextureSidecarPath(const std::filesystem::path& path) {
     return isBfresPath(path) && lower(path.stem().extension().string()) == ".tex";
 }
 
-MeshData loadSbfresMesh(const std::filesystem::path& modelPath, const std::filesystem::path& texturePath) {
+bool isBfresAnimationPath(const std::filesystem::path& path) {
+    if (!isBfresPath(path)) return false;
+    std::string name = lower(path.stem().string());
+    return name.find("animation") != std::string::npos || name.find("anim") != std::string::npos;
+}
+
+MeshData loadSbfresMesh(
+    const std::filesystem::path& modelPath,
+    const std::filesystem::path& texturePath,
+    const std::filesystem::path& animationPath
+) {
     auto sidecarPath = texturePath;
     if (sidecarPath.empty()) {
         sidecarPath = modelPath.parent_path() /
@@ -698,12 +1204,20 @@ MeshData loadSbfresMesh(const std::filesystem::path& modelPath, const std::files
             sidecarBytes = readArchive(sidecarPath);
             if (!textures.add(fres(sidecarBytes))) throw std::runtime_error("missing BNTX texture pack");
         }
-        auto result = parseModel(model, textures);
+        std::vector<std::uint8_t> animationBytes;
+        std::vector<SkeletalAnimationClip> animations;
+        if (!animationPath.empty()) {
+            animationBytes = readArchive(animationPath);
+            animations = readSkeletalAnimations(fres(animationBytes));
+            if (animations.empty()) throw std::runtime_error("animation BFRES contains no FSKA clips");
+        }
+        auto result = parseModel(model, textures, std::move(animations));
         if (result.hierarchy.name.empty()) result.hierarchy.name = modelPath.stem().string();
         return result;
     } catch (const std::exception& error) {
         auto source = modelPath.string();
         if (!sidecarPath.empty()) source += " + " + sidecarPath.string();
+        if (!animationPath.empty()) source += " + " + animationPath.string();
         throw std::runtime_error("failed to load '" + source + "': " + error.what());
     }
 }

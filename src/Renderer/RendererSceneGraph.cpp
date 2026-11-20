@@ -654,8 +654,11 @@ void Renderer::drawSkeletalAnimationControls(
     (void)shouldSaveSettings;
     SkeletalAnimationInstance* instance = nullptr;
     for (SkeletalAnimationInstance& candidate : meshData_.skeletalAnimationInstances) {
-        if (node.nodeId >= candidate.rootNodeId &&
-            node.nodeId - candidate.rootNodeId < kSceneModelNodeStride) {
+        const bool belongsToNode = mode_ == Mode::ModelViewer
+            ? candidate.rootNodeId == node.nodeId
+            : node.nodeId >= candidate.rootNodeId &&
+                node.nodeId - candidate.rootNodeId < kSceneModelNodeStride;
+        if (belongsToNode) {
             instance = &candidate;
             break;
         }

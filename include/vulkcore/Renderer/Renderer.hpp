@@ -252,6 +252,7 @@ private:
     Mode mode_ = Mode::Scene;
     std::vector<std::filesystem::path> viewerDropPaths_;
     std::string viewerFilename_;
+    std::string viewerAnimationFilename_;
     std::string viewerError_;
     std::size_t viewerModelIndex_ = 0;
     std::chrono::steady_clock::time_point startTime_;
