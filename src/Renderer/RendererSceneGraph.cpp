@@ -1142,20 +1142,31 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         }, configure);
 }
 
-void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds) {
+void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement) {
     updateSkeletalAnimations(deltaSeconds);
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
 
-    const auto updateNode = [this, elapsedSeconds](
+    const auto updateNode = [this, elapsedSeconds, &editMovement](
                                 const auto& self,
-                                const ModelNode& node,
+                                ModelNode& node,
                                 const glm::mat4& parentTransform,
                                 bool parentRenderEnabled
                             ) -> void {
         glm::mat4 objectTransform = parentTransform;
         if (node.objectType == SceneObjectType::Player) {
             objectTransform *= playerVisualTransform();
+        }
+        if (&node == selectedModelNode_ && editMovement != glm::vec3(0.0f)) {
+            // Translation is stored in the node's pivot axes, while edit movement uses scene axes.
+            const glm::mat3 basis(objectTransform * node.globalTransform);
+            if (glm::determinant(basis) != 0.0f) {
+                const glm::vec3 position = node.transformTranslation + glm::inverse(basis) * editMovement;
+                if (std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z)) {
+                    node.transformTranslation = position;
+                    editorDirty_ = true;
+                }
+            }
         }
         const bool isTornadoMesh = node.nodeId == kPlayerTornadoMeshNodeId;
         glm::mat4 transform = isTornadoMesh
@@ -1171,13 +1182,13 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
             (!isTornadoMesh || tornadoMeshVisible_);
         sceneNodeTransforms_.insert_or_assign(node.nodeId, transform);
         sceneNodeRenderEnabled_.insert_or_assign(node.nodeId, renderEnabled);
-        for (const ModelNode& child : node.children) {
+        for (ModelNode& child : node.children) {
             self(self, child, transform, renderEnabled);
         }
     };
 
     updateNode(updateNode, meshData_.hierarchy, glm::mat4(1.0f), true);
-    for (const ModelNode& node : meshData_.additionalNodes) {
+    for (ModelNode& node : meshData_.additionalNodes) {
         updateNode(updateNode, node, glm::mat4(1.0f), true);
     }
 }

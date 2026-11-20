@@ -903,7 +903,12 @@ bool Renderer::drawFrame() {
     );
     updatePlayerController(particleDeltaSeconds, viewportHovered);
     updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
-    updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds);
+    updateCameraBasis();
+    glm::vec3 editMovement(0.0f);
+#ifndef VULKCORE_OHOS
+    editMovement = updateGameEditorSelection(particleDeltaSeconds, viewportHovered);
+#endif
+    updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds, editMovement);
 #ifndef VULKCORE_OHOS
     if (resourcePreview_.draw) {
         updateSkeletalMesh(resourcePreview_.mesh, particleDeltaSeconds, kMaxFramesInFlight,
@@ -914,17 +919,20 @@ bool Renderer::drawFrame() {
     }
 #endif
     lastFrameElapsedSeconds_ = elapsedSeconds;
-    updateCameraBasis();
     updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
-    updateBoundingBoxVertices();
+    if (mode_ == Mode::ModelViewer) updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
     const auto clipFromScene = updateUniformBuffer();
+#ifndef VULKCORE_OHOS
+    if (clipFromScene) drawGameSelectionOutline(*clipFromScene);
+#endif
+    ImGui::Render();
     updateGrassCoverage();
     updateParticleBuffer();
-    updateBoundingBoxBuffer();
+    if (mode_ == Mode::ModelViewer) updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }

@@ -320,25 +320,168 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
     cameraBasisInitialized_ = false;
 }
 
+bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize) {
+    if (!miniMapVisible_ || !terrainScene_ || !physicsWorld_ || !playerController_.active() ||
+        !fixedFrameOutput_.empty()) {
+        return false;
+    }
+
+    const auto& worldMinimum = terrainScene_->boundsMinimum();
+    const auto& worldMaximum = terrainScene_->boundsMaximum();
+    const float worldWidth = worldMaximum.x - worldMinimum.x;
+    const float worldDepth = worldMaximum.z - worldMinimum.z;
+    if (!std::isfinite(worldWidth) || !std::isfinite(worldDepth) ||
+        worldWidth <= std::numeric_limits<float>::epsilon() ||
+        worldDepth <= std::numeric_limits<float>::epsilon()) {
+        return false;
+    }
+
+    constexpr float margin = 14.0f;
+    constexpr ImVec2 padding(10.0f, 8.0f);
+    const float lineHeight = ImGui::GetTextLineHeightWithSpacing();
+    const float maxWidth = viewportSize.x - 2.0f * (margin + padding.x);
+    const float maxHeight = viewportSize.y - 2.0f * (margin + padding.y) - lineHeight;
+    const bool showCoordinates = std::min(maxWidth, maxHeight - lineHeight) >= 128.0f;
+    const float canvasSide = std::min({196.0f, maxWidth, maxHeight - (showCoordinates ? lineHeight : 0.0f)});
+    if (canvasSide < 64.0f) return false;
+
+    const ImVec2 windowSize(canvasSide + 2.0f * padding.x,
+        canvasSide + 2.0f * padding.y + lineHeight * (showCoordinates ? 2.0f : 1.0f));
+    ImGui::SetNextWindowPos(ImVec2(viewportOrigin.x + viewportSize.x - margin - windowSize.x,
+        viewportOrigin.y + viewportSize.y - margin - windowSize.y));
+    ImGui::SetNextWindowSize(windowSize);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+    if (!ImGui::Begin("Mini Map", nullptr, flags)) {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        return false;
+    }
+    const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+
+    ImGui::TextUnformatted("Mini Map");
+#ifndef VULKCORE_OHOS
+    if (canvasSide >= 90.0f) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("[M]");
+    }
+#endif
+    const ImVec2 canvasMinimum = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##MiniMapCanvas", ImVec2(canvasSide, canvasSide));
+    const bool mapHovered = ImGui::IsItemHovered();
+    const bool mapClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+
+    const float scale = canvasSide / std::max(worldWidth, worldDepth);
+    const ImVec2 mapSize(worldWidth * scale, worldDepth * scale);
+    const ImVec2 mapMinimum(canvasMinimum.x + (canvasSide - mapSize.x) * 0.5f,
+        canvasMinimum.y + (canvasSide - mapSize.y) * 0.5f);
+    const ImVec2 mapMaximum(mapMinimum.x + mapSize.x, mapMinimum.y + mapSize.y);
+    const auto worldToMap = [&](float x, float z) {
+        return ImVec2(mapMinimum.x + (x - worldMinimum.x) * scale,
+            mapMinimum.y + (z - worldMinimum.z) * scale);
+    };
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(canvasMinimum,
+        ImVec2(canvasMinimum.x + canvasSide, canvasMinimum.y + canvasSide), IM_COL32(10, 18, 18, 255), 5.0f);
+    drawList->PushClipRect(mapMinimum, mapMaximum, true);
+    const float heightRange = std::max(worldMaximum.y - worldMinimum.y, 0.0001f);
+    constexpr glm::vec3 lowColor(0.10f, 0.27f, 0.13f);
+    constexpr glm::vec3 middleColor(0.33f, 0.52f, 0.19f);
+    constexpr glm::vec3 highColor(0.52f, 0.50f, 0.38f);
+    for (const TerrainChunk& chunk : terrainScene_->chunks()) {
+        for (const TerrainTile& tile : chunk.tiles()) {
+            const auto& minimum = tile.boundsMinimum();
+            const auto& maximum = tile.boundsMaximum();
+            const auto start = worldToMap(minimum.x, minimum.z);
+            const auto end = worldToMap(maximum.x, maximum.z);
+            const float height = std::clamp(((minimum.y + maximum.y) * 0.5f - worldMinimum.y) / heightRange,
+                0.0f, 1.0f);
+            const glm::vec3 color = height < 0.58f ? glm::mix(lowColor, middleColor, height / 0.58f)
+                : glm::mix(middleColor, highColor, (height - 0.58f) / 0.42f);
+            drawList->AddRectFilled(start, end, ImGui::ColorConvertFloat4ToU32(ImVec4(color.r, color.g, color.b, 1.0f)));
+            drawList->AddRect(start, end, IM_COL32(220, 238, 191, 24));
+        }
+    }
+
+    const auto& position = playerController_.position();
+    const auto marker = worldToMap(position.x, position.z);
+    const float yaw = playerController_.facingYawRadians();
+    const ImVec2 facing(std::sin(yaw), std::cos(yaw));
+    const ImVec2 right(-facing.y, facing.x);
+    drawList->AddCircle(marker, 7.0f, IM_COL32(30, 42, 28, 255), 20, 2.0f);
+    drawList->AddTriangleFilled(
+        ImVec2(marker.x + facing.x * 10.0f, marker.y + facing.y * 10.0f),
+        ImVec2(marker.x - facing.x * 4.0f + right.x * 5.0f, marker.y - facing.y * 4.0f + right.y * 5.0f),
+        ImVec2(marker.x - facing.x * 4.0f - right.x * 5.0f, marker.y - facing.y * 4.0f - right.y * 5.0f),
+        IM_COL32(255, 238, 102, 255));
+    drawList->AddText(ImVec2(mapMinimum.x + 5.0f, mapMinimum.y + 4.0f), IM_COL32(240, 244, 225, 210), "N");
+    drawList->PopClipRect();
+    drawList->AddRect(mapMinimum, mapMaximum, IM_COL32(223, 238, 205, 185), 3.0f, 0, 1.4f);
+
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    if (mapHovered && mouse.x >= mapMinimum.x && mouse.x < mapMaximum.x &&
+        mouse.y >= mapMinimum.y && mouse.y < mapMaximum.y) {
+        const glm::vec2 destination(worldMinimum.x + (mouse.x - mapMinimum.x) / scale,
+            worldMinimum.z + (mouse.y - mapMinimum.y) / scale);
+        if (terrainScene_->renderedHeightAtWorld(destination)) {
+            ImGui::SetTooltip("Travel to X %.1f, Z %.1f", destination.x, destination.y);
+            if (mapClicked && playerController_.teleport(*terrainScene_, *physicsWorld_, destination)) {
+                updatePlayerCamera();
+            }
+        } else {
+            ImGui::SetTooltip("No traversable terrain here");
+        }
+    }
+
+    if (showCoordinates) {
+        if (playerController_.debugModeEnabled() && canvasSide >= 174.0f) {
+            ImGui::Text("X %.0f  Y %.0f  Z %.0f", position.x, position.y, position.z);
+        } else {
+            ImGui::Text("X %.0f  Z %.0f", position.x, position.z);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    return hovered;
+}
+
 bool Renderer::buildImGuiFrame() {
     ImGui_ImplVulkan_NewFrame();
     newWindowImGuiFrame(context_->window(), swapChain_->extent());
     ImGui::NewFrame();
 
     if (mode_ == Mode::ModelViewer) {
-        const bool viewportHovered = drawModelViewerUi();
-        ImGui::Render();
-        return viewportHovered;
+        return drawModelViewerUi();
     }
 
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         toolUiVisible_ = !toolUiVisible_;
+        if (!toolUiVisible_) sceneEditMode_ = false;
     }
+    const auto& io = ImGui::GetIO();
+    const bool sceneShortcuts = io.KeyMods == 0 && !io.WantTextInput &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+#ifndef VULKCORE_OHOS
+    if (sceneShortcuts && fixedFrameOutput_.empty() && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+        sceneEditMode_ = !sceneEditMode_;
+        if (sceneEditMode_) toolUiVisible_ = true;
+    }
+#endif
     if (playerController_.active() && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
         playerController_.setDebugModeEnabled(!playerController_.debugModeEnabled());
     }
+    if (terrainScene_ && playerController_.active() && sceneShortcuts &&
+        !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+        miniMapVisible_ = !miniMapVisible_;
+    }
     if (transitionSettings_.enabled) {
-        const bool held = !playerController_.debugModeEnabled() && ImGui::IsKeyDown(ImGuiKey_Space) &&
+        const bool held = !sceneEditMode_ && !playerController_.debugModeEnabled() &&
+            ImGui::IsKeyDown(ImGuiKey_Space) &&
             (cameraOrbitDragging_ || !ImGui::IsAnyItemActive());
         if (held != transitionHeld_) {
             transitionHeld_ = held;
@@ -346,12 +489,22 @@ bool Renderer::buildImGuiFrame() {
             transitionPlayer_.play(held, transitionSettings_);
         }
     }
-    bool viewportHovered = !ImGui::GetIO().WantCaptureMouse;
+    bool viewportHovered = !io.WantCaptureMouse;
 #ifndef VULKCORE_OHOS
-    if (toolUiVisible_) viewportHovered = drawGameEditor();
+    if (toolUiVisible_) {
+        viewportHovered = drawGameEditor();
+    } else
 #endif
+    {
+        const auto* viewport = ImGui::GetMainViewport();
+        glm::vec2 viewportSize(viewport->WorkSize.x, viewport->WorkSize.y);
+#ifdef VULKCORE_OHOS
+        // Leave room for the touch controls along the bottom of the screen.
+        viewportSize.y *= 0.75f;
+#endif
+        if (drawMiniMap({viewport->WorkPos.x, viewport->WorkPos.y}, viewportSize)) viewportHovered = false;
+    }
     updateCameraOrbit(viewportHovered);
-    ImGui::Render();
     return viewportHovered;
 }
 

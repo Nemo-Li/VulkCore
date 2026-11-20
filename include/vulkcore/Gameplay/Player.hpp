@@ -56,6 +56,7 @@ public:
         PhysicsWorld& physics,
         const glm::vec2& worldPosition
     );
+    bool moveSpawn(const TerrainScene& terrain, PhysicsWorld& physics, const glm::vec2& worldPosition);
     void configureRunGait(
         float cycleDurationSeconds,
         float groundSpeed,

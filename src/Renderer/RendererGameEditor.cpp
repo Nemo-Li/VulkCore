@@ -2,6 +2,7 @@
 
 #ifndef VULKCORE_OHOS
 #include "../Platform/EditorFileDialog.hpp"
+#include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <imgui_internal.h>
@@ -100,7 +101,8 @@ bool Renderer::drawGameEditor() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("VulkCore Game Editor", nullptr, flags);
     ImGui::PopStyleVar(3);
 
@@ -163,12 +165,19 @@ bool Renderer::drawGameEditor() {
         if (ImGui::MenuItem("New Scene", newSceneShortcut)) newScene();
         if (ImGui::MenuItem("Open Scene...")) openScene();
         if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
+        ImGui::MenuItem("Edit Mode", "F5", &sceneEditMode_);
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Capture screenshot", "F12")) screenshotFromToolbar_ = true;
-            if (ImGui::MenuItem("Hide editor", "F1")) toolUiVisible_ = false;
+            if (ImGui::MenuItem("Hide editor", "F1")) {
+                toolUiVisible_ = false;
+                sceneEditMode_ = false;
+            }
             if (playerController_.active() && ImGui::MenuItem("Debug flight", "F2",
                 playerController_.debugModeEnabled())) {
                 playerController_.setDebugModeEnabled(!playerController_.debugModeEnabled());
+            }
+            if (terrainScene_ && playerController_.active()) {
+                ImGui::MenuItem("Mini Map", "M", &miniMapVisible_);
             }
             if (terrainScene_ && ImGui::MenuItem("Terrain frustum culling", nullptr,
                 terrainFrustumCullingEnabled_)) {
@@ -200,6 +209,7 @@ bool Renderer::drawGameEditor() {
     }
     const ImRect sceneViewport(ImVec2(origin.x + margin + left, panelY),
         ImVec2(origin.x + margin + width - right, panelY + panelHeight));
+    sceneEditorViewport_ = {sceneViewport.Min.x, sceneViewport.Min.y, sceneViewport.Max.x, sceneViewport.Max.y};
     if (acceptModelDrop && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
         ImGui::BeginDragDropTargetCustom(sceneViewport, ImGui::GetID("##SceneViewport"))) {
         acceptSceneModelDrop();
@@ -254,7 +264,163 @@ bool Renderer::drawGameEditor() {
     const bool hovered = ImGui::IsWindowHovered();
     ImGui::PopStyleColor(5);
     ImGui::End();
-    return hovered;
+    const bool miniMapHovered = drawMiniMap({sceneViewport.Min.x, sceneViewport.Min.y},
+        {sceneViewport.GetWidth(), sceneViewport.GetHeight()});
+    return hovered && !miniMapHovered;
+}
+
+glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportHovered) {
+    const auto& io = ImGui::GetIO();
+    if (!sceneEditMode_ || editorSelection_ != EditorSelection::Node || !selectedModelNode_ ||
+        pendingSceneChange_ != EditorSceneChange::None || pendingSceneNodeRemoval_ ||
+        io.KeyMods != 0 || io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        return glm::vec3(0.0f);
+    }
+
+    auto& node = *selectedModelNode_;
+    const auto id = node.nodeId;
+    const bool terrain = id >= kTerrainSceneNodeId && id < kPlayerSceneNodeId;
+    const bool grass = id == kGrassSceneNodeId || grassLodForLayer(id - kGrassLodNodeBase).has_value();
+    if (terrain || grass || id == kPlayerTornadoMeshNodeId ||
+        (&node == &meshData_.hierarchy && node.name == "Scene")) {
+        return glm::vec3(0.0f);
+    }
+
+    const ImRect viewport({sceneEditorViewport_.x, sceneEditorViewport_.y},
+        {sceneEditorViewport_.z, sceneEditorViewport_.w});
+    if (viewportHovered && viewport.Contains(io.MousePos) && io.MouseWheel != 0.0f) {
+        const float scale = std::clamp(node.transformScaleFactor * std::exp(0.12f * io.MouseWheel),
+            kMinimumModelScaleFactor, kMaximumModelScaleFactor);
+        if (scale != node.transformScaleFactor) {
+            node.transformScaleFactor = scale;
+            editorDirty_ = true;
+        }
+    }
+
+    const auto axis = [](ImGuiKey positive, ImGuiKey negative) {
+        return static_cast<float>(ImGui::IsKeyDown(positive)) - static_cast<float>(ImGui::IsKeyDown(negative));
+    };
+    const glm::vec2 input(axis(ImGuiKey_D, ImGuiKey_A), axis(ImGuiKey_W, ImGuiKey_S));
+    if (input == glm::vec2(0.0f) || deltaSeconds <= 0.0f) return glm::vec3(0.0f);
+
+    const glm::vec3 up = authoredView_.enabled ? authoredView_.up :
+        (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp);
+    glm::vec3 forward = cameraForward_ - up * glm::dot(cameraForward_, up);
+    if (glm::length(forward) < 0.0001f) {
+        forward = glm::cross(up, cameraRight_);
+    }
+    forward = glm::normalize(forward);
+    const glm::vec3 right = glm::cross(forward, up);
+    // Scale speed with the viewing distance so it feels similar across scene sizes.
+    const float speed = glm::length(cameraTarget_ - cameraPosition_) * 0.85f;
+    const glm::vec3 movement = glm::normalize(right * input.x + forward * input.y) * speed * deltaSeconds;
+
+    if (node.objectType == SceneObjectType::Player && playerController_.active()) {
+        // Keep the physics capsule and the saved spawn in sync with the edited player position.
+        const glm::vec3 destination = playerController_.position() + movement / modelScale_;
+        if (playerController_.moveSpawn(*terrainScene_, *physicsWorld_, {destination.x, destination.z})) {
+            playerSpawnPosition_ = playerController_.spawnPosition();
+            editorDirty_ = true;
+            updatePlayerCamera();
+            updateCameraBasis();
+        }
+        return glm::vec3(0.0f);
+    }
+    if (node.objectType == SceneObjectType::ParticleSystem) {
+        // Particle objects store translation directly in scene units.
+        node.transformTranslation += movement / modelScale_;
+        editorDirty_ = true;
+        return glm::vec3(0.0f);
+    }
+    return movement;
+}
+
+void Renderer::drawGameSelectionOutline(const glm::mat4& clipFromScene) {
+    if (!sceneEditMode_ || editorSelection_ != EditorSelection::Node || !selectedModelNode_) return;
+    const auto& node = *selectedModelNode_;
+    if (!isSceneNodeRenderEnabled(node.nodeId)) return;
+
+    glm::vec3 minimum = node.boundsMinimum;
+    glm::vec3 maximum = node.boundsMaximum;
+    glm::mat4 transform = transformForSceneNode(node.nodeId);
+    if (editorPart_ && *editorPart_ < meshData_.parts.size()) {
+        const auto& part = meshData_.parts[*editorPart_];
+        if (part.indexCount > 0) {
+            minimum = glm::vec3(std::numeric_limits<float>::max());
+            maximum = -minimum;
+            for (std::size_t i = part.firstIndex, end = i + part.indexCount; i < end; ++i) {
+                const auto& position = meshData_.vertices[meshData_.indices[i]].position;
+                minimum = glm::min(minimum, position);
+                maximum = glm::max(maximum, position);
+            }
+        } else if (!node.hasBounds) {
+            return;
+        }
+    } else if (node.objectType == SceneObjectType::ParticleSystem) {
+        const auto system = particleSystems_.find(node.nodeId);
+        if (system == particleSystems_.end()) return;
+        const auto& settings = system->second.settings();
+        const float radius = std::max({settings.startSize, settings.shapeRadius, 0.01f});
+        minimum = settings.position - glm::vec3(radius);
+        maximum = settings.position + glm::vec3(radius);
+        for (const auto& vertex : system->second.vertices()) {
+            minimum = glm::min(minimum, vertex.position);
+            maximum = glm::max(maximum, vertex.position);
+        }
+        transform = particleObjectTransform(node);
+    } else if (!node.hasBounds) {
+        return;
+    }
+
+    const glm::mat4 clipFromNode = clipFromScene * transform;
+    const std::array<glm::vec4, 8> corners = {{
+        clipFromNode * glm::vec4(minimum.x, minimum.y, minimum.z, 1.0f),
+        clipFromNode * glm::vec4(maximum.x, minimum.y, minimum.z, 1.0f),
+        clipFromNode * glm::vec4(maximum.x, maximum.y, minimum.z, 1.0f),
+        clipFromNode * glm::vec4(minimum.x, maximum.y, minimum.z, 1.0f),
+        clipFromNode * glm::vec4(minimum.x, minimum.y, maximum.z, 1.0f),
+        clipFromNode * glm::vec4(maximum.x, minimum.y, maximum.z, 1.0f),
+        clipFromNode * glm::vec4(maximum.x, maximum.y, maximum.z, 1.0f),
+        clipFromNode * glm::vec4(minimum.x, maximum.y, maximum.z, 1.0f)
+    }};
+    const auto* viewport = ImGui::GetMainViewport();
+    const auto screenPoint = [viewport](const glm::vec4& point) {
+        const glm::vec2 ndc = glm::vec2(point) / point.w;
+        return ImVec2(viewport->Pos.x + (0.5f * ndc.x + 0.5f) * viewport->Size.x,
+            viewport->Pos.y + (0.5f * ndc.y + 0.5f) * viewport->Size.y);
+    };
+    // Clip each edge in homogeneous Vulkan clip space before dividing by w.
+    constexpr std::array<glm::vec4, 6> planes = {{
+        {1, 0, 0, 1}, {-1, 0, 0, 1}, {0, 1, 0, 1}, {0, -1, 0, 1}, {0, 0, 1, 0}, {0, 0, -1, 1}
+    }};
+    auto* drawList = ImGui::GetBackgroundDrawList();
+    drawList->PushClipRect(ImVec2(sceneEditorViewport_.x, sceneEditorViewport_.y),
+        ImVec2(sceneEditorViewport_.z, sceneEditorViewport_.w), true);
+    for (std::size_t edge = 0; edge < kBoundingBoxEdges.size(); edge += 2) {
+        const auto& start = corners[kBoundingBoxEdges[edge]];
+        const auto& end = corners[kBoundingBoxEdges[edge + 1]];
+        float first = 0.0f;
+        float last = 1.0f;
+        for (const auto& plane : planes) {
+            const float a = glm::dot(plane, start);
+            const float b = glm::dot(plane, end);
+            if (a < 0.0f && b < 0.0f) {
+                first = 1.0f;
+                last = 0.0f;
+                break;
+            }
+            if (a < 0.0f) first = std::max(first, a / (a - b));
+            else if (b < 0.0f) last = std::min(last, a / (a - b));
+        }
+        if (first >= last) continue;
+        const glm::vec4 clippedStart = glm::mix(start, end, first);
+        const glm::vec4 clippedEnd = glm::mix(start, end, last);
+        if (clippedStart.w > 0.0f && clippedEnd.w > 0.0f) {
+            drawList->AddLine(screenPoint(clippedStart), screenPoint(clippedEnd), IM_COL32(255, 209, 65, 255), 2.5f);
+        }
+    }
+    drawList->PopClipRect();
 }
 
 bool Renderer::editorDeletePressed() const {
@@ -271,6 +437,7 @@ bool Renderer::editorDeletePressed() const {
 
 void Renderer::drawGameOutliner() {
     ImGui::SeparatorText("Scene");
+    if (sceneEditMode_) ImGui::TextDisabled("WASD Move / Wheel Scale");
     const auto select = [&](const char* label, EditorSelection selection) {
         if (ImGui::Selectable(label, editorSelection_ == selection)) {
             editorSelection_ = selection;
