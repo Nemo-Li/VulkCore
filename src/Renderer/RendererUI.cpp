@@ -275,8 +275,7 @@ void Renderer::updateTransition(float seconds) {
 }
 
 void Renderer::updateCameraOrbit(bool viewportHovered) {
-    if (!authoredView_.enabled || !authoredView_.orbitEnabled ||
-        playerController_.active() || !fixedFrameOutput_.empty()) {
+    if (!authoredView_.orbitEnabled || playerController_.active() || !fixedFrameOutput_.empty()) {
         cameraOrbitDragging_ = false;
         return;
     }
@@ -299,7 +298,7 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
         return;
     }
 
-    const glm::vec3 up = authoredView_.up;
+    const glm::vec3 up = authoredView_.enabled ? authoredView_.up : kDefaultSceneUp;
     const float height = glm::dot(offset, up);
     glm::vec3 horizontal = offset - up * height;
     if (glm::length(horizontal) < 0.0001f) {

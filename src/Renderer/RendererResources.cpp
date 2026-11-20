@@ -1413,7 +1413,7 @@ void Renderer::updateCameraBasis() {
 
     if (!cameraBasisInitialized_) {
         const glm::vec3 worldUp = authoredView_.enabled ? authoredView_.up :
-            (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f));
+            (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp);
         // At the exact pole the position alone does not define camera roll,
         // so retain the historical front-view orientation as the initial one.
         glm::vec3 initialUp = worldUp -
@@ -1440,7 +1440,7 @@ void Renderer::updateCameraBasis() {
             // Defensive fallback for a discontinuous external camera jump.
             const glm::vec3 worldUp = playerController_.active()
                 ? glm::vec3(0.0f, 1.0f, 0.0f)
-                : glm::vec3(0.0f, 0.0f, 1.0f);
+                : kDefaultSceneUp;
             continuousUp = worldUp -
                 cameraForward_ * glm::dot(worldUp, cameraForward_);
         }

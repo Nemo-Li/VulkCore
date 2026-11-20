@@ -2390,22 +2390,21 @@ bool Renderer::saveTransformSettings() const {
              << fog.horizonColor.b << ' ' << fog.upperColor.r << ' ' << fog.upperColor.g << ' '
              << fog.upperColor.b << "\n";
     }
-    if (authoredView_.enabled) {
-        const auto& v = authoredView_;
-        file << "authored_view " << v.target.x << ' ' << v.target.y << ' ' << v.target.z << ' '
-             << v.up.x << ' ' << v.up.y << ' ' << v.up.z << ' ' << v.fov << ' ' << v.minimumAspect << "\n";
-        if (v.orbitEnabled) {
-            file << "camera_orbit " << v.orbitPitchLimits.x << ' ' << v.orbitPitchLimits.y << "\n";
-        }
+    const auto& view = authoredView_;
+    if (view.enabled) {
+        file << "authored_view " << view.target.x << ' ' << view.target.y << ' ' << view.target.z << ' '
+             << view.up.x << ' ' << view.up.y << ' ' << view.up.z << ' ' << view.fov << ' ' << view.minimumAspect << "\n";
+    }
+    if (view.orbitEnabled) {
+        file << "camera_orbit " << view.orbitPitchLimits.x << ' ' << view.orbitPitchLimits.y << "\n";
     }
     if (transitionSettings_.enabled) {
         const auto& t = transitionSettings_;
         file << "material_transition " << t.delay << ' ' << t.duration << ' ' << t.dwell << ' '
              << t.autoplay << ' ' << t.activeFov << ' ' << t.distanceOffset << "\n";
     }
-    const bool saveAuthoredCamera = transitionSettings_.enabled ||
-        (authoredView_.enabled && authoredView_.orbitEnabled);
-    const auto& savedCamera = saveAuthoredCamera ? transitionCameraStart_ : cameraPosition_;
+    const bool saveInitialCamera = transitionSettings_.enabled || view.orbitEnabled;
+    const auto& savedCamera = saveInitialCamera ? transitionCameraStart_ : cameraPosition_;
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
          << "camera_position " << savedCamera.x << ' '
          << savedCamera.y << ' ' << savedCamera.z << "\n"

@@ -52,6 +52,8 @@ constexpr VkShaderStageFlags kMaterialPushConstantStageFlags =
     VK_SHADER_STAGE_FRAGMENT_BIT |
     VK_SHADER_STAGE_COMPUTE_BIT;
 
+constexpr glm::vec3 kDefaultSceneUp{0.0f, 0.0f, 1.0f};
+
 constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
 // Reserve a stable scene-object ID for the optional procedural Sun. Keeping
