@@ -169,5 +169,33 @@ int main() {
         return 12;
     }
 
+    constexpr std::uint32_t kPropId = 1;
+    physics.removePlayer();
+    physics.placeGravityBox(kPropId, {-4.0f, 3.0f, 0.0f}, {0.4f, 0.5f, 0.4f});
+    for (int step = 0; step < 10; ++step) physics.simulate(1.0f / 60.0f);
+    const auto fallingProp = physics.gravityBoxRenderCenter(kPropId);
+    if (!fallingProp || fallingProp->y >= 3.0f || fallingProp->y <= 0.5f) {
+        std::cerr << "gravity box did not fall from its spawn position\n";
+        return 13;
+    }
+    // Resizing or moving in the editor updates the collider and clears its momentum.
+    physics.placeGravityBox(kPropId, {-5.0f, 3.0f, 0.0f}, {0.4f, 0.8f, 0.4f});
+    for (int step = 0; step < 180; ++step) physics.simulate(1.0f / 60.0f);
+    const auto restingProp = physics.gravityBoxRenderCenter(kPropId);
+    if (!restingProp || std::abs(restingProp->y - 0.8f) > 0.06f || std::abs(restingProp->x + 5.0f) > 0.06f) {
+        std::cerr << "resized gravity box did not settle with its base on the terrain\n";
+        return 14;
+    }
+    physics.createPlayer({-5.0f, 1.8f, 0.0f}, 1.58f, 0.27f);
+    for (int step = 0; step < 120; ++step) physics.simulate(1.0f / 60.0f);
+    if (!physics.playerGrounded() || std::abs(physics.playerFootPosition().y - 1.6f) > 0.08f) {
+        std::cerr << "player did not settle on the placed box\n";
+        return 15;
+    }
+    physics.removeGravityBox(kPropId);
+    if (physics.gravityBoxRenderCenter(kPropId)) {
+        std::cerr << "removed gravity box was still present\n";
+        return 16;
+    }
     return 0;
 }

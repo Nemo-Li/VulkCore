@@ -7,9 +7,18 @@ player_spawn_position -205 124 -96
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
 model_resource_path "../build/windows/Release/resource/Obj_TreeApple_A.sbfres" 1
+node_gravity 1
+model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 1000001
+node_gravity 1000001
+model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 2000001
+node_gravity 2000001
+model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 3000001
+node_gravity 3000001
+model_resource_path "../build/windows/Release/resource/Obj_TreeApple_A.sbfres" 4000001
+node_gravity 4000001
 distance_fog 220 2500 0.319999993 0.389999986 0.569999993 0.689999998 0.239999995 0.430000007 0.639999986
 sun_present 0
-camera_position -0.0491999947 -0.0655452684 -0.0218808893
+camera_position -0.0411342122 -0.0657225847 -0.012748654
 ambient_color 0.180000007 0.209999993 0.239999995
 ambient_intensity 1
 sun_light_direction 0.435540557 0.532327354 0.725900888
@@ -17,8 +26,12 @@ sun_light_color 0.819999993 0.860000014 0.899999976
 sun_light_intensity 1
 shader_demo 0 1 0.25 0.5 0
 node_removed 4026531840
-particle_system_object 3758096369 1 0 0 192 0.159999996 190 0.340000004 0.159999996 0.00139200001 0.219999999 0.000187199985 0.00026879998 95 0 -0.0491999947 -0.0658798516 -0.0232368 -8.7265839e-08 0.0598922893 -0.998204827 13 3.35999976e-05 2 1 0.680000007 0.819999993 1 1 0.319999993 0.0799999982 1 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\lightning_slash.png"
-particle_system_object 3758096370 1 0 0 320 0.239999995 560 0.720000029 0.219999999 0.000563999987 0.300000012 0.000148799998 5.75999984e-05 18 0 -0.0491999947 -0.0660622567 -0.0230400003 0 0 1 24 0.000100799996 4 1 1 0.819999993 0.280000001 1 1 0.0799999982 0.00999999978 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\flame_nova.png"
-node_transform 1 -0.0491714031 0.0300884619 -0.0269759782 0 0 0 0.231636673
-material 28 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
-material_textures 28 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_distortion.png" ""
+particle_system_object 3758096369 1 0 0 192 0.159999996 190 0.340000004 0.159999996 0.00139200001 0.219999999 0.000187199985 0.00026879998 95 0 -0.0420435853 -0.0659511015 -0.0131288273 0.920963287 0.0598922893 0.385018855 13 3.35999976e-05 2 1 0.680000007 0.819999993 1 1 0.319999993 0.0799999982 1 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\lightning_slash.png"
+particle_system_object 3758096370 1 0 0 320 0.239999995 560 0.720000029 0.219999999 0.000563999987 0.300000012 0.000148799998 5.75999984e-05 18 0 -0.042225156 -0.0661335066 -0.0132047357 0 0 1 24 0.000100799996 4 1 1 0.819999993 0.280000001 1 1 0.0799999982 0.00999999978 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\flame_nova.png"
+node_transform 1 -0.049800545 0.0298679527 -0.0260001011 0 0 0 0.42206955
+node_transform 1000001 -0.0425720699 0.0297304485 -0.0150380507 0 0 0 1
+node_transform 2000001 -0.042634014 0.0297286157 -0.0145807602 0 0 0 1
+node_transform 3000001 -0.0425502509 0.0297237746 -0.0142132379 0 0 0 1
+node_transform 4000001 -0.0287250411 0.0321581326 -0.0388667621 0 0 0 0.548811674
+material 66 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
+material_textures 66 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_distortion.png" ""

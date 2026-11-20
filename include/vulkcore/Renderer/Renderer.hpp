@@ -242,6 +242,8 @@ private:
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement);
+    bool translateSceneNode(ModelNode& node, const glm::mat4& parentTransform, const glm::vec3& movement);
+    void updateModelGravity(ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform, bool visible);
     void configurePlayerRunAnimation();
     void updateSkeletalAnimations(float deltaSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
@@ -389,6 +391,8 @@ private:
     std::size_t terrainDrawCandidates_ = 0;
     std::size_t terrainDrawCulled_ = 0;
     std::unique_ptr<PhysicsWorld> physicsWorld_;
+    // Presence enables gravity. The matrix tracks the last synchronized model transform.
+    std::unordered_map<std::uint32_t, std::optional<glm::mat4>> modelGravity_;
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;

@@ -7,6 +7,8 @@
 #include <extensions/PxDefaultCpuDispatcher.h>
 #include <extensions/PxDefaultSimulationFilterShader.h>
 #include <extensions/PxExtensionsAPI.h>
+#include <extensions/PxRigidBodyExt.h>
+#include <extensions/PxSimpleFactory.h>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace VulkCore {
@@ -52,6 +55,13 @@ std::uint32_t workerThreadCount() {
 } // namespace
 
 struct PhysicsWorld::Impl {
+    struct GravityBox {
+        physx::PxRigidDynamic* actor = nullptr;
+        glm::vec3 halfExtents{0.0f};
+        glm::vec3 previousCenter{0.0f};
+        glm::vec3 currentCenter{0.0f};
+    };
+
     physx::PxDefaultAllocator allocator;
     physx::PxDefaultErrorCallback errorCallback;
     physx::PxFoundation* foundation = nullptr;
@@ -62,6 +72,7 @@ struct PhysicsWorld::Impl {
     physx::PxMaterial* playerFootMaterial = nullptr;
     std::vector<physx::PxRigidStatic*> terrainActors;
     std::vector<physx::PxTriangleMesh*> terrainMeshes;
+    std::unordered_map<std::uint32_t, GravityBox> gravityBoxes;
     physx::PxRigidDynamic* playerActor = nullptr;
     float playerHeight = 0.0f;
     float playerRadius = 0.0f;
@@ -182,7 +193,6 @@ struct PhysicsWorld::Impl {
         playerHeight = 0.0f;
         playerRadius = 0.0f;
         grounded = false;
-        accumulator = 0.0f;
         previousPlayerFootPosition = glm::vec3(0.0f);
         currentPlayerFootPosition = glm::vec3(0.0f);
         playerPoseInitialized = false;
@@ -214,7 +224,12 @@ struct PhysicsWorld::Impl {
 
     void clear() {
         removePlayer();
+        for (const auto& entry : gravityBoxes) {
+            entry.second.actor->release();
+        }
+        gravityBoxes.clear();
         removeTerrain();
+        accumulator = 0.0f;
     }
 
     void updateGroundedState() {
@@ -227,7 +242,7 @@ struct PhysicsWorld::Impl {
         if (playerActor->getLinearVelocity().y > kMaximumGroundedUpwardSpeed) {
             return;
         }
-        const physx::PxQueryFilterData queryFilter(physx::PxQueryFlag::eSTATIC);
+        const physx::PxQueryFilterData queryFilter(physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::eDYNAMIC);
         const float rayDistance = playerHeight * 0.5f + kGroundProbeDistance;
         const float offset = playerRadius * 0.7f;
         const std::array<physx::PxVec3, 5> probeOffsets{
@@ -492,6 +507,57 @@ float PhysicsWorld::terrainSweepDistance(
     return hit.hasBlock ? hit.block.distance : maxDistance;
 }
 
+void PhysicsWorld::placeGravityBox(std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents) {
+    const physx::PxTransform pose(toPhysX(center));
+    const physx::PxBoxGeometry geometry(toPhysX(halfExtents));
+    if (!pose.isValid() || !geometry.isValid()) {
+        throw std::invalid_argument("invalid gravity box bounds");
+    }
+
+    auto& box = impl_->gravityBoxes[id];
+    if (!box.actor) {
+        box.actor = physx::PxCreateDynamic(*impl_->physics, pose, geometry, *impl_->material, 50.0f);
+        if (!box.actor) {
+            impl_->gravityBoxes.erase(id);
+            throw std::runtime_error("PhysX failed to create a model gravity body");
+        }
+        box.actor->setRigidDynamicLockFlags(
+            physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X |
+            physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y |
+            physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z
+        );
+        box.actor->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
+        impl_->scene->addActor(*box.actor);
+    } else {
+        if (box.halfExtents != halfExtents) {
+            physx::PxShape* shape = nullptr;
+            box.actor->getShapes(&shape, 1);
+            shape->setGeometry(geometry);
+            physx::PxRigidBodyExt::updateMassAndInertia(*box.actor, 50.0f);
+        }
+        box.actor->setGlobalPose(pose);
+        box.actor->setLinearVelocity(physx::PxVec3(0.0f));
+    }
+    box.halfExtents = halfExtents;
+    box.previousCenter = center;
+    box.currentCenter = center;
+}
+
+void PhysicsWorld::removeGravityBox(std::uint32_t id) {
+    const auto box = impl_->gravityBoxes.find(id);
+    if (box != impl_->gravityBoxes.end()) {
+        box->second.actor->release();
+        impl_->gravityBoxes.erase(box);
+    }
+}
+
+std::optional<glm::vec3> PhysicsWorld::gravityBoxRenderCenter(std::uint32_t id) const {
+    const auto box = impl_->gravityBoxes.find(id);
+    if (box == impl_->gravityBoxes.end()) return std::nullopt;
+    const float interpolation = std::clamp(impl_->accumulator / kFixedTimeStep, 0.0f, 1.0f);
+    return glm::mix(box->second.previousCenter, box->second.currentCenter, interpolation);
+}
+
 void PhysicsWorld::createPlayer(
     const glm::vec3& footPosition,
     float height,
@@ -526,6 +592,8 @@ void PhysicsWorld::createPlayer(
         physx::PxQuat(physx::PxHalfPi, physx::PxVec3(0.0f, 0.0f, 1.0f))
     ));
     playerShape->setContactOffset(0.04f);
+    // Ground probes can hit placed models and should ignore the player's own capsule.
+    playerShape->setFlag(physx::PxShapeFlag::eSCENE_QUERY_SHAPE, false);
     impl_->playerActor->attachShape(*playerShape);
     playerShape->release();
 
@@ -544,7 +612,6 @@ void PhysicsWorld::createPlayer(
     impl_->scene->addActor(*impl_->playerActor);
     impl_->playerHeight = height;
     impl_->playerRadius = radius;
-    impl_->accumulator = 0.0f;
     impl_->previousPlayerFootPosition = impl_->rawPlayerFootPosition();
     impl_->currentPlayerFootPosition = impl_->previousPlayerFootPosition;
     impl_->playerPoseInitialized = true;
@@ -628,6 +695,11 @@ void PhysicsWorld::simulate(float deltaSeconds) {
         }
         if (impl_->playerPoseInitialized) {
             impl_->currentPlayerFootPosition = impl_->rawPlayerFootPosition();
+        }
+        for (auto& entry : impl_->gravityBoxes) {
+            auto& box = entry.second;
+            box.previousCenter = box.currentCenter;
+            box.currentCenter = fromPhysX(box.actor->getGlobalPose().p);
         }
         impl_->updateGroundedState();
         impl_->accumulator -= kFixedTimeStep;
