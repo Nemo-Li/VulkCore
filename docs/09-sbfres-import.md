@@ -8,7 +8,14 @@ cmake --build build --parallel
 ./build/vulkcore --scene scenes/tree_apple_sbfres.scene
 ```
 
-使用下面的命令抓取一帧。两份源文件通过场景路径和同目录命名约定加载。迁移到其他机器时，把两份文件放在同一目录，再更新场景中的 `model_resource_path`。解析 API 也接受显式贴图包路径 `loadSbfresMesh(modelPath, texturePath)`。
+使用下面的命令抓取一帧。两份源文件通过场景路径和同目录命名约定加载。迁移到其他机器时，把两份文件放在同一目录，再更新场景中的 `model_resource_path`。解析 API 也接受显式贴图包路径和独立动画包路径 `loadSbfresMesh(modelPath, texturePath, animationPath)`。模型查看器支持下面的命令行形式，也可以把三份文件一起拖入窗口。
+
+```sh
+./build/sbfres_viewer \
+  /Users/nemo/Downloads/Model\ 2/Enemy_Bokoblin.sbfres \
+  /Users/nemo/Downloads/Model\ 2/Enemy_Bokoblin.Tex.sbfres \
+  /Users/nemo/Downloads/Model\ 2/Enemy_Bokoblin_Animation.sbfres
+```
 
 ```sh
 ./build/vulkcore --scene scenes/tree_apple_sbfres.scene \
@@ -31,14 +38,21 @@ cmake --build build --parallel
 | --- | --- | --- |
 | `FMDL`，步长 `0x78` | `+0x10` 名称，`+0x20` FSKL，`+0x28` FVTX，`+0x30` FSHP，`+0x40` FMAT，`+0x68` 三类数组计数 | 每个 FMDL 是根下的 `ModelNode`，其中的 FSHP 成为子节点。节点 ID 按文件顺序分配。 |
 | `FVTX`，步长 `0x60` | `+0x10` 属性数组，`+0x38` 流大小数组，`+0x40` stride 数组，`+0x50` GPU 相对偏移，`+0x54` 属性数和流数，`+0x58` 顶点数 | 各顶点流按 8 字节对齐。属性记录用 16 字节步长，格式 ID 在 `+0x08` 且按大端读取，流内偏移和流号在 `+0x0C`、`+0x0E`。实际顶点分量按小端读取。 |
-| `FSHP`，步长 `0x70` | `+0x20` 指向 LOD 数组，`+0x5E` 材质索引，`+0x60` 骨骼索引，`+0x62` FVTX 索引，`+0x66` 每顶点骨骼影响数，`+0x67` LOD 数 | 取 LOD0。LOD 记录步长 `0x38`，索引缓冲大小记录、GPU 相对偏移、拓扑、索引格式、索引数、`FirstVertex` 依次取 `+0x18`、`+0x20`、`+0x24`、`+0x28`、`+0x2C`、`+0x30`。拓扑 3 是三角列表。索引格式 0、1、2 分别对应 8、16、32 位无符号索引。 |
-| `FSKL` | `+0x18` 指向骨骼表，`+0x3C` 是计数。骨骼记录步长 `0x50`，包含父节点和 TRS | 将刚性绑定变换应用到顶点，用逆转置矩阵变换法线。 |
+| `FSHP`，步长 `0x70` | `+0x20` 指向 LOD 数组，`+0x28` 指向蒙皮骨骼表，`+0x5E` 材质索引，`+0x60` 刚性骨骼索引，`+0x62` FVTX 索引，`+0x64` 蒙皮骨骼表数量，`+0x66` 每顶点骨骼影响数，`+0x67` LOD 数 | 取 LOD0。LOD 记录步长 `0x38`，索引缓冲大小记录、GPU 相对偏移、拓扑、索引格式、索引数、`FirstVertex` 依次取 `+0x18`、`+0x20`、`+0x24`、`+0x28`、`+0x2C`、`+0x30`。拓扑 3 是三角列表。索引格式 0、1、2 分别对应 8、16、32 位无符号索引。带权重的形状使用 `_i0` 和 `_w0` 将顶点绑定到 FSKL。 |
+| `FSKL` | `+0x18` 指向骨骼表，`+0x20` 指向 `MatrixToBoneList`，`+0x28` 指向平滑蒙皮逆矩阵，`+0x3C`、`+0x3E`、`+0x40` 分别是骨骼数、平滑矩阵数和刚性矩阵数。骨骼记录步长 `0x50`，包含父节点、矩阵索引和 TRS | 将骨骼层级加入 `ModelNode`。顶点蒙皮索引先经过 `MatrixToBoneList` 转成真实骨骼编号，再使用按绑定全局变换计算的逆绑定矩阵更新顶点。 |
 
-`_p0`、`_n0`、`_u0`、`_c0` 分别写入 `Vertex` 的位置、法线、首组 UV 和顶点色。样本用 `0x0515` 的 FP16×4 位置、`0x020E` 的 10:10:10:2 打包法线、FP16 或归一化 16 位 UV，以及 `0x010B` 的 UNORM8×4 顶点色。导入器也支持 `0x0109` 和 `0x0209` 的 8 位归一化双分量属性。对索引依次加 `FirstVertex` 和 VulkCore 合并缓冲的起始顶点，得到最终的 `uint32_t` 索引。每个形状生成一个 `MeshPart`、材质索引和包围盒。顶点、索引、材质与节点通过 `MeshData` 进入现有的上传与绘制流程。
+`_p0`、`_n0`、`_u0`、`_c0` 分别写入 `Vertex` 的位置、法线、首组 UV 和顶点色。蒙皮顶点的 `_i0` 和 `_w0` 分别写入四个骨骼索引和权重，格式 `0x0309`、`0x030B` 表示无符号字节索引，`0x0109`、`0x010B` 表示归一化字节权重。样本用 `0x0515` 的 FP16×4 位置、`0x020E` 的 10:10:10:2 打包法线、FP16 或归一化 16 位 UV，以及 `0x010B` 的 UNORM8×4 顶点色。导入器也支持 `0x0109` 和 `0x0209` 的 8 位归一化双分量属性。对索引依次加 `FirstVertex` 和 VulkCore 合并缓冲的起始顶点，得到最终的 `uint32_t` 索引。每个形状生成一个 `MeshPart`、材质索引和包围盒。顶点、索引、材质、骨架与节点通过 `MeshData` 进入现有的上传与绘制流程。
 
 两份样本验证了六个 FMDL、20 个 LOD0 网格、7,380 个顶点和 6,367 个三角形。默认场景显示其中四个网格，共 2,923 个三角形。
 
-## 贴图与材质
+## 骨骼动画
+
+独立动画 BFRES 的 FRES `+0x38` 指向 FSKA 数组，`+0xBE` 记录片段数量。FSKA 记录步长为 `0x60`，名称、骨骼动画表、flags、帧数、曲线数和骨骼数分别位于 `+0x10`、`+0x30`、`+0x48`、`+0x4C`、`+0x50` 和 `+0x58`。FSKA 的每个 BoneAnim 使用名称指针、曲线指针、基础 TRS 指针和 flags，曲线记录步长为 `0x30`。
+
+曲线帧支持 float、Q10.5 和字节格式，曲线值支持 float、Int16 和 SByte。Cubic 曲线按每个区间的四项系数采样，Euler XYZ 旋转在导入时转换为 `AnimationRotationKey` 四元数。片段按 30 FPS 写入现有的 `SkeletalAnimationClip`，曲线采样结果使用 `SkeletalAnimationChannel` 的位置、旋转和缩放关键帧。
+
+模型 FSKL 的骨骼名称与独立 FSKA 的 BoneAnim 名称匹配后，动画片段写入 `MeshData::skeletalAnimations`，并创建一个 `SkeletalAnimationInstance`。顶点使用 CPU 蒙皮更新到现有顶点缓冲，模型查看器工具栏通过片段下拉框选择动画，提供播放、暂停、重启、循环、速度和时间控制。
+
 
 - `FMAT` 的步长为 `0xB8`。`+0x38` 是贴图名指针数组，`+0xA8` 是贴图数，`+0x50` 指向采样器名字典。同一索引的采样器名与贴图名配对，再用贴图名匹配 BNTX。`_a0` 和 `_n0` 分别映射基础色和法线。启用 alpha test 的材质把 `_ms0` 绑定到独立遮罩。
 - BNTX 内部指针以 BNTX payload 起点为基准。从 `NX` 头的 `+0x24`、`+0x28` 读取数量和 BRTI 指针表。BRTI 记录提供平铺方式、宽高、格式、组件选择、GOB 高度参数和 mip 指针。图像以像素或 BC 压缩块为单位重新排序。Pitch-linear 使用 32 字节行对齐，Tegra block-linear 按 64 字节宽、8 行的 GOB 及其垂直分组计算地址。
@@ -55,7 +69,7 @@ cmake --build build --parallel
 | 材质数据与上传 | `EmbeddedTextureData` 记录色彩空间。`MaterialData` 增加 `embeddedAlphaMask` 和 `alphaCutoff`。材质更新时保留模型导入的裁切数据。 |
 | Descriptor 与片元着色器 | 材质布局增加 binding 8，默认绑定白色遮罩。`shader_base.frag` 将基础色纹理 alpha、材质 alpha 和遮罩红通道相乘，丢弃低于阈值的片元。树叶在不透明队列中写入深度。阈值使用基础 shader 原先闲置的 `waterFlow.x`，Push Constant 布局仍为 128 字节。 |
 
-当前实现面向 Switch 5.x 静态三角网格，渲染使用 VulkCore 的基础光照。Wii U 和其他 Switch 布局、带权重蒙皮与动画、多组 UV、源 shader、交互换 LOD、原始 mip 链和完整采样器状态属于后续扩展范围。叶片风动、透射和游戏的复合材质也在此范围内。
+当前实现面向 Switch 5.x 的三角网格、骨架和 FSKA 动画，渲染使用 VulkCore 的基础光照。Wii U 和其他 Switch 布局、多组 UV、源 shader、交互换 LOD、原始 mip 链和完整采样器状态属于后续扩展范围。叶片风动、透射和游戏的复合材质也在此范围内。
 
 ## 参考实现
 

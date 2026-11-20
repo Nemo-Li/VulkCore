@@ -33,6 +33,7 @@ void Renderer::loadModelViewerDrop() {
     const auto paths = std::exchange(viewerDropPaths_, {});
     std::filesystem::path modelPath;
     std::filesystem::path texturePath;
+    std::filesystem::path animationPath;
     MeshData imported;
     std::size_t initialModel = 0;
     try {
@@ -40,16 +41,23 @@ void Renderer::loadModelViewerDrop() {
             if (!isBfresPath(path)) {
                 throw std::runtime_error("Expected an SBFRES or BFRES file: " + utf8Filename(path));
             }
-            auto& destination = isBfresTextureSidecarPath(path) ? texturePath : modelPath;
-            if (!destination.empty()) {
-                throw std::runtime_error("Drop one model with at most one .Tex companion.");
+            std::filesystem::path* destination = nullptr;
+            if (isBfresTextureSidecarPath(path)) {
+                destination = &texturePath;
+            } else if (isBfresAnimationPath(path)) {
+                destination = &animationPath;
+            } else {
+                destination = &modelPath;
             }
-            destination = path;
+            if (!destination->empty()) {
+                throw std::runtime_error("Drop one model, one .Tex companion, and one animation BFRES.");
+            }
+            *destination = path;
         }
         if (modelPath.empty()) {
-            throw std::runtime_error("Drop the model file along with its .Tex companion.");
+            throw std::runtime_error("Drop the model file along with its optional .Tex and animation files.");
         }
-        imported = loadSbfresMesh(modelPath, texturePath);
+        imported = loadSbfresMesh(modelPath, texturePath, animationPath);
         double largestRadius = -1.0;
         for (std::size_t i = 0; i < imported.hierarchy.children.size(); ++i) {
             const auto& node = imported.hierarchy.children[i];
@@ -69,6 +77,7 @@ void Renderer::loadModelViewerDrop() {
     // Only replace the current view after the complete CPU import succeeds.
     meshData_ = std::move(imported);
     viewerFilename_ = utf8Filename(modelPath);
+    viewerAnimationFilename_ = animationPath.empty() ? std::string{} : utf8Filename(animationPath);
     viewerError_.clear();
     selectViewerModel(initialModel);
     rebuildSceneGeometryResources();
@@ -118,7 +127,7 @@ bool Renderer::drawModelViewerUi() {
     if (ImGui::Begin("SBFRES Viewer", nullptr, flags)) {
         if (hasModel) {
             ImGui::TextWrapped("%s", viewerFilename_.c_str());
-            const auto& models = meshData_.hierarchy.children;
+            auto& models = meshData_.hierarchy.children;
             const auto& current = models[viewerModelIndex_];
             ImGui::SetNextItemWidth(-1.0f);
             if (ImGui::BeginCombo("##FMDL model", current.name.empty() ? "Unnamed model" : current.name.c_str())) {
@@ -137,9 +146,16 @@ bool Renderer::drawModelViewerUi() {
             }
             if (ImGui::Button("Fit view (F)")) fitViewerModel();
             ImGui::TextDisabled("Left drag to orbit / Scroll to zoom");
+            if (!viewerAnimationFilename_.empty()) {
+                ImGui::TextWrapped("Animation: %s", viewerAnimationFilename_.c_str());
+            }
+            bool shouldSaveSettings = false;
+            drawSkeletalAnimationControls(models[viewerModelIndex_], shouldSaveSettings);
         } else {
             ImGui::TextUnformatted("Drop an SBFRES or BFRES model here");
-            ImGui::TextWrapped("Keep its .Tex file alongside the model, or drop both files together.");
+            ImGui::TextWrapped(
+                "Keep its .Tex file alongside the model, or drop the model, texture, and animation BFRES together."
+            );
         }
         if (!viewerError_.empty()) {
             ImGui::Spacing();
