@@ -128,6 +128,20 @@ private:
         bool playerModel = false;
     };
 
+    struct EnemyPatrol {
+        bool enabled = true;
+        glm::vec2 offset{0.0f, -6.0f}; // X/Z metres from the authored position.
+        float speed = 1.4f;
+        float wait = 0.8f;
+        float facingOffsetDegrees = 0.0f;
+        std::string walkClip, idleClip; // Empty selects an imported default.
+        float distance = 0.0f;
+        float waitRemaining = 0.0f;
+        float animationTime = 0.0f;
+        bool returning = false;
+        bool walking = false;
+    };
+
     struct ModelResourceCacheEntry {
         std::shared_ptr<MeshData> mesh;
         std::vector<std::filesystem::path> texturePaths;
@@ -243,7 +257,11 @@ private:
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement);
     bool translateSceneNode(ModelNode& node, const glm::mat4& parentTransform, const glm::vec3& movement);
-    void updateModelGravity(ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform, bool visible);
+    bool updateEnemyPatrol(const ModelNode& node, glm::mat4& transform, bool visible, float deltaSeconds);
+    void updateModelGravity(ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform,
+        bool visible, bool patrolControlled);
+    void drawEnemyPatrol(const ModelNode& modelRoot);
+    SkeletalAnimationInstance* sceneAnimation(std::uint32_t rootNodeId);
     void configurePlayerRunAnimation();
     void updateSkeletalAnimations(float deltaSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
@@ -393,6 +411,7 @@ private:
     std::unique_ptr<PhysicsWorld> physicsWorld_;
     // Presence enables gravity. The matrix tracks the last synchronized model transform.
     std::unordered_map<std::uint32_t, std::optional<glm::mat4>> modelGravity_;
+    std::unordered_map<std::uint32_t, EnemyPatrol> enemyPatrols_;
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;

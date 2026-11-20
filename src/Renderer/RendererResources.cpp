@@ -1,7 +1,75 @@
 #include "RendererImplementation.hpp"
+#include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Renderer/SceneProjection.hpp"
+#include "vulkcore/Terrain/Terrain.hpp"
 
 namespace VulkCore {
+namespace {
+
+void fillFloatingMist(UniformBufferObject& ubo, const TerrainScene& terrain,
+                      float opacity, float time, const glm::mat4& clipFromWorld) {
+    constexpr float cellSize = 185.0f;
+    constexpr float maximumDistance = 1150.0f;
+    constexpr float driftAmplitude = 17.0f;
+    const glm::vec3 camera = (glm::vec3(ubo.cameraPosition) - glm::vec3(ubo.model[3])) / ubo.cameraPosition.w;
+    const glm::vec2 cameraXZ(camera.x, camera.z);
+    const float searchRadius = maximumDistance + driftAmplitude;
+    const glm::ivec2 first(glm::floor((cameraXZ - searchRadius) / cellSize));
+    const glm::ivec2 last(glm::floor((cameraXZ + searchRadius) / cellSize));
+
+    struct Puff {
+        glm::vec4 centerAndDensity;
+        glm::vec4 inverseRadiiAndSeed;
+        float distance;
+    };
+    std::vector<Puff> visible;
+    for (int z = first.y; z <= last.y; ++z) {
+        for (int x = first.x; x <= last.x; ++x) {
+            // Seed each world cell so translating or rotating the camera keeps the same wisps.
+            std::uint32_t seed = static_cast<std::uint32_t>(x) * 747796405u +
+                static_cast<std::uint32_t>(z) * 2891336453u + 277803737u;
+            const auto random = [&seed] {
+                seed = seed * 747796405u + 2891336453u;
+                const std::uint32_t word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+                return static_cast<float>((word ^ (word >> 22u)) >> 8u) * (1.0f / 16777216.0f);
+            };
+            if (random() < 0.37f) continue;
+            const float jitterX = random();
+            const float jitterZ = random();
+            const glm::vec2 anchor = (glm::vec2(x, z) + 0.15f + glm::vec2(jitterX, jitterZ) * 0.70f) * cellSize;
+            const float phase = random() * 6.2831853f;
+            const glm::vec2 drift = glm::vec2(1.0f, 0.44f) * (driftAmplitude * std::sin(time * 0.075f + phase));
+            const glm::vec2 position = anchor + drift;
+            const float distance = glm::distance(cameraXZ, position);
+            const float fade = glm::smoothstep(110.0f, 210.0f, distance) *
+                (1.0f - glm::smoothstep(850.0f, maximumDistance, distance));
+            if (fade <= 0.0f) continue;
+
+            const auto height = terrain.renderedHeightAtWorld(anchor);
+            if (!height) continue;
+            const float radiusX = std::lerp(48.0f, 98.0f, random());
+            const float radiusY = std::lerp(10.0f, 25.0f, random());
+            const float radiusZ = std::lerp(24.0f, 58.0f, random());
+            const glm::vec3 radii(radiusX, radiusY, radiusZ);
+            const float clearance = std::lerp(9.0f, 32.0f, random());
+            const glm::vec3 center(position.x,
+                *height + radiusY * 0.63f + clearance + 2.0f * std::sin(time * 0.11f + phase), position.y);
+            if (isOutsideVulkanFrustum(clipFromWorld, center - radii, center + radii)) continue;
+            visible.push_back({glm::vec4(center, fade * std::lerp(0.42f, 1.0f, random())),
+                               glm::vec4(1.0f / radii, random() * 51.0f), distance});
+        }
+    }
+    const std::size_t count = std::min(visible.size(), ubo.mistCenters.size());
+    std::partial_sort(visible.begin(), visible.begin() + count, visible.end(),
+        [](const Puff& a, const Puff& b) { return a.distance < b.distance; });
+    ubo.floatingMist = glm::vec4(static_cast<float>(count), opacity, time, 0.0f);
+    for (std::size_t i = 0; i < count; ++i) {
+        ubo.mistCenters[i] = visible[i].centerAndDensity;
+        ubo.mistInverseRadii[i] = visible[i].inverseRadiiAndSeed;
+    }
+}
+
+} // namespace
 
 bool Renderer::importModelResource(
     const std::filesystem::path& path,
@@ -1527,9 +1595,9 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
+    const float weatherTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
     if (skyboxTexture_ != nullptr && skyboxEnabled_) {
-        const float cloudTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
-        ubo.daylight = glm::vec4(1.0f, cloudTime, 0.0f, 0.0f);
+        ubo.daylight = glm::vec4(1.0f, weatherTime, 0.0f, 0.0f);
     }
     if (distanceFogSettings_.enabled) {
         const auto& fog = distanceFogSettings_;
@@ -1545,8 +1613,12 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         ubo.playerVelocity = glm::vec4(playerController_.velocity(), 0.0f);
     }
 
+    const glm::mat4 clipFromWorld = ubo.projection * ubo.view * ubo.model;
+    if (terrainScene_ && distanceFogSettings_.floatingMistOpacity > 0.0f) {
+        fillFloatingMist(ubo, *terrainScene_, distanceFogSettings_.floatingMistOpacity, weatherTime, clipFromWorld);
+    }
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
-    return ubo.projection * ubo.view * ubo.model;
+    return clipFromWorld;
 }
 
 void Renderer::updateBoundingBoxBuffer() {

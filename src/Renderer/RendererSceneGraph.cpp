@@ -493,7 +493,7 @@ void Renderer::configurePlayerRunAnimation() {
     playerFlameAnimationClipIndex_.reset();
     SkeletalAnimationInstance* playerInstance = nullptr;
     for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
-        if (instance.rootNodeId == kPlayerSceneNodeId) {
+        if (instance.ownerNodeId == kPlayerSceneNodeId) {
             playerInstance = &instance;
             break;
         }
@@ -649,59 +649,67 @@ void Renderer::selectModelNode(ModelNode& node) {
     updateBoundingBoxVertices();
 }
 
-void Renderer::drawSkeletalAnimationControls(
-    ModelNode& node,
-    bool& shouldSaveSettings
-) {
-    (void)shouldSaveSettings;
-    SkeletalAnimationInstance* instance = nullptr;
-    for (SkeletalAnimationInstance& candidate : meshData_.skeletalAnimationInstances) {
-        const bool belongsToNode = mode_ == Mode::ModelViewer
-            ? candidate.rootNodeId == node.nodeId
-            : node.nodeId >= candidate.rootNodeId &&
-                node.nodeId - candidate.rootNodeId < kSceneModelNodeStride;
-        if (belongsToNode) {
-            instance = &candidate;
-            break;
-        }
-    }
-    if (instance == nullptr || instance->animationCount == 0) {
-        return;
-    }
-
-    ImGui::SeparatorText("Skeletal Animation");
-    ImGui::TextWrapped(
-        "CPU skinning is active for this imported model. Changes apply to the whole model instance."
-    );
-    if (instance->rootNodeId == kPlayerSceneNodeId) {
-        ImGui::TextWrapped(
-            "Player animation is input-driven: movement plays Run1; Q, E, and R play distinct attacks."
-        );
-        const char* attackState = "Attack";
-        if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
-            attackState = "Lightning Slash (Q)";
-        } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
-            attackState = "Flame Nova (E)";
-        } else if (playerController_.activeAttack() == PlayerAttack::Tornado) {
-            attackState = "Tornado (R)";
-        }
-        ImGui::Text(
-            "State: %s / %.3f s",
-            playerController_.attacking() ? attackState :
-                (playerController_.moving() ? "Run1" : "Bind pose"),
-            playerController_.attacking()
-                ? playerController_.attackAnimationTimeSeconds()
-                : playerController_.runAnimationTimeSeconds()
-        );
-        return;
-    }
-    drawAnimationPlayback(meshData_, *instance);
+SkeletalAnimationInstance* Renderer::sceneAnimation(std::uint32_t rootNodeId) {
+    auto& instances = meshData_.skeletalAnimationInstances;
+    const auto match = std::find_if(instances.begin(), instances.end(), [rootNodeId](const auto& instance) {
+        return instance.ownerNodeId == rootNodeId && instance.animationCount > 0;
+    });
+    return match == instances.end() ? nullptr : &*match;
 }
 
-void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimationInstance& instance) {
-    ImGui::Checkbox("Animation Enabled", &instance.enabled);
-    ImGui::Checkbox("Loop", &instance.looping);
-    ImGui::DragFloat(
+std::optional<std::uint32_t> renderer_detail::findAnimationClip(
+    const MeshData& mesh, const SkeletalAnimationInstance& instance, std::string_view name
+) {
+    for (std::uint32_t i = 0; i < instance.animationCount; ++i) {
+        if (mesh.skeletalAnimations[instance.animationStart + i].name == name) return i;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> renderer_detail::patrolAnimationClip(
+    const MeshData& mesh, const SkeletalAnimationInstance& instance, std::string_view name, bool walking
+) {
+    if (name == "-") return std::nullopt;
+    if (!name.empty()) {
+        if (const auto clip = findAnimationClip(mesh, instance, name)) return clip;
+    }
+    const auto candidates = walking ? std::array{"Walk", "walk", "Run", "run"} :
+        std::array{"Wait", "Idle", "wait", "idle"};
+    for (const auto* candidate : candidates) {
+        if (const auto clip = findAnimationClip(mesh, instance, candidate)) return clip;
+    }
+    return std::nullopt;
+}
+
+void Renderer::drawSkeletalAnimationControls(ModelNode& node, bool& shouldSaveSettings) {
+    SkeletalAnimationInstance* instance = nullptr;
+    if (mode_ == Mode::ModelViewer) {
+        for (auto& candidate : meshData_.skeletalAnimationInstances) {
+            if (candidate.rootNodeId == node.nodeId) {
+                instance = &candidate;
+                break;
+            }
+        }
+    } else if (const auto* resource = sceneModelResourceForNode(node)) {
+        instance = sceneAnimation(resource->rootNodeId);
+    }
+    if (!instance || instance->animationCount == 0) return;
+
+    ImGui::SeparatorText("Skeletal Animation");
+    if (mode_ == Mode::Scene && !sceneEditMode_) {
+        ImGui::TextDisabled("Press F5 to preview a clip.");
+        return;
+    }
+    if (drawAnimationPlayback(meshData_, *instance) && mode_ == Mode::Scene) {
+        instance->settingsEdited = true;
+        shouldSaveSettings = true;
+    }
+}
+
+bool renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimationInstance& instance) {
+    bool changed = ImGui::Checkbox("Animation Enabled", &instance.enabled);
+    changed |= ImGui::Checkbox("Loop", &instance.looping);
+    changed |= ImGui::DragFloat(
         "Playback Speed",
         &instance.playbackSpeed,
         0.01f,
@@ -718,7 +726,7 @@ void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimat
     if (animationStart >= mesh.skeletalAnimations.size() ||
         animationEnd > mesh.skeletalAnimations.size()) {
         ImGui::TextUnformatted("Animation data is incomplete for this instance.");
-        return;
+        return changed;
     }
     instance.activeClip = std::min<std::uint32_t>(
         instance.activeClip,
@@ -737,14 +745,16 @@ void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimat
             const std::string label = clip.name.empty()
                 ? "Animation " + std::to_string(clipIndex)
                 : clip.name;
+            ImGui::PushID(static_cast<int>(clipIndex));
             if (ImGui::Selectable(label.c_str(), selected)) {
                 instance.activeClip = clipIndex;
                 instance.timeSeconds = 0.0f;
+                instance.enabled = true;
                 instance.playing = true;
+                changed = true;
             }
-            if (selected) {
-                ImGui::SetItemDefaultFocus();
-            }
+            if (selected) ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
         }
         ImGui::EndCombo();
     }
@@ -752,14 +762,19 @@ void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimat
     if (instance.playing) {
         if (ImGui::Button("Pause")) {
             instance.playing = false;
+            changed = true;
         }
     } else if (ImGui::Button("Play")) {
+        instance.enabled = true;
         instance.playing = true;
+        changed = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Restart")) {
         instance.timeSeconds = 0.0f;
+        instance.enabled = true;
         instance.playing = true;
+        changed = true;
     }
 
     const auto& activeClip = mesh.skeletalAnimations[animationStart + instance.activeClip];
@@ -784,6 +799,7 @@ void renderer_detail::drawAnimationPlayback(const MeshData& mesh, SkeletalAnimat
             activeClip.channels.size()
         );
     }
+    return changed;
 }
 
 glm::mat4 Renderer::nodeManualTransform(const ModelNode& node) const {
@@ -902,7 +918,7 @@ glm::mat4 Renderer::nodeAnimationTransform(
 void renderer_detail::updateSkeletalMesh(
     MeshData& mesh, float deltaSeconds, std::uint32_t frameCount,
     const std::function<void(std::size_t, std::size_t)>& upload,
-    const std::function<void(SkeletalAnimationInstance&)>& configure
+    const std::function<bool(SkeletalAnimationInstance&)>& configure
 ) {
     if (mesh.skeletalAnimationInstances.empty() ||
         mesh.bindPoseVertices.size() != mesh.vertices.size() ||
@@ -917,7 +933,8 @@ void renderer_detail::updateSkeletalMesh(
     std::vector<UpdatedVertexRange> updatedVertexRanges;
     updatedVertexRanges.reserve(mesh.skeletalAnimationInstances.size());
     for (SkeletalAnimationInstance& instance : mesh.skeletalAnimationInstances) {
-        if (configure) configure(instance);
+        auto playback = instance;
+        const bool overridden = configure && configure(playback);
         const std::size_t vertexStart = instance.vertexStart;
         const std::size_t vertexCount = instance.vertexCount;
         if (vertexCount == 0 || vertexStart >= mesh.vertices.size() ||
@@ -925,7 +942,7 @@ void renderer_detail::updateSkeletalMesh(
             continue;
         }
         const std::size_t vertexEnd = vertexStart + vertexCount;
-        if (!instance.enabled) {
+        if (!playback.enabled) {
             if (!instance.bindPoseApplied) {
                 std::copy_n(
                     mesh.bindPoseVertices.begin() + vertexStart,
@@ -960,7 +977,7 @@ void renderer_detail::updateSkeletalMesh(
             continue;
         }
         const std::size_t clipIndex = std::min<std::size_t>(
-            instance.activeClip,
+            playback.activeClip,
             instance.animationCount - 1
         );
         const SkeletalAnimationClip& clip = mesh.skeletalAnimations[
@@ -972,30 +989,22 @@ void renderer_detail::updateSkeletalMesh(
         const double durationSeconds = clip.durationTicks > 0.0
             ? clip.durationTicks / ticksPerSecond
             : 0.0;
-        if (instance.playing) {
-            instance.timeSeconds += deltaSeconds * instance.playbackSpeed;
+        if (playback.playing) {
+            playback.timeSeconds += deltaSeconds * playback.playbackSpeed;
         }
         if (durationSeconds > 0.0) {
-            if (instance.looping) {
-                double wrappedTime = std::fmod(
-                    static_cast<double>(instance.timeSeconds),
-                    durationSeconds
-                );
-                if (wrappedTime < 0.0) {
-                    wrappedTime += durationSeconds;
-                }
-                instance.timeSeconds = static_cast<float>(wrappedTime);
+            if (playback.looping) {
+                double wrappedTime = std::fmod(static_cast<double>(playback.timeSeconds), durationSeconds);
+                if (wrappedTime < 0.0) wrappedTime += durationSeconds;
+                playback.timeSeconds = static_cast<float>(wrappedTime);
             } else {
-                instance.timeSeconds = std::clamp(
-                    instance.timeSeconds,
-                    0.0f,
-                    static_cast<float>(durationSeconds)
-                );
+                playback.timeSeconds = std::clamp(playback.timeSeconds, 0.0f, static_cast<float>(durationSeconds));
             }
         } else {
-            instance.timeSeconds = 0.0f;
+            playback.timeSeconds = 0.0f;
         }
-        const double timeTicks = static_cast<double>(instance.timeSeconds) * ticksPerSecond;
+        if (!overridden) instance.timeSeconds = playback.timeSeconds;
+        const double timeTicks = static_cast<double>(playback.timeSeconds) * ticksPerSecond;
 
         const ModelNode* root = findModelNodeById(mesh.hierarchy, instance.rootNodeId);
         if (root == nullptr) {
@@ -1109,8 +1118,11 @@ void renderer_detail::updateSkeletalMesh(
 
 void Renderer::updateSkeletalAnimations(float deltaSeconds) {
     if (currentFrame_ >= vertexBuffers_.size()) return;
-    const auto configure = [this](SkeletalAnimationInstance& instance) {
-        if (instance.rootNodeId == kPlayerSceneNodeId) {
+    const auto* preview = sceneEditMode_ && selectedModelNode_
+        ? sceneModelResourceForNode(*selectedModelNode_) : nullptr;
+    const auto configure = [this, preview](SkeletalAnimationInstance& instance) {
+        if (preview && preview->rootNodeId == instance.ownerNodeId) return false;
+        if (instance.ownerNodeId == kPlayerSceneNodeId) {
             const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
                 *playerRunAnimationClipIndex_ < instance.animationCount;
             const std::optional<std::uint32_t>* activeAttackClip = nullptr;
@@ -1135,7 +1147,19 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
                 instance.timeSeconds = playerController_.runAnimationTimeSeconds();
                 instance.activeClip = *playerRunAnimationClipIndex_;
             }
+            return true;
         }
+        const auto patrol = enemyPatrols_.find(instance.ownerNodeId);
+        if (patrol == enemyPatrols_.end() || !patrol->second.enabled) return false;
+        const auto& state = patrol->second;
+        const bool walking = state.walking;
+        const auto clip = patrolAnimationClip(meshData_, instance, walking ? state.walkClip : state.idleClip, walking);
+        instance.enabled = clip.has_value();
+        instance.activeClip = clip.value_or(0);
+        instance.playing = false;
+        instance.looping = true;
+        instance.timeSeconds = state.animationTime;
+        return true;
     };
     updateSkeletalMesh(meshData_, deltaSeconds, static_cast<std::uint32_t>(vertexBuffers_.size()),
         [this](std::size_t start, std::size_t count) {
@@ -1154,22 +1178,82 @@ bool Renderer::translateSceneNode(ModelNode& node, const glm::mat4& parentTransf
     return true;
 }
 
+bool Renderer::updateEnemyPatrol(const ModelNode& node, glm::mat4& transform, bool visible, float deltaSeconds) {
+    const auto patrol = enemyPatrols_.find(node.nodeId);
+    if (patrol == enemyPatrols_.end()) return false;
+    auto& state = patrol->second;
+    const float routeLength = glm::length(state.offset);
+    if (!state.enabled || !visible || sceneEditMode_ || routeLength < 0.01f) {
+        state.distance = 0.0f;
+        state.waitRemaining = 0.0f;
+        state.animationTime = 0.0f;
+        state.returning = false;
+        state.walking = false;
+        return false;
+    }
+
+    const glm::vec3 center(transform * glm::vec4((node.boundsMinimum + node.boundsMaximum) * 0.5f, 1.0f));
+    const glm::vec2 start(center.x, center.z);
+    const glm::vec2 direction = state.offset / routeLength;
+    const bool wasWalking = state.walking;
+    const bool wasReturning = state.returning;
+    state.walking = false;
+    if (state.waitRemaining > 0.0f) {
+        state.waitRemaining = std::max(0.0f, state.waitRemaining - deltaSeconds);
+    } else {
+        const float end = state.returning ? 0.0f : routeLength;
+        const float stride = state.speed * deltaSeconds;
+        const float next = state.returning ? std::max(end, state.distance - stride)
+            : std::min(end, state.distance + stride);
+        const bool wantsToMove = next != state.distance;
+        if (wantsToMove && (!terrainScene_ || terrainScene_->renderedHeightAtWorld(start + direction * next))) {
+            state.walking = true;
+            state.distance = next;
+        }
+        if (state.distance == end || (wantsToMove && !state.walking)) {
+            state.returning = !state.returning;
+            state.waitRemaining = state.wait;
+        }
+    }
+    if (state.walking != wasWalking) state.animationTime = 0.0f;
+    state.animationTime += deltaSeconds;
+
+    const glm::vec2 position = start + direction * state.distance;
+    glm::vec3 patrolCenter(position.x, center.y, position.y);
+    if (terrainScene_) {
+        const auto ground = terrainScene_->renderedHeightAtWorld(position);
+        if (!ground) {
+            state.walking = false;
+            return false;
+        }
+        const glm::vec3 halfSize = (node.boundsMaximum - node.boundsMinimum) * 0.5f;
+        const glm::vec3 verticalAxis(transform[0].y, transform[1].y, transform[2].y);
+        patrolCenter.y = *ground + glm::dot(glm::abs(verticalAxis), halfSize);
+    }
+    // Finish the current stride facing the endpoint, then turn as the next leg starts.
+    const bool facingReturn = !state.walking && state.waitRemaining > 0.0f ? !state.returning : wasReturning;
+    const glm::vec2 facing = facingReturn ? -direction : direction;
+    const float yaw = std::atan2(facing.x, facing.y) + glm::radians(state.facingOffsetDegrees);
+    transform = glm::translate(glm::mat4(1.0f), patrolCenter) *
+        glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
+        glm::translate(glm::mat4(1.0f), -center) * transform;
+    return true;
+}
+
 void Renderer::updateModelGravity(
-    ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform, bool visible
+    ModelNode& node, const glm::mat4& parentTransform, glm::mat4& transform, bool visible, bool patrolControlled
 ) {
     const auto gravity = modelGravity_.find(node.nodeId);
     if (gravity == modelGravity_.end()) return;
     auto& lastTransform = gravity->second;
     if (!visible) {
-        if (lastTransform) {
-            physicsWorld_->removeGravityBox(node.nodeId);
-            lastTransform.reset();
-        }
+        physicsWorld_->removeGravityBox(node.nodeId);
+        lastTransform.reset();
         return;
     }
 
     const glm::vec3 center(transform * glm::vec4((node.boundsMinimum + node.boundsMaximum) * 0.5f, 1.0f));
-    if (!lastTransform || *lastTransform != transform) {
+    if (patrolControlled || !lastTransform || *lastTransform != transform) {
         const glm::vec3 halfSize = (node.boundsMaximum - node.boundsMinimum) * 0.5f;
         const glm::vec3 halfExtents = glm::max(glm::vec3(0.02f),
             glm::abs(glm::vec3(transform[0])) * halfSize.x +
@@ -1181,7 +1265,12 @@ void Renderer::updateModelGravity(
             ground && center.y - halfExtents.y < *ground - 0.03f) {
             bodyCenter.y = *ground + halfExtents.y + 0.02f;
         }
-        physicsWorld_->placeGravityBox(node.nodeId, bodyCenter, halfExtents);
+        physicsWorld_->placeGravityBox(node.nodeId, bodyCenter, halfExtents, patrolControlled);
+    }
+    if (patrolControlled) {
+        // Restore the editable pose and a dynamic collider when play is paused.
+        lastTransform.reset();
+        return;
     }
     if (const auto position = physicsWorld_->gravityBoxRenderCenter(node.nodeId);
         position && *position != center &&
@@ -1192,11 +1281,10 @@ void Renderer::updateModelGravity(
 }
 
 void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement) {
-    updateSkeletalAnimations(deltaSeconds);
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
 
-    const auto updateNode = [this, elapsedSeconds, &editMovement](
+    const auto updateNode = [this, elapsedSeconds, deltaSeconds, &editMovement](
                                 const auto& self,
                                 ModelNode& node,
                                 const glm::mat4& parentTransform,
@@ -1216,8 +1304,10 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
         glm::mat4 transform = isTornadoMesh
             ? tornadoMeshTransform_
             : objectTransform * nodeManualTransform(node);
+        const bool patrolControlled = !enemyPatrols_.empty() &&
+            updateEnemyPatrol(node, transform, renderEnabled, deltaSeconds);
         if (terrainScene_ && !modelGravity_.empty()) {
-            updateModelGravity(node, objectTransform, transform, renderEnabled);
+            updateModelGravity(node, objectTransform, transform, renderEnabled, patrolControlled);
         }
         if (!isTornadoMesh && node.rotationAnimationEnabled) {
             // Parent animation is applied after child-local animation, so
@@ -1235,6 +1325,7 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
     for (ModelNode& node : meshData_.additionalNodes) {
         updateNode(updateNode, node, glm::mat4(1.0f), true);
     }
+    updateSkeletalAnimations(deltaSeconds);
 }
 
 glm::mat4 Renderer::transformForSceneNode(std::uint32_t nodeId) const {

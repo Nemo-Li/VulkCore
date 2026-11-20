@@ -629,6 +629,58 @@ void Renderer::drawEditorMaterial(std::uint32_t index, std::string_view family) 
     ImGui::PopID();
 }
 
+void Renderer::drawEnemyPatrol(const ModelNode& modelRoot) {
+    auto entry = enemyPatrols_.find(modelRoot.nodeId);
+    if (entry == enemyPatrols_.end()) {
+        if (ImGui::Button("Add Patrol")) {
+            enemyPatrols_.try_emplace(modelRoot.nodeId);
+            editorDirty_ = true;
+        }
+        return;
+    }
+    if (!ImGui::CollapsingHeader("Enemy Patrol", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    auto& patrol = entry->second;
+    constexpr auto clamp = ImGuiSliderFlags_AlwaysClamp;
+    editorDirty_ |= ImGui::Checkbox("Patrol Enabled", &patrol.enabled);
+    ImGui::TextUnformatted("Waypoint offset X/Z (m)");
+    ImGui::SetNextItemWidth(-1.0f);
+    editorDirty_ |= ImGui::DragFloat2("##Waypoint offset X/Z", &patrol.offset.x, 0.1f, -100.0f, 100.0f, "%.1f", clamp);
+    editorDirty_ |= ImGui::DragFloat("Walk speed", &patrol.speed, 0.05f, 0.1f, 20.0f, "%.2f m/s", clamp);
+    editorDirty_ |= ImGui::DragFloat("Endpoint wait", &patrol.wait, 0.1f, 0.0f, 30.0f, "%.1f s", clamp);
+    editorDirty_ |= ImGui::DragFloat("Facing offset", &patrol.facingOffsetDegrees, 1.0f, -180.0f, 180.0f, "%.0f deg", clamp);
+
+    if (auto* animation = sceneAnimation(modelRoot.nodeId)) {
+        const auto selectClip = [&](const char* label, std::string& selection, bool walking) {
+            const auto clip = patrolAnimationClip(meshData_, *animation, selection, walking);
+            const auto* preview = clip ? meshData_.skeletalAnimations[animation->animationStart + *clip].name.c_str()
+                : (selection == "-" ? "Bind pose" : "Auto");
+            if (!ImGui::BeginCombo(label, preview)) return;
+            if (ImGui::Selectable("Auto", selection.empty())) {
+                selection.clear();
+                editorDirty_ = true;
+            }
+            if (ImGui::Selectable("Bind pose", selection == "-")) {
+                selection = "-";
+                editorDirty_ = true;
+            }
+            for (std::uint32_t i = 0; i < animation->animationCount; ++i) {
+                const auto& name = meshData_.skeletalAnimations[animation->animationStart + i].name;
+                if (name.empty()) continue;
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::Selectable(name.c_str(), selection == name)) {
+                    selection = name;
+                    editorDirty_ = true;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        };
+        selectClip("Walking clip", patrol.walkClip, true);
+        selectClip("Waiting clip", patrol.idleClip, false);
+    }
+}
+
 void Renderer::drawGameInspector() {
     ImGui::SeparatorText("Inspector");
     ImGui::PushItemWidth(std::max(65.0f, ImGui::GetContentRegionAvail().x * 0.53f));
@@ -653,6 +705,10 @@ void Renderer::drawGameInspector() {
             editorDirty_ |= ImGui::SliderFloat("Max opacity", &fog.maxOpacity, 0.0f, 1.0f);
             editorDirty_ |= ImGui::ColorEdit3("Horizon", &fog.horizonColor.x, ImGuiColorEditFlags_NoInputs);
             editorDirty_ |= ImGui::ColorEdit3("Upper sky", &fog.upperColor.x, ImGuiColorEditFlags_NoInputs);
+            if (terrainScene_) {
+                editorDirty_ |= ImGui::SliderFloat("Floating mist", &fog.floatingMistOpacity,
+                    0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            }
             if (hdrComposition_ && ImGui::CollapsingHeader("HDR")) {
                 auto& hdr = hdrSettings_;
                 editorDirty_ |= ImGui::DragFloat("Exposure", &hdr.exposure, 0.01f, 0.01f, 10.0f);
@@ -777,8 +833,13 @@ void Renderer::drawGameInspector() {
         editorDirty_ |= ImGui::DragFloat3("Rotation", &node.transformRotationDegrees.x, 1.0f);
         editorDirty_ |= ImGui::SliderFloat("Scale", &node.transformScaleFactor,
             kMinimumModelScaleFactor, kMaximumModelScaleFactor);
-        if (ImGui::CollapsingHeader("Animation")) {
-            drawSkeletalAnimationControls(node, editorDirty_);
+        drawSkeletalAnimationControls(node, editorDirty_);
+        if (sceneEditMode_ && resource && !resource->playerModel) {
+            if (const auto* root = findSceneNodeById(meshData_, resource->rootNodeId); root && root->hasBounds) {
+                drawEnemyPatrol(*root);
+            }
+        }
+        if (ImGui::CollapsingHeader("Rotation Animation")) {
             editorDirty_ |= ImGui::Checkbox("Rotate", &node.rotationAnimationEnabled);
             editorDirty_ |= ImGui::DragFloat3("Start angle", &node.rotationAnimationInitialDegrees.x, 1.0f);
             editorDirty_ |= ImGui::DragFloat3("Speed", &node.rotationAnimationSpeedDegrees.x, 1.0f);

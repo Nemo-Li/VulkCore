@@ -26,6 +26,7 @@ struct DistanceFogSettings {
     float maxOpacity = 0.0f;
     glm::vec3 horizonColor{0.0f};
     glm::vec3 upperColor{0.0f};
+    float floatingMistOpacity = 0.0f;
 };
 
 struct AuthoredView {

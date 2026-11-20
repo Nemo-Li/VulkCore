@@ -3,6 +3,7 @@
 #include "vulkcore/Terrain/Terrain.hpp"
 #include "vulkcore/Utils/SbfresLoader.hpp"
 
+#include <cctype>
 #include <utility>
 
 namespace VulkCore {
@@ -184,6 +185,10 @@ void Renderer::processSceneModelDrop() {
 
     auto* node = findSceneNodeById(meshData_, sceneModelResources_.back().rootNodeId);
     if (node && node->hasBounds) {
+        auto assetName = utf8(path.stem());
+        std::transform(assetName.begin(), assetName.end(), assetName.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (assetName.starts_with("enemy_")) enemyPatrols_.try_emplace(node->nodeId);
         modelGravity_.try_emplace(node->nodeId);
         if (terrainScene_) {
             const glm::mat4 parentTransform = nodeManualTransform(meshData_.hierarchy);

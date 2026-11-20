@@ -37,7 +37,9 @@ public:
     ) const;
 
     // Imported models use upright box colliders. Repositioning resets their velocity.
-    void placeGravityBox(std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents);
+    // Patrolling models can drive the collider pose from their route.
+    void placeGravityBox(std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents,
+        bool kinematic = false);
     void removeGravityBox(std::uint32_t id);
     std::optional<glm::vec3> gravityBoxRenderCenter(std::uint32_t id) const;
 

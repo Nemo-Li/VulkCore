@@ -420,13 +420,5 @@ void main() {
                     cloudSunVisibility(fragWorldPosition);
     vec3 litTerrain = albedo * (ambient + sunlight) * material.baseColor.rgb;
 
-    vec4 fog = sceneFogAt(fragWorldPosition);
-    if (ubo.distanceFogParams.w == 0.0) {
-        // Retain the original terrain haze for scenes saved without a fog preset.
-        float viewElevation = cameraRay.y / max(distanceWorld, 0.001);
-        float haze = 1.0 - exp2(-max(distanceWorld - 125.0, 0.0) / 1350.0);
-        haze *= mix(0.58, 0.34, smoothstep(0.02, 0.48, viewElevation));
-        fog = vec4(0.19, 0.34, 0.48, haze);
-    }
-    outColor = vec4(applySceneFog(litTerrain, fog), material.opacity);
+    outColor = vec4(applySceneFog(litTerrain, sceneFogAt(fragWorldPosition, true)), material.opacity);
 }
