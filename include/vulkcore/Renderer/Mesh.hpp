@@ -80,6 +80,7 @@ struct SkeletalAnimationClip {
 // skinning update only this model instead of copying the entire scene.
 struct SkeletalAnimationInstance {
     std::uint32_t rootNodeId = 0;
+    std::uint32_t ownerNodeId = 0; // Scene instance root, which can contain a nested skeleton.
     std::uint32_t vertexStart = 0;
     std::uint32_t vertexCount = 0;
     std::uint32_t boneStart = 0;
@@ -93,6 +94,7 @@ struct SkeletalAnimationInstance {
     bool enabled = true;
     bool playing = true;
     bool looping = true;
+    bool settingsEdited = false;
     // Avoid restoring and uploading an already-idle instance every frame.
     bool bindPoseApplied = true;
     std::uint32_t bindPoseUploadFramesRemaining = 0;

@@ -76,5 +76,5 @@ void main() {
 
     color = compositeCloudLayer(color, camera, ray, haze, sun, sunlight * sunVisibility, sunCosine, true);
     color = compositeCloudLayer(color, camera, ray, haze, sun, sunlight * sunVisibility, sunCosine, false);
-    outColor = vec4(color, 1.0);
+    outColor = vec4(applySceneFog(color, floatingMistAt(ray, 1600.0)), 1.0);
 }

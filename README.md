@@ -23,6 +23,7 @@
 - [Vulkan 图形管线与帧流程](docs/02-rendering-pipeline.md)
 - [能力差距、问题分析与演进路线](docs/03-gap-analysis-and-roadmap.md)
 - [高扩展性引擎架构设计方案](docs/04-scalable-engine-architecture.md)
+- [敌人行为编辑与巡逻](docs/10-enemy-behavior.md)
 
 ## 项目结构
 

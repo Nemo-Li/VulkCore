@@ -60,6 +60,7 @@ struct PhysicsWorld::Impl {
         glm::vec3 halfExtents{0.0f};
         glm::vec3 previousCenter{0.0f};
         glm::vec3 currentCenter{0.0f};
+        bool kinematic = false;
     };
 
     physx::PxDefaultAllocator allocator;
@@ -507,7 +508,9 @@ float PhysicsWorld::terrainSweepDistance(
     return hit.hasBlock ? hit.block.distance : maxDistance;
 }
 
-void PhysicsWorld::placeGravityBox(std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents) {
+void PhysicsWorld::placeGravityBox(
+    std::uint32_t id, const glm::vec3& center, const glm::vec3& halfExtents, bool kinematic
+) {
     const physx::PxTransform pose(toPhysX(center));
     const physx::PxBoxGeometry geometry(toPhysX(halfExtents));
     if (!pose.isValid() || !geometry.isValid()) {
@@ -515,7 +518,8 @@ void PhysicsWorld::placeGravityBox(std::uint32_t id, const glm::vec3& center, co
     }
 
     auto& box = impl_->gravityBoxes[id];
-    if (!box.actor) {
+    const bool newBox = box.actor == nullptr;
+    if (newBox) {
         box.actor = physx::PxCreateDynamic(*impl_->physics, pose, geometry, *impl_->material, 50.0f);
         if (!box.actor) {
             impl_->gravityBoxes.erase(id);
@@ -536,6 +540,14 @@ void PhysicsWorld::placeGravityBox(std::uint32_t id, const glm::vec3& center, co
             physx::PxRigidBodyExt::updateMassAndInertia(*box.actor, 50.0f);
         }
         box.actor->setGlobalPose(pose);
+    }
+    if (box.kinematic != kinematic) {
+        box.actor->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, kinematic);
+        box.kinematic = kinematic;
+    }
+    if (kinematic) {
+        box.actor->setKinematicTarget(pose);
+    } else if (!newBox) {
         box.actor->setLinearVelocity(physx::PxVec3(0.0f));
     }
     box.halfExtents = halfExtents;

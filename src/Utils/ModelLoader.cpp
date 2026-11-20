@@ -922,7 +922,20 @@ MeshData loadModelMesh(const std::filesystem::path& path) {
     }
 
     if (isBfresPath(path)) {
-        return loadSbfresMesh(path);
+        // A scene instance can use the same animation companions as the resource preview.
+        auto animationName = path.stem();
+        animationName += "_Animation";
+        animationName += path.extension();
+        const auto animation = path.parent_path() / animationName;
+        std::error_code error;
+        if (std::filesystem::is_regular_file(animation, error)) {
+            try {
+                return loadSbfresMesh(path, {}, animation);
+            } catch (const std::exception& companionError) {
+                std::cerr << "warning: " << companionError.what() << '\n';
+            }
+        }
+        return loadSbfresMesh(path, {}, {}, true);
     }
 
     Assimp::Importer importer;

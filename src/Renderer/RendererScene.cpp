@@ -226,6 +226,7 @@ void Renderer::initializeEmptyScene() {
         physicsWorld_->clear();
     }
     modelGravity_.clear();
+    enemyPatrols_.clear();
     terrainScene_.reset();
     grassCoverage_ = {};
     terrainResourcePath_.clear();
@@ -923,8 +924,10 @@ void Renderer::appendImportedModel(
     };
     remapNode(remapNode, importedMesh.hierarchy);
 
+    const std::uint32_t rootNodeId = importedMesh.hierarchy.nodeId;
     for (SkeletalAnimationInstance instance : importedMesh.skeletalAnimationInstances) {
         instance.rootNodeId += nodeOffset;
+        instance.ownerNodeId = rootNodeId;
         instance.vertexStart += vertexOffset;
         instance.boneStart += boneOffset;
         instance.animationStart += animationOffset;
@@ -934,7 +937,6 @@ void Renderer::appendImportedModel(
     if (meshData_.hierarchy.name.empty()) {
         meshData_.hierarchy.name = "Scene";
     }
-    const std::uint32_t rootNodeId = importedMesh.hierarchy.nodeId;
     if (playerModel) {
         playerModelResourcePath_ = normalizedPath(path);
         playerModelAutoScale_ = playerAutoScale;
@@ -1138,10 +1140,47 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         sceneStatus_ = "Scene file could not be opened: " + resolvedScenePath.string();
         return false;
     }
+    struct SavedAnimation {
+        std::string clipName;
+        std::uint32_t clipIndex = 0;
+        int enabled = 0, looping = 0, playing = 0;
+        float speed = 1.0f;
+    };
+    std::unordered_map<std::uint32_t, SavedAnimation> savedAnimations;
+    std::unordered_map<std::uint32_t, EnemyPatrol> savedPatrols;
     std::vector<std::uint32_t> gravityNodeIds;
     std::string key;
     while (sceneFile >> key) {
-        if (key == "node_gravity") {
+        if (key == "node_patrol") {
+            std::uint32_t id = 0;
+            int enabled = 0;
+            EnemyPatrol patrol;
+            if (!(sceneFile >> id >> enabled >> patrol.offset.x >> patrol.offset.y >> patrol.speed >>
+                  patrol.wait >> patrol.facingOffsetDegrees >> std::quoted(patrol.walkClip) >> std::quoted(patrol.idleClip)) ||
+                !std::isfinite(patrol.offset.x) || !std::isfinite(patrol.offset.y) ||
+                !std::isfinite(patrol.speed) || !std::isfinite(patrol.wait) || !std::isfinite(patrol.facingOffsetDegrees)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid patrol settings.";
+                return false;
+            }
+            patrol.enabled = enabled != 0;
+            patrol.offset = glm::clamp(patrol.offset, glm::vec2(-100.0f), glm::vec2(100.0f));
+            patrol.speed = std::clamp(patrol.speed, 0.1f, 20.0f);
+            patrol.wait = std::clamp(patrol.wait, 0.0f, 30.0f);
+            patrol.facingOffsetDegrees = std::clamp(patrol.facingOffsetDegrees, -180.0f, 180.0f);
+            savedPatrols.insert_or_assign(id, std::move(patrol));
+        } else if (key == "node_skeletal") {
+            std::uint32_t id = 0;
+            SavedAnimation animation;
+            if (!(sceneFile >> id >> animation.clipIndex >> std::quoted(animation.clipName) >>
+                  animation.enabled >> animation.looping >> animation.playing >> animation.speed) ||
+                !std::isfinite(animation.speed)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid skeletal playback settings.";
+                return false;
+            }
+            savedAnimations.insert_or_assign(id, std::move(animation));
+        } else if (key == "node_gravity") {
             std::uint32_t id = 0;
             if (!(sceneFile >> id)) {
                 sceneStatusFailed_ = true;
@@ -1440,6 +1479,24 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         if (!resource.playerModel && std::find(gravityNodeIds.begin(), gravityNodeIds.end(),
             resource.rootNodeId) != gravityNodeIds.end()) {
             modelGravity_.try_emplace(resource.rootNodeId);
+        }
+        if (!resource.playerModel) {
+            if (auto patrol = savedPatrols.find(resource.rootNodeId); patrol != savedPatrols.end()) {
+                enemyPatrols_.emplace(resource.rootNodeId, std::move(patrol->second));
+            }
+        }
+        const auto saved = savedAnimations.find(resource.rootNodeId);
+        if (saved == savedAnimations.end()) continue;
+        if (auto* animation = sceneAnimation(resource.rootNodeId)) {
+            const auto& settings = saved->second;
+            const auto index = std::min(settings.clipIndex, animation->animationCount - 1);
+            animation->activeClip = meshData_.skeletalAnimations[animation->animationStart + index].name == settings.clipName
+                ? index : findAnimationClip(meshData_, *animation, settings.clipName).value_or(index);
+            animation->enabled = settings.enabled != 0;
+            animation->looping = settings.looping != 0;
+            animation->playing = settings.playing != 0;
+            animation->playbackSpeed = std::clamp(settings.speed, -4.0f, 4.0f);
+            animation->settingsEdited = true;
         }
     }
     recalculateSceneBounds();
@@ -1780,6 +1837,12 @@ void Renderer::loadTransformSettings() {
                 break;
             }
             fog.enabled = true;
+        } else if (key == "floating_mist") {
+            if (!(file >> fog.floatingMistOpacity) || !std::isfinite(fog.floatingMistOpacity) ||
+                fog.floatingMistOpacity < 0.0f || fog.floatingMistOpacity > 1.0f) {
+                valid = false;
+                break;
+            }
         } else if (key == "authored_view") {
             if (!(file >> authored.target.x >> authored.target.y >> authored.target.z >>
                          authored.up.x >> authored.up.y >> authored.up.z >>
@@ -2407,6 +2470,20 @@ bool Renderer::saveTransformSettings() const {
              << std::quoted((relativeError || relativePath.empty() ? model.path : relativePath).generic_string())
              << ' ' << model.rootNodeId << "\n";
         if (modelGravity_.contains(model.rootNodeId)) file << "node_gravity " << model.rootNodeId << '\n';
+        if (const auto entry = enemyPatrols_.find(model.rootNodeId); entry != enemyPatrols_.end()) {
+            const auto& patrol = entry->second;
+            file << "node_patrol " << model.rootNodeId << ' ' << patrol.enabled << ' '
+                 << patrol.offset.x << ' ' << patrol.offset.y << ' ' << patrol.speed << ' '
+                 << patrol.wait << ' ' << patrol.facingOffsetDegrees << ' '
+                 << std::quoted(patrol.walkClip) << ' ' << std::quoted(patrol.idleClip) << '\n';
+        }
+    }
+    for (const auto& animation : meshData_.skeletalAnimationInstances) {
+        if (!animation.settingsEdited || animation.activeClip >= animation.animationCount) continue;
+        const auto& clip = meshData_.skeletalAnimations[animation.animationStart + animation.activeClip];
+        file << "node_skeletal " << animation.ownerNodeId << ' ' << animation.activeClip << ' '
+             << std::quoted(clip.name) << ' ' << animation.enabled << ' ' << animation.looping << ' '
+             << animation.playing << ' ' << animation.playbackSpeed << '\n';
     }
     if (hdrSettings_.enabled) {
         const auto& h = hdrSettings_;
@@ -2421,6 +2498,9 @@ bool Renderer::saveTransformSettings() const {
              << fog.maxOpacity << ' ' << fog.horizonColor.r << ' ' << fog.horizonColor.g << ' '
              << fog.horizonColor.b << ' ' << fog.upperColor.r << ' ' << fog.upperColor.g << ' '
              << fog.upperColor.b << "\n";
+    }
+    if (distanceFogSettings_.floatingMistOpacity > 0.0f) {
+        file << "floating_mist " << distanceFogSettings_.floatingMistOpacity << '\n';
     }
     const auto& view = authoredView_;
     if (view.enabled) {
@@ -2637,6 +2717,7 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
     for (const std::uint32_t removedNodeId : removedNodeIds) {
         removedSceneNodeIds_.insert(removedNodeId);
         if (modelGravity_.erase(removedNodeId)) physicsWorld_->removeGravityBox(removedNodeId);
+        enemyPatrols_.erase(removedNodeId);
         particleSystems_.erase(removedNodeId);
         particleTextures_.erase(removedNodeId);
         const auto descriptorIt = particleDescriptorSets_.find(removedNodeId);
@@ -2663,6 +2744,9 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
         particleTexturePathBuffer_.fill('\0');
     }
 
+    std::erase_if(meshData_.skeletalAnimationInstances, [&removedNodeIds](const auto& instance) {
+        return std::find(removedNodeIds.begin(), removedNodeIds.end(), instance.rootNodeId) != removedNodeIds.end();
+    });
     sceneModelResources_.erase(
         std::remove_if(
             sceneModelResources_.begin(),

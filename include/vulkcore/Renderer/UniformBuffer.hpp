@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <glm/glm.hpp>
 
 namespace VulkCore {
@@ -29,6 +31,10 @@ struct UniformBufferObject {
     glm::vec4 distanceFogHorizon{0.0f}; // linear RGB
     glm::vec4 distanceFogUpper{0.0f}; // linear RGB
     glm::vec4 daylight{0.0f}; // enabled, cloud time in seconds, reserved, reserved
+    static constexpr std::size_t kMaxFloatingMistPuffs = 16;
+    glm::vec4 floatingMist{0.0f}; // count, opacity, time, reserved
+    std::array<glm::vec4, kMaxFloatingMistPuffs> mistCenters{}; // world center, density
+    std::array<glm::vec4, kMaxFloatingMistPuffs> mistInverseRadii{}; // xyz, noise seed
 };
 
 } // namespace VulkCore
