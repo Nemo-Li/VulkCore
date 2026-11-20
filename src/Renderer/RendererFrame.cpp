@@ -1,4 +1,6 @@
 #include "RendererImplementation.hpp"
+
+#include <utility>
 #include "HdrComposition.hpp"
 
 #include <ctime>
@@ -373,15 +375,14 @@ void Renderer::recordCommandBuffer(
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
-    VkRect2D scissor{};
-    scissor.extent = extent;
+    const VkRect2D scissor{{0, 0}, extent};
 
     const VkBuffer buffers[] = {vertexBuffers_[currentFrame_]->handle()};
     const VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
 
-    const auto bindViewport = [&]() {
+    const auto bindSceneViewport = [&]() {
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     };
@@ -403,7 +404,7 @@ void Renderer::recordCommandBuffer(
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= materialCount || index >= materialTextures_.size()) continue;
         const MaterialData& material = meshData_.materials[index];
-        if ((material.shaderConfiguration.shader(ShaderStage::Vertex) == kGrassVertexShader)
+        if (material.shaderConfiguration.shader(ShaderStage::Vertex).starts_with("shader_grass")
             != grassLod.has_value()) continue;
         if (material.transitionOpacity && transitionSettings_.enabled &&
             (transitionPlayer_.progress < material.transitionVisibleFrom ||
@@ -450,8 +451,8 @@ void Renderer::recordCommandBuffer(
         MaterialPushConstants materialPushConstants{};
         materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
         materialPushConstants.baseColor = material.baseColor;
-        const bool terrainMaterial =
-            material.shaderConfiguration.shader(ShaderStage::Fragment) == "shader_terrain.frag";
+        const bool terrainMaterial = part.nodeId >= kTerrainChunkNodeBase &&
+            part.nodeId < kPlayerSceneNodeId;
         const bool terrainMacro = terrainMaterial && terrainAlbedoLayers_ &&
             material.texturePath.filename() == "terrain_atlas.png" && materialTextures_[materialIndex];
         materialPushConstants.textureFlags =
@@ -460,7 +461,9 @@ void Renderer::recordCommandBuffer(
             (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
             (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
             (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u) |
-            (terrainMacro ? 32u : 0u);
+            (terrainMacro ? 32u : 0u) |
+            (terrainMaterial && grassGroundTexture_ && isSceneNodeRenderEnabled(kGrassSceneNodeId)
+                ? kGrassGroundTextureFlag : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled
@@ -498,6 +501,8 @@ void Renderer::recordCommandBuffer(
         }
         if (item.grassLod) {
             materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
+            materialPushConstants.waterSurface.x = *item.grassLod == GrassLod::NearMesh
+                ? grassHeightScale_ : 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
         }
         vkCmdPushConstants(
@@ -531,8 +536,12 @@ void Renderer::recordCommandBuffer(
             std::uint32_t count = 0;
             for (const auto& range : grassCoverage_.ranges()) {
                 if (range.lod != *item.grassLod) continue;
-                if (clipFromGrass && isOutsideVulkanFrustum(
-                    *clipFromGrass, range.minimum, range.maximum)) continue;
+                // Larger blades can reach past the baked instance bounds.
+                const float expansion = *item.grassLod == GrassLod::NearMesh
+                    ? 3.0f * std::max(0.0f, grassHeightScale_ - 1.0f) : 0.0f;
+                if (clipFromGrass && isOutsideVulkanFrustum(*clipFromGrass,
+                    range.minimum - glm::vec3(expansion),
+                    range.maximum + glm::vec3(expansion))) continue;
                 if (count && first + count != range.firstInstance) {
                     vkCmdDrawIndexed(commandBuffer, indexCount, count, 0, 0, first);
                     count = 0;
@@ -552,7 +561,7 @@ void Renderer::recordCommandBuffer(
         }
     };
 
-    const bool drawDaylight = currentScenePath_.filename() == "game.scene" &&
+    const bool drawDaylight = skyboxEnabled_ &&
         skyboxTexture_ != nullptr && currentFrame_ < skyboxDescriptorSets_.size();
     // Preserve the draw order when an opaque material deliberately skips depth writes.
     const bool skyBeforeOpaque = drawDaylight && std::any_of(opaque.begin(), opaque.end(),
@@ -651,7 +660,7 @@ void Renderer::recordCommandBuffer(
         sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
         sceneRenderPassInfo.pClearValues = sceneClearValues.data();
         vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        bindViewport();
+        bindSceneViewport();
 
         drawOpaque(false);
         vkCmdEndRenderPass(commandBuffer);
@@ -681,7 +690,7 @@ void Renderer::recordCommandBuffer(
                 uint32_t(barriers.size()), barriers.data());
         }
         hdrComposition_->beginGeometry(commandBuffer, currentFrame_, hdrSettings_.clearColor);
-        bindViewport();
+        bindSceneViewport();
         drawOpaque(true);
         for (const DrawItem& item : transparent) drawPart(item, true);
         drawParticles(true);
@@ -703,7 +712,7 @@ void Renderer::recordCommandBuffer(
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        bindViewport();
+        bindSceneViewport();
 
         // The demo is a regular full-screen pass over the off-screen scene. It
         // uses the same descriptor set and push-constant ABI as material shaders,
@@ -743,7 +752,7 @@ void Renderer::recordCommandBuffer(
         drawParticles(false);
     }
 
-    if (!hdr && selectedModelNode_ != nullptr && selectedModelNode_->hasBounds) {
+    if (!hdr && mode_ == Mode::ModelViewer && selectedModelNode_ && selectedModelNode_->hasBounds) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, boundingBoxPipeline_);
 
         const VkBuffer boundingBoxBuffer = boundingBoxVertexBuffers_[currentFrame_]->handle();
@@ -801,6 +810,18 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
 
 bool Renderer::drawFrame() {
     if (mode_ == Mode::ModelViewer) loadModelViewerDrop();
+#ifndef VULKCORE_OHOS
+    if (editorShaderApplyRequested_) {
+        editorShaderApplyRequested_ = false;
+        applyEditorShader();
+    }
+#endif
+    if (!pendingSceneOpen_.empty() && (!editorDirty_ || editorOpenConfirmed_)) {
+        editorOpenConfirmed_ = false;
+        const auto path = std::exchange(pendingSceneOpen_, {});
+        const auto before = currentScenePath_;
+        if (loadSceneResource(path) || currentScenePath_ != before) editorDirty_ = false;
+    }
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a
     // changed XComponent, rather than presenting one frame at the old ratio.
@@ -838,7 +859,8 @@ bool Renderer::drawFrame() {
     }
 
     const bool screenshotPressed = keyPressed(context_->window(), Key::Screenshot);
-    const bool screenshotRequested = !fixedFrameOutput_.empty() || (screenshotPressed && !screenshotKeyDown_);
+    const bool screenshotRequested = !fixedFrameOutput_.empty() ||
+        std::exchange(screenshotFromToolbar_, false) || (screenshotPressed && !screenshotKeyDown_);
     screenshotKeyDown_ = screenshotPressed;
     const bool captureScreenshot = screenshotRequested && swapChain_->supportsTransferSource();
     if (screenshotRequested && !swapChain_->supportsTransferSource()) {

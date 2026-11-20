@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -54,6 +55,7 @@ public:
     // Returns true once the presentation queue accepts the frame.
     bool drawFrame();
     void setTerrainFrustumCullingEnabled(bool enabled) { terrainFrustumCullingEnabled_ = enabled; }
+    void queueSceneOpen(const std::filesystem::path& path);
     void queueModelViewerDrop(std::vector<std::filesystem::path> paths);
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
@@ -91,7 +93,24 @@ private:
     void loadModelViewerDrop();
     void selectViewerModel(std::size_t index);
     void fitViewerModel();
-    void drawMiniMap();
+    bool drawGameEditor();
+    void drawGameInspector();
+    void changeEditorMaterialTexture(std::uint32_t index, const std::filesystem::path& path);
+    void drawGameOutliner();
+    void openEditorFilePicker(const char* title, bool scene, const std::filesystem::path& directory,
+                              std::function<void(const std::filesystem::path&)> accept);
+    void drawEditorFilePicker();
+    void drawEditorTexture(const char* label, const std::filesystem::path& path,
+                           const std::filesystem::path& defaultPath,
+                           std::function<void(const std::filesystem::path&)> accept);
+    void drawEditorMaterial(std::uint32_t index, std::string_view family);
+    void drawEditorShader(ShaderStage stage, const std::string& name, std::string_view family,
+                          std::optional<std::uint32_t> material = std::nullopt);
+    void drawEditorShaderDialog();
+    void applyEditorShader();
+    std::filesystem::path defaultSkyboxPath() const;
+    void applySkyboxTexture(const std::filesystem::path& path);
+    void applyGrassGroundTexture(const std::filesystem::path& path);
     void loadResourceSettings();
     void loadTransformSettings();
     bool saveTransformSettings() const;
@@ -151,7 +170,6 @@ private:
         const glm::vec3& cameraRight,
         const glm::vec3& cameraUp
     );
-    void createParticleSystemObject();
     void createTornadoMeshEffect(bool alwaysVisible = false);
     void createPlayerAttackEffect();
     void updatePlayerAttackEffect();
@@ -192,9 +210,6 @@ private:
     void recreatePresentSemaphores();
     void updateCameraBasis();
     std::optional<glm::mat4> updateUniformBuffer();
-    void drawModelHierarchy(ModelNode& node);
-    void drawResourceModelHierarchy(const ModelNode& node);
-    void drawResourceManager(bool& shouldSaveSettings);
     void drawMaterialControls(
         MaterialData& material,
         std::int32_t materialKey,
@@ -227,11 +242,8 @@ private:
     ) const;
     std::uint32_t materialIndexForPart(const MeshPart& part) const;
     std::int32_t inheritedMaterialOverrideForSceneNode(std::uint32_t nodeId) const;
-    void drawNodeMaterialControls(ModelNode& node, bool& shouldSaveSettings);
     void drawSkeletalAnimationControls(ModelNode& node, bool& shouldSaveSettings);
-    void drawMaterialShaderControls(MaterialData& material, bool& shouldSaveSettings);
-    void drawShaderDemoControls(bool& shouldSaveSettings);
-    void drawParticleSystemControls(ModelNode& node, bool& shouldSaveSettings);
+    void drawParticleSystemControls(std::uint32_t nodeId, bool& shouldSaveSettings, ModelNode* node = nullptr);
     void recordLegacySceneTransfer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordCommandBuffer(
         VkCommandBuffer commandBuffer,
@@ -351,6 +363,11 @@ private:
     std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
+    std::unique_ptr<Texture> grassGroundTexture_;
+    std::filesystem::path skyboxTexturePath_;
+    std::filesystem::path grassGroundTexturePath_;
+    bool skyboxEnabled_ = false;
+    float grassHeightScale_ = 1.0f;
     std::unique_ptr<Texture> fallbackTexture_;
     std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
@@ -373,6 +390,33 @@ private:
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
     bool toolUiVisible_ = true;
+    bool screenshotFromToolbar_ = false;
+    std::filesystem::path pendingSceneOpen_;
+    bool editorDirty_ = false;
+    bool editorOpenConfirmed_ = false;
+    enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerEffect };
+    EditorSelection editorSelection_ = EditorSelection::None;
+    std::optional<std::uint32_t> editorPart_;
+    std::uint32_t editorPlayerEffect_ = 0;
+    struct EditorFilePicker {
+        std::string title;
+        bool scene = false;
+        std::filesystem::path directory;
+        std::array<char, 2048> path{};
+        std::function<void(const std::filesystem::path&)> accept;
+    } editorFilePicker_;
+    struct EditorShaderDialog {
+        ShaderStage stage = ShaderStage::Vertex;
+        std::string family;
+        std::string chosen;
+        std::optional<std::uint32_t> material;
+        std::string source;
+        std::string original;
+        std::string status;
+        std::vector<std::string> candidates;
+    } editorShader_;
+    bool editorShaderRequested_ = false;
+    bool editorShaderApplyRequested_ = false;
     glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
     glm::vec3 cameraForward_{0.0f, 0.0f, -1.0f};
     glm::vec3 cameraRight_{1.0f, 0.0f, 0.0f};
@@ -428,9 +472,6 @@ private:
     std::vector<std::filesystem::path> sceneResourcePaths_;
     std::filesystem::path currentScenePath_;
     std::array<char, 512> scenePathBuffer_{};
-    std::array<char, 512> ohosExportPathBuffer_{};
-    std::string ohosExportStatus_;
-    bool ohosExportFailed_ = false;
     std::string sceneStatus_;
     bool sceneStatusFailed_ = false;
     ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;

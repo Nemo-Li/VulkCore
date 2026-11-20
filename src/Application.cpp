@@ -4,6 +4,7 @@
 #include "vulkcore/Application.hpp"
 
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include "vulkcore/Core/Config.hpp"
@@ -29,7 +30,15 @@ void Application::run() {
     initWindow(kWindowWidth, kWindowHeight, false);
     renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
     renderer_->setTerrainFrustumCullingEnabled(terrainFrustumCullingEnabled_);
+    glfwSetDropCallback(window_, [](GLFWwindow* window, int count, const char** paths) {
+        auto* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+        if (renderer && count > 0) {
+            const std::string_view path(paths[0]);
+            renderer->queueSceneOpen(std::filesystem::path(std::u8string(path.begin(), path.end())));
+        }
+    });
     mainLoop();
+    glfwSetDropCallback(window_, nullptr);
 }
 
 void Application::captureFrame(float progress, float time, int width, int height,

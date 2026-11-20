@@ -58,6 +58,11 @@ void main() {
         }
         float canopyShade = mix(0.43, 1.27, smoothstep(0.0, 0.88, bladeHeight));
         albedo = tint * canopyShade * mix(0.89, 1.11, variation);
+        if ((material.textureFlags & 1u) != 0u) {
+            vec4 blade = texture(textureSampler, vec2(fragBladeUv.x, 1.0 - bladeHeight));
+            if (blade.a < 0.5) discard;
+            albedo *= blade.rgb;
+        }
     } else {
         if ((material.textureFlags & 1u) == 0u) discard;
         vec4 flower = texture(textureSampler, fragBladeUv);

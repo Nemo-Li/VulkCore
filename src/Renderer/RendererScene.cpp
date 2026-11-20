@@ -8,10 +8,6 @@ namespace VulkCore {
 
 namespace {
 
-constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
-constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
-constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
-constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
 
 } // namespace
 
@@ -659,13 +655,25 @@ const Renderer::SceneModelResource* Renderer::sceneModelResourceForNode(
 
 void Renderer::clearSceneData() {
     context_->waitIdle();
-    // A scene edit may have changed an imported FBX material without touching
-    // the resource preview. Preserve those values before dropping the scene
-    // so the next instance of the same resource can reuse them.
-    for (const SceneModelResource& model : sceneModelResources_) {
-        refreshModelResourceCacheFromScene(model.path);
-    }
     selectedModelNode_ = nullptr;
+    editorSelection_ = EditorSelection::None;
+    editorPart_.reset();
+    currentScenePath_.clear();
+    skyboxEnabled_ = false;
+    skyboxTexturePath_.clear();
+    grassGroundTexturePath_.clear();
+    grassGroundTexture_.reset();
+    grassHeightScale_ = 1.0f;
+    cameraPosition_ = {0.0f, 0.0f, 4.0f};
+    ambientLightColor_ = {0.18f, 0.21f, 0.24f};
+    ambientLightIntensity_ = 1.0f;
+    sunLightDirection_ = {0.45f, 0.55f, 0.75f};
+    sunLightColor_ = {0.82f, 0.86f, 0.9f};
+    sunLightIntensity_ = 1.0f;
+    postProcessEffect_ = 0;
+    postProcessStrength_ = 1.0f;
+    postProcessParameter_ = 0.5f;
+    postProcessSplitPosition_ = 0.5f;
     removedSceneNodeIds_.clear();
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
@@ -1094,6 +1102,10 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     std::filesystem::path playerModelPath;
     std::optional<glm::vec3> playerSpawnPosition;
     bool sceneHasSun = false;
+    std::optional<bool> sceneHasSkybox;
+    std::string skyboxImage;
+    std::string grassGroundImage;
+    float grassHeightScale = 1.0f;
     bool sceneHasPlayer = true;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
@@ -1168,6 +1180,23 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             playerSpawnPosition = configuredPosition;
+        } else if (key == "skybox") {
+            int enabled = 0;
+            if (!(sceneFile >> enabled >> std::quoted(skyboxImage)) ||
+                (enabled != 0 && enabled != 1)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid skybox settings.";
+                return false;
+            }
+            sceneHasSkybox = enabled != 0;
+        } else if (key == "grass_settings") {
+            if (!(sceneFile >> grassHeightScale >> std::quoted(grassGroundImage)) ||
+                !std::isfinite(grassHeightScale) || grassHeightScale < 0.25f ||
+                grassHeightScale > 3.0f) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid grass settings.";
+                return false;
+            }
         } else if (key == "sun_present") {
             int present = 0;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
@@ -1279,6 +1308,18 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         playerModelPath = normalizedPath(playerModelPath);
     }
 
+    std::unique_ptr<TerrainScene> terrain;
+    if (!terrainPath.empty()) {
+        try {
+            terrain = TerrainScene::load(terrainPath / "MainField.tscb", terrainPath, waterPath);
+            if (terrain->tileCount() == 0) throw std::runtime_error("terrain has no heightmap tiles");
+        } catch (const std::exception& terrainError) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Failed to load scene terrain: " + std::string(terrainError.what());
+            return false;
+        }
+    }
+
     clearSceneData();
     playerSpawnPosition_ = playerSpawnPosition;
     for (const ModelResourceReference& modelReference : modelReferences) {
@@ -1290,13 +1331,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     }
 
     bool generatedGeometryChanged = false;
-    if (!terrainPath.empty()) {
+    if (terrain) {
         try {
-            auto terrain = TerrainScene::load(
-                terrainPath / "MainField.tscb",
-                terrainPath,
-                waterPath
-            );
             appendTerrainToScene(*terrain, terrainPath);
             appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
@@ -1349,6 +1385,22 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     }
 
     currentScenePath_ = resolvedScenePath;
+    skyboxEnabled_ = sceneHasSkybox.value_or(resolvedScenePath.filename() == "game.scene");
+    grassHeightScale_ = grassHeightScale;
+    const auto sceneImagePath = [&](const std::string& image) {
+        return image.empty() ? std::filesystem::path{} :
+            normalizedPath(resolvedScenePath.parent_path() / std::filesystem::path(std::u8string(image.begin(), image.end())));
+    };
+    skyboxTexturePath_ = sceneImagePath(skyboxImage);
+    grassGroundTexturePath_ = sceneImagePath(grassGroundImage);
+    createSkyboxTexture();
+    if (!grassGroundTexturePath_.empty()) {
+        try {
+            grassGroundTexture_ = std::make_unique<Texture>(*context_, grassGroundTexturePath_);
+        } catch (const std::exception& error) {
+            std::cerr << "warning: failed to load grass LOD1 texture: " << error.what() << '\n';
+        }
+    }
     loadTransformSettings();
     recalculateSceneBounds();
     configureHdrComposition();
@@ -1367,9 +1419,6 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         // A game scene starts with a single continuous camera view. The
         // editor's post-process split preview is not part of gameplay.
         postProcessSplitView_ = false;
-    }
-    for (const SceneModelResource& model : sceneModelResources_) {
-        refreshModelResourceCacheFromScene(model.path);
     }
     createParticleTextures();
     rebuildMaterialResources();
@@ -2020,8 +2069,11 @@ void Renderer::loadTransformSettings() {
         if (removedSceneNodeIds_.contains(pending.nodeId)) {
             continue;
         }
+        const bool playerEffect = pending.nodeId == kPlayerLightningParticleNodeId ||
+            pending.nodeId == kPlayerFlameParticleNodeId;
+        if (playerEffect && !playerController_.active()) continue;
         ModelNode* node = findSceneNodeById(meshData_, pending.nodeId);
-        if (node == nullptr) {
+        if (!node && !playerEffect) {
             if (particleSystems_.size() >= kMaximumParticleSystems) {
                 continue;
             }
@@ -2032,14 +2084,12 @@ void Renderer::loadTransformSettings() {
             meshData_.additionalNodes.push_back(std::move(particleNode));
             node = &meshData_.additionalNodes.back();
         }
-        if (node->objectType != SceneObjectType::ParticleSystem) {
-            continue;
-        }
-        if (!particleSystems_.contains(node->nodeId) &&
+        if (node && node->objectType != SceneObjectType::ParticleSystem) continue;
+        if (!particleSystems_.contains(pending.nodeId) &&
             particleSystems_.size() >= kMaximumParticleSystems) {
             continue;
         }
-        auto [systemIt, inserted] = particleSystems_.try_emplace(node->nodeId);
+        auto [systemIt, inserted] = particleSystems_.try_emplace(pending.nodeId);
         (void)inserted;
         systemIt->second.setSettings(pending.settings);
         if (pending.settings.enabled && pending.settings.playOnAwake) {
@@ -2261,6 +2311,18 @@ bool Renderer::saveTransformSettings() const {
 
     file << "# VulkCore scene\n"
          << std::setprecision(9);
+    const auto sceneReference = [&](const std::filesystem::path& path) {
+        if (path.empty()) return std::string{};
+        std::error_code error;
+        const auto relative = std::filesystem::relative(path, configPath.parent_path(), error);
+        return (error || relative.empty() ? path : relative).generic_string();
+    };
+    file << "skybox " << skyboxEnabled_ << ' '
+         << std::quoted(sceneReference(skyboxTexturePath_)) << '\n';
+    if (terrainScene_) {
+        file << "grass_settings " << grassHeightScale_ << ' '
+             << std::quoted(sceneReference(grassGroundTexturePath_)) << '\n';
+    }
     if (!terrainResourcePath_.empty()) {
         std::error_code relativeError;
         std::filesystem::path terrainReference = std::filesystem::relative(
@@ -2368,6 +2430,12 @@ bool Renderer::saveTransformSettings() const {
         const auto systemIt = particleSystems_.find(node.nodeId);
         if (systemIt != particleSystems_.end()) {
             saveParticleSystemSettings(file, node.nodeId, systemIt->second.settings());
+        }
+    }
+
+    for (const auto effectId : {kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId}) {
+        if (const auto it = particleSystems_.find(effectId); it != particleSystems_.end()) {
+            saveParticleSystemSettings(file, effectId, it->second.settings());
         }
     }
 

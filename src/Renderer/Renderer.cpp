@@ -82,7 +82,6 @@ Renderer::~Renderer() {
         return;
     }
 
-    if (mode_ == Mode::Scene && fixedFrameOutput_.empty()) saveTransformSettings();
     context_->waitIdle();
     shutdownImGui();
     hdrComposition_.reset();
@@ -99,6 +98,7 @@ Renderer::~Renderer() {
     fallbackTerrainLayers_.reset();
     particleTextures_.clear();
     skyboxTexture_.reset();
+    grassGroundTexture_.reset();
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();

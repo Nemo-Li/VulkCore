@@ -799,7 +799,7 @@ void Renderer::createMaterialTextures() {
     const auto terrain = std::find_if(meshData_.materials.begin(), meshData_.materials.end(),
         [](const MaterialData& material) {
             return material.texturePath.filename() == "terrain_atlas.png" &&
-                material.shaderConfiguration.shader(ShaderStage::Fragment) == "shader_terrain.frag";
+                material.shaderConfiguration.shader(ShaderStage::Fragment).starts_with("shader_terrain");
         });
     if (terrain != meshData_.materials.end()) {
         const std::filesystem::path terrainTextureDirectory = terrain->texturePath.parent_path();
@@ -923,11 +923,14 @@ void Renderer::createMaterialTextures() {
     }
 }
 
+std::filesystem::path Renderer::defaultSkyboxPath() const {
+    return (assetsDirectory_.empty() ? locateAssetsDirectory() : assetsDirectory_) /
+        "textures" / "skybox_botw_day.png";
+}
+
 void Renderer::createSkyboxTexture() {
     skyboxTexture_.reset();
-    const std::filesystem::path skyboxPath =
-        (assetsDirectory_.empty() ? locateAssetsDirectory() : assetsDirectory_) /
-        "textures" / "skybox_botw_day.png";
+    const auto skyboxPath = skyboxTexturePath_.empty() ? defaultSkyboxPath() : skyboxTexturePath_;
     try {
         skyboxTexture_ = std::make_unique<Texture>(
             *context_,
@@ -939,6 +942,25 @@ void Renderer::createSkyboxTexture() {
         std::cerr << "warning: failed to load skybox texture '"
                   << skyboxPath.string() << "': " << error.what() << '\n';
     }
+}
+
+void Renderer::applySkyboxTexture(const std::filesystem::path& path) {
+    auto texture = std::make_unique<Texture>(*context_,
+        path.empty() ? defaultSkyboxPath() : path,
+        VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    context_->waitIdle();
+    skyboxTexture_ = std::move(texture);
+    skyboxTexturePath_ = path;
+    rebuildMaterialResources();
+}
+
+void Renderer::applyGrassGroundTexture(const std::filesystem::path& path) {
+    std::unique_ptr<Texture> texture;
+    if (!path.empty()) texture = std::make_unique<Texture>(*context_, path);
+    context_->waitIdle();
+    grassGroundTexture_ = std::move(texture);
+    grassGroundTexturePath_ = path;
+    rebuildMaterialResources();
 }
 
 void Renderer::createParticleTextures() {
@@ -1116,13 +1138,19 @@ void Renderer::createDescriptorSets() {
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
+            const Texture& grassGround = grassGroundTexture_ ? *grassGroundTexture_ : *texture;
+            const VkDescriptorImageInfo grassGroundInfo{
+                grassGround.sampler(), grassGround.imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
             std::array<VkWriteDescriptorSet, kMaterialImageBindingCount> descriptorWrites{};
-            descriptorWrites.back().sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites.back().dstSet = descriptorSets_[descriptorSetIndex];
-            descriptorWrites.back().dstBinding = kAlphaMaskBinding;
-            descriptorWrites.back().descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites.back().descriptorCount = 1;
-            descriptorWrites.back().pImageInfo = &maskInfo;
+            descriptorWrites[7] = {
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSets_[descriptorSetIndex],
+                kAlphaMaskBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &maskInfo, nullptr, nullptr
+            };
+            descriptorWrites[8] = {
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSets_[descriptorSetIndex],
+                kGrassGroundBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &grassGroundInfo, nullptr, nullptr
+            };
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
@@ -1460,15 +1488,15 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
 #else
     constexpr bool coverReferenceViewport = false;
 #endif
+    const float aspect = static_cast<float>(extent.width) / extent.height;
     ubo.projection = sceneProjection(
-        static_cast<float>(extent.width) / static_cast<float>(extent.height),
+        aspect,
         nearPlane,
         100.0f,
         coverReferenceViewport
     );
 
     if (authoredView_.enabled) {
-        const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         const float zoom = authoredView_.minimumAspect > 0.0f
             ? std::min(1.0f, aspect / authoredView_.minimumAspect) : 1.0f;
         const float fov = transitionSettings_.enabled ? transitionCameraFov_ : authoredView_.fov;
@@ -1494,7 +1522,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
-    if (skyboxTexture_ != nullptr && currentScenePath_.filename() == "game.scene") {
+    if (skyboxTexture_ != nullptr && skyboxEnabled_) {
         const float cloudTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
         ubo.daylight = glm::vec4(1.0f, cloudTime, 0.0f, 0.0f);
     }

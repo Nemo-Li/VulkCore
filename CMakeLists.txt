@@ -223,6 +223,7 @@ add_library(vulkcore_imgui STATIC
     "${imgui_SOURCE_DIR}/imgui_tables.cpp"
     "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
     "${imgui_SOURCE_DIR}/imgui_demo.cpp"
+    "${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
 )
 
@@ -282,6 +283,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/RendererScene.cpp
     src/Renderer/RendererSceneGraph.cpp
     src/Renderer/RendererUI.cpp
+    src/Renderer/RendererGameEditor.cpp
     src/Renderer/SwapChain.cpp
     src/Renderer/Texture.cpp
     src/Renderer/VulkanContext.cpp
@@ -315,7 +317,19 @@ else()
         VULKCORE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"
         VULKCORE_EXPORT_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\")
     set(VULKCORE_RUNTIME_TARGET vulkcore_runtime)
-    add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES} src/Platform/DesktopWindow.cpp)
+    add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES}
+        src/Platform/DesktopWindow.cpp src/Renderer/RendererEditorShaders.cpp)
+    target_compile_definitions(vulkcore_runtime PRIVATE
+        VULKCORE_SHADER_SOURCE_DIR="${VULKCORE_SHADER_SOURCE_DIR}"
+        VULKCORE_GLSLC="${VULKCORE_GLSLC_EXECUTABLE}")
+    if(APPLE)
+        enable_language(OBJCXX)
+        target_sources(vulkcore_runtime PRIVATE src/Platform/EditorFileDialog.mm)
+        target_link_libraries(vulkcore_runtime PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
+    elseif(WIN32)
+        target_sources(vulkcore_runtime PRIVATE src/Platform/EditorFileDialog.cpp)
+        target_link_libraries(vulkcore_runtime PRIVATE comdlg32)
+    endif()
     target_link_libraries(vulkcore_runtime PRIVATE vulkcore_export)
     add_dependencies(vulkcore_runtime VulkCoreShaders)
 

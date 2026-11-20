@@ -55,10 +55,11 @@ void main() {
     float heightWeight = nearBlade ? bladeRows[row] : float(row);
     float bendWeight = heightWeight * heightWeight;
     float width = inNormalWidth.w * (nearBlade ? 1.0 - 0.72 * heightWeight : 1.0);
+    float bladeHeight = inRootHeight.w * material.waterSurface.x;
     vec3 localPosition = root
-        + rootNormal * (inRootHeight.w * heightWeight)
+        + rootNormal * (bladeHeight * heightWeight)
         + right * (width * 0.5 * side)
-        + forward * (inMotion.y * inRootHeight.w * bendWeight);
+        + forward * (inMotion.y * bladeHeight * bendWeight);
     float phase = inMotion.z * 6.28318530718;
 
     // Two differently oriented waves create BOTW's broad gusts plus local

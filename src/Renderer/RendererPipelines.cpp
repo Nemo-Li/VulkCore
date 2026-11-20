@@ -56,6 +56,8 @@ void Renderer::createDescriptorSetLayout() {
     bindings[7].binding = 7;
     bindings[kAlphaMaskBinding] = bindings[6];
     bindings[kAlphaMaskBinding].binding = kAlphaMaskBinding;
+    bindings[kGrassGroundBinding] = bindings[6];
+    bindings[kGrassGroundBinding].binding = kGrassGroundBinding;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -535,7 +537,7 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     auto bindingDescription = Vertex::bindingDescription();
     const auto attributeDescriptions = Vertex::attributeDescriptions();
 
-    const bool instancedGrass = configuration.shader(ShaderStage::Vertex) == kGrassVertexShader;
+    const bool instancedGrass = configuration.shader(ShaderStage::Vertex).starts_with("shader_grass");
     const std::array<VkVertexInputAttributeDescription, 4> grassAttributes{{
         {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, rootHeight)},
         {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, normalWidth)},
@@ -679,8 +681,7 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
     if (const auto existing = nodeGraphicsPipelines_.find(key); existing != nodeGraphicsPipelines_.end()) {
         return existing->second;
     }
-    const bool instancedGrass = material.shaderConfiguration.shader(ShaderStage::Vertex) ==
-        kGrassVertexShader;
+    const bool instancedGrass = material.shaderConfiguration.shader(ShaderStage::Vertex).starts_with("shader_grass");
     if (failedNodeGraphicsPipelineKeys_.contains(key)) {
         return hdr || instancedGrass ? VK_NULL_HANDLE : graphicsPipeline_;
     }
