@@ -55,6 +55,8 @@ public:
     // Returns true once the presentation queue accepts the frame.
     bool drawFrame();
     void setTerrainFrustumCullingEnabled(bool enabled) { terrainFrustumCullingEnabled_ = enabled; }
+    void initializeResourceBrowser(const std::filesystem::path& root);
+    void queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y);
     void queueSceneOpen(const std::filesystem::path& path);
     void queueModelViewerDrop(std::vector<std::filesystem::path> paths);
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
@@ -70,6 +72,51 @@ private:
         VkImageView depthImageView = VK_NULL_HANDLE;
         VkSampler depthSampler = VK_NULL_HANDLE;
         VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    };
+
+    struct ResourceBrowser {
+        struct Entry {
+            std::filesystem::path path;
+            bool directory = false;
+        };
+        struct DropZone {
+            std::filesystem::path directory;
+            float left, top, right, bottom;
+            bool contains(double x, double y) const {
+                return x >= left && x < right && y >= top && y < bottom;
+            }
+        };
+        struct Transfer {
+            std::filesystem::path source, directory;
+            bool move = false;
+        };
+        std::filesystem::path root, directory, selected, dragged;
+        std::vector<Entry> entries;
+        std::vector<DropZone> dropZones;
+        std::vector<Transfer> transfers;
+        std::chrono::steady_clock::time_point nextScan{};
+        std::array<char, 256> folderName{};
+        std::string status;
+        bool open = true;
+    };
+    struct ResourcePreview {
+        MeshData mesh;
+        std::unique_ptr<Buffer> indices;
+        std::unique_ptr<Texture> fallback;
+        std::array<std::unique_ptr<Buffer>, kMaxFramesInFlight> vertices, uniforms;
+        std::vector<std::array<std::unique_ptr<Texture>, 4>> textures;
+        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> descriptorSets;
+        std::array<SceneRenderTarget, kMaxFramesInFlight> targets;
+        std::array<VkDescriptorSet, kMaxFramesInFlight> images{};
+        std::filesystem::path model, animation, requestedModel;
+        std::vector<std::filesystem::path> modelChoices;
+        std::size_t modelIndex = 0;
+        glm::vec3 camera{0.0f, 0.0f, 4.0f};
+        std::string message;
+        bool reload = false;
+        bool draw = false;
+        bool targetsFailed = false;
     };
 
     struct SceneModelResource {
@@ -94,6 +141,16 @@ private:
     void selectViewerModel(std::size_t index);
     void fitViewerModel();
     bool drawGameEditor();
+    void drawResourceBrowser();
+    void scanResourceDirectory();
+    void processResourceTransfers();
+    void drawResourcePreview();
+    void loadResourcePreview();
+    void createResourcePreviewBuffers();
+    void destroyResourcePreviewBuffers();
+    void createResourcePreviewTargets();
+    void destroyResourcePreviewTargets();
+    void recordResourcePreview(VkCommandBuffer commandBuffer);
     void drawGameInspector();
     void changeEditorMaterialTexture(std::uint32_t index, const std::filesystem::path& path);
     void drawGameOutliner();
@@ -187,6 +244,8 @@ private:
     void createRenderPass();
     void createSceneRenderResources();
     void destroySceneRenderResources();
+    void createSceneRenderTarget(SceneRenderTarget& target, VkExtent2D extent, bool sampleDepth);
+    void destroySceneRenderTarget(SceneRenderTarget& target);
     void createDescriptorSetLayout();
     void createGraphicsPipeline();
     void createMeshData();
@@ -391,6 +450,10 @@ private:
     bool imguiInitialized_ = false;
     bool toolUiVisible_ = true;
     bool screenshotFromToolbar_ = false;
+#ifndef VULKCORE_OHOS
+    ResourceBrowser resourceBrowser_;
+    ResourcePreview resourcePreview_;
+#endif
     std::filesystem::path pendingSceneOpen_;
     bool editorDirty_ = false;
     bool editorOpenConfirmed_ = false;

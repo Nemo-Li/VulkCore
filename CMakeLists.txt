@@ -318,7 +318,10 @@ else()
         VULKCORE_EXPORT_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\")
     set(VULKCORE_RUNTIME_TARGET vulkcore_runtime)
     add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES}
-        src/Platform/DesktopWindow.cpp src/Renderer/RendererEditorShaders.cpp)
+        src/Platform/DesktopWindow.cpp
+        src/Renderer/RendererEditorShaders.cpp
+        src/Renderer/RendererResourceBrowser.cpp
+        src/Renderer/RendererResourcePreview.cpp)
     target_compile_definitions(vulkcore_runtime PRIVATE
         VULKCORE_SHADER_SOURCE_DIR="${VULKCORE_SHADER_SOURCE_DIR}"
         VULKCORE_GLSLC="${VULKCORE_GLSLC_EXECUTABLE}")

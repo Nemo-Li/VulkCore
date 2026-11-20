@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <iosfwd>
 #include <limits>
@@ -132,6 +133,16 @@ constexpr std::array<std::uint32_t, 24> kBoundingBoxEdges = {
 };
 
 
+
+double modelBoundsRadius(const ModelNode& node);
+std::size_t defaultPreviewModel(const MeshData& mesh, bool preferAnimated = false);
+bool drawPreviewModelPicker(const MeshData& mesh, std::size_t& selected);
+void drawAnimationPlayback(const MeshData& mesh, SkeletalAnimationInstance& instance);
+void updateSkeletalMesh(
+    MeshData& mesh, float deltaSeconds, std::uint32_t frameCount,
+    const std::function<void(std::size_t, std::size_t)>& upload,
+    const std::function<void(SkeletalAnimationInstance&)>& configure = {}
+);
 
 const char* shaderStageLabel(ShaderStage stage);
 const char* shaderStageExtension(ShaderStage stage);

@@ -1183,15 +1183,30 @@ bool isBfresAnimationPath(const std::filesystem::path& path) {
     return name.find("animation") != std::string::npos || name.find("anim") != std::string::npos;
 }
 
+BfresContent inspectBfresContent(const std::filesystem::path& path) {
+    const auto bytes = readArchive(path);
+    const auto file = fres(bytes);
+    const bool hasAnimation = file.u16(0xbe) != 0;
+    // Animation packages may carry a skeleton-only FMDL, without a GPU section.
+    if (file.u16(0xbc) != 0 && (!hasAnimation || file.pointer(0x90) != 0)) {
+        return BfresContent::Model;
+    }
+    if (hasAnimation) return BfresContent::SkeletalAnimation;
+    return BfresContent::Other;
+}
+
 MeshData loadSbfresMesh(
     const std::filesystem::path& modelPath,
     const std::filesystem::path& texturePath,
-    const std::filesystem::path& animationPath
+    const std::filesystem::path& animationPath,
+    bool includeEmbeddedAnimations
 ) {
     auto sidecarPath = texturePath;
     if (sidecarPath.empty()) {
-        sidecarPath = modelPath.parent_path() /
-            (modelPath.stem().string() + ".Tex" + modelPath.extension().string());
+        auto name = modelPath.stem();
+        name += ".Tex";
+        name += modelPath.extension();
+        sidecarPath = modelPath.parent_path() / name;
         if (!std::filesystem::exists(sidecarPath)) sidecarPath.clear();
     }
     try {
@@ -1210,6 +1225,8 @@ MeshData loadSbfresMesh(
             animationBytes = readArchive(animationPath);
             animations = readSkeletalAnimations(fres(animationBytes));
             if (animations.empty()) throw std::runtime_error("animation BFRES contains no FSKA clips");
+        } else if (includeEmbeddedAnimations) {
+            animations = readSkeletalAnimations(model);
         }
         auto result = parseModel(model, textures, std::move(animations));
         if (result.hierarchy.name.empty()) result.hierarchy.name = modelPath.stem().string();

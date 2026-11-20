@@ -3,6 +3,12 @@
 
 #include "vulkcore/Application.hpp"
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -11,6 +17,28 @@
 #include "vulkcore/Renderer/Renderer.hpp"
 
 namespace VulkCore {
+namespace {
+
+std::filesystem::path executablePath() {
+#ifdef __APPLE__
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> path(size);
+    if (_NSGetExecutablePath(path.data(), &size) == 0) return std::filesystem::canonical(path.data());
+#elif defined(_WIN32)
+    std::wstring path(32768, L'\0');
+    const DWORD size = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (size > 0 && size < path.size()) {
+        path.resize(size);
+        return path;
+    }
+#else
+    return std::filesystem::read_symlink("/proc/self/exe");
+#endif
+    throw std::runtime_error("Could not locate the VulkCore executable.");
+}
+
+} // namespace
 
 Application::Application(
     std::filesystem::path startupScene, bool hideTools, bool terrainFrustumCullingEnabled
@@ -30,12 +58,19 @@ void Application::run() {
     initWindow(kWindowWidth, kWindowHeight, false);
     renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
     renderer_->setTerrainFrustumCullingEnabled(terrainFrustumCullingEnabled_);
+    renderer_->initializeResourceBrowser(executablePath().parent_path() / "resource");
     glfwSetDropCallback(window_, [](GLFWwindow* window, int count, const char** paths) {
         auto* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
-        if (renderer && count > 0) {
-            const std::string_view path(paths[0]);
-            renderer->queueSceneOpen(std::filesystem::path(std::u8string(path.begin(), path.end())));
+        if (!renderer || count <= 0) return;
+        std::vector<std::filesystem::path> files;
+        files.reserve(count);
+        for (int i = 0; i < count; ++i) {
+            const std::string_view path(paths[i]);
+            files.emplace_back(std::u8string(path.begin(), path.end()));
         }
+        double x = 0.0, y = 0.0;
+        glfwGetCursorPos(window, &x, &y);
+        renderer->queueEditorDrop(std::move(files), x, y);
     });
     mainLoop();
     glfwSetDropCallback(window_, nullptr);
