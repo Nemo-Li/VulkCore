@@ -142,6 +142,9 @@ private:
     void selectViewerModel(std::size_t index);
     void fitViewerModel();
     bool drawGameEditor();
+    glm::vec3 updateGameEditorSelection(float deltaSeconds, bool viewportHovered);
+    void drawGameSelectionOutline(const glm::mat4& clipFromScene);
+    bool drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize);
     void drawResourceBrowser();
     void scanResourceDirectory();
     void processResourceTransfers();
@@ -238,7 +241,7 @@ private:
     void updatePlayerAttackEffect();
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
-    void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds);
+    void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement);
     void configurePlayerRunAnimation();
     void updateSkeletalAnimations(float deltaSeconds);
     glm::mat4 transformForSceneNode(std::uint32_t nodeId) const;
@@ -455,8 +458,11 @@ private:
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
     bool toolUiVisible_ = true;
+    bool sceneEditMode_ = false;
+    bool miniMapVisible_ = true;
     bool screenshotFromToolbar_ = false;
 #ifndef VULKCORE_OHOS
+    glm::vec4 sceneEditorViewport_{0.0f}; // left, top, right, bottom in ImGui coordinates
     ResourceBrowser resourceBrowser_;
     ResourcePreview resourcePreview_;
     std::optional<std::uint32_t> pendingSceneNodeRemoval_;

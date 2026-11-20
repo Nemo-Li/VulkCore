@@ -625,7 +625,7 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         window_,
         deltaSeconds,
         *physicsWorld_,
-        io.WantTextInput,
+        sceneEditMode_ || io.WantTextInput,
         !viewportHovered
     );
     updatePlayerAttackEffect();

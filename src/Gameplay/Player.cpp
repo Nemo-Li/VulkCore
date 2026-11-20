@@ -270,6 +270,14 @@ bool PlayerController::teleport(
     return true;
 }
 
+bool PlayerController::moveSpawn(const TerrainScene& terrain, PhysicsWorld& physics, const glm::vec2& worldPosition) {
+    const bool wasDragging = lookDragging_;
+    if (!teleport(terrain, physics, worldPosition)) return false;
+    lookDragging_ = wasDragging;
+    spawnPosition_ = position_;
+    return true;
+}
+
 void PlayerController::configureRunGait(
     float cycleDurationSeconds,
     float groundSpeed,
