@@ -1,4 +1,7 @@
 #include "RendererImplementation.hpp"
+#include "../Platform/EditorTrash.hpp"
+#include "vulkcore/Terrain/Terrain.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 #include <utility>
 
@@ -7,6 +10,7 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr char kResourcePayload[] = "VULKCORE_RESOURCE";
+constexpr char kResourceModelPayload[] = "VULKCORE_RESOURCE_MODEL";
 
 std::string utf8(const fs::path& path) {
     const auto bytes = path.u8string();
@@ -100,6 +104,27 @@ void Renderer::processResourceTransfers() {
     scanResourceDirectory();
 }
 
+void Renderer::processResourceTrash() {
+    auto& browser = resourceBrowser_;
+    const auto path = std::exchange(browser.pendingTrash, {});
+    if (path.empty()) return;
+
+    try {
+        if (!managedDirectory(browser.root, path.parent_path()) ||
+            !fs::is_regular_file(fs::symlink_status(path))) {
+            throw std::runtime_error("The selected resource file is no longer available.");
+        }
+        trashEditorFile(path);
+        if (browser.selected == path) browser.selected.clear();
+        resourcePreview_.requestedModel.clear();
+        resourcePreview_.reload = true;
+        browser.status = "Moved " + utf8(path.filename()) + " to the Trash.";
+    } catch (const std::exception& error) {
+        browser.status = "Could not move " + utf8(path.filename()) + " to the Trash: " + error.what();
+    }
+    scanResourceDirectory();
+}
+
 void Renderer::scanResourceDirectory() {
     auto& browser = resourceBrowser_;
     browser.entries.clear();
@@ -129,6 +154,51 @@ void Renderer::scanResourceDirectory() {
     }
 }
 
+void Renderer::acceptSceneModelDrop() {
+    if (ImGui::AcceptDragDropPayload(kResourceModelPayload) && !resourceBrowser_.dragged.empty()) {
+        resourceBrowser_.pendingModelImport = resourceBrowser_.dragged;
+    }
+}
+
+void Renderer::processSceneModelDrop() {
+    const auto path = std::exchange(resourceBrowser_.pendingModelImport, {});
+    if (path.empty()) return;
+
+    try {
+        if (isBfresPath(path) && inspectBfresContent(path) != BfresContent::Model) {
+            throw std::runtime_error("The selected package does not contain a model.");
+        }
+    } catch (const std::exception& error) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Cannot add " + utf8(path.filename()) + ": " + error.what();
+        return;
+    }
+
+    const glm::vec3 worldTarget = cameraTarget_ / modelScale_ + modelCenter_;
+    if (!importModelResource(path)) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = resourceImportStatus_;
+        return;
+    }
+
+    auto* node = findSceneNodeById(meshData_, sceneModelResources_.back().rootNodeId);
+    if (node && terrainScene_ && node->hasBounds) {
+        if (const auto height = terrainScene_->renderedHeightAtWorld({worldTarget.x, worldTarget.z})) {
+            const glm::vec3 groundTarget{worldTarget.x, *height, worldTarget.z};
+            auto modelBase = (node->boundsMinimum + node->boundsMaximum) * 0.5f;
+            modelBase.y = node->boundsMinimum.y;
+            node->transformTranslation = (groundTarget - modelBase) * modelScale_;
+        }
+    }
+
+    selectedModelNode_ = node;
+    editorSelection_ = EditorSelection::Node;
+    editorPart_.reset();
+    editorDirty_ = true;
+    sceneStatusFailed_ = false;
+    sceneStatus_ = "Added " + utf8(path.filename()) + " to the scene.";
+}
+
 void Renderer::drawResourceBrowser() {
     auto& browser = resourceBrowser_;
     if (ImGui::Button(browser.open ? "Resource Manager  [-]" : "Resource Manager  [+]")) {
@@ -156,7 +226,8 @@ void Renderer::drawResourceBrowser() {
     };
     const auto acceptMove = [&](const fs::path& directory) {
         if (ImGui::BeginDragDropTarget()) {
-            if (ImGui::AcceptDragDropPayload(kResourcePayload) && !browser.dragged.empty()) {
+            if ((ImGui::AcceptDragDropPayload(kResourcePayload) ||
+                 ImGui::AcceptDragDropPayload(kResourceModelPayload)) && !browser.dragged.empty()) {
                 browser.transfers.push_back({browser.dragged, directory, true});
             }
             ImGui::EndDragDropTarget();
@@ -245,8 +316,10 @@ void Renderer::drawResourceBrowser() {
             } else {
                 if (ImGui::BeginDragDropSource()) {
                     browser.dragged = entry.path;
-                    ImGui::SetDragDropPayload(kResourcePayload, nullptr, 0);
+                    const bool model = isModelAssetPath(entry.path);
+                    ImGui::SetDragDropPayload(model ? kResourceModelPayload : kResourcePayload, nullptr, 0);
                     ImGui::TextUnformatted(name.c_str());
+                    if (model) ImGui::TextDisabled("Drop in the scene or Outliner to add");
                     ImGui::EndDragDropSource();
                 }
                 if (picked && browser.selected != entry.path) {
@@ -264,6 +337,10 @@ void Renderer::drawResourceBrowser() {
     ImGui::SameLine();
     if (ImGui::BeginChild("Resource preview", ImVec2(0, 0), ImGuiChildFlags_Borders)) drawResourcePreview();
     ImGui::EndChild();
+    if (!browser.selected.empty() && ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
+        editorDeletePressed()) {
+        browser.pendingTrash = browser.selected;
+    }
 }
 
 } // namespace VulkCore

@@ -814,8 +814,19 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
 bool Renderer::drawFrame() {
     if (mode_ == Mode::ModelViewer) loadModelViewerDrop();
 #ifndef VULKCORE_OHOS
+    if (const auto node = std::exchange(pendingSceneNodeRemoval_, std::nullopt)) {
+        if (removeSceneNodeById(*node)) {
+            editorSelection_ = EditorSelection::None;
+            editorPart_.reset();
+            editorDirty_ = true;
+            sceneStatusFailed_ = false;
+            sceneStatus_ = "Removed object from the scene.";
+        }
+    }
     if (!resourceBrowser_.root.empty()) {
         processResourceTransfers();
+        processResourceTrash();
+        processSceneModelDrop();
         if (toolUiVisible_ && resourceBrowser_.open) loadResourcePreview();
         resourceBrowser_.dropZones.clear();
         resourcePreview_.draw = false;
@@ -825,11 +836,13 @@ bool Renderer::drawFrame() {
         applyEditorShader();
     }
 #endif
-    if (!pendingSceneOpen_.empty() && (!editorDirty_ || editorOpenConfirmed_)) {
-        editorOpenConfirmed_ = false;
+    if (pendingSceneChange_ != EditorSceneChange::None && (!editorDirty_ || editorSceneChangeConfirmed_)) {
+        const auto action = std::exchange(pendingSceneChange_, EditorSceneChange::None);
         const auto path = std::exchange(pendingSceneOpen_, {});
+        editorSceneChangeConfirmed_ = false;
         const auto before = currentScenePath_;
-        if (loadSceneResource(path) || currentScenePath_ != before) editorDirty_ = false;
+        const bool changed = action == EditorSceneChange::Create ? createNewEmptyScene() : loadSceneResource(path);
+        if (changed || currentScenePath_ != before) editorDirty_ = false;
     }
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a

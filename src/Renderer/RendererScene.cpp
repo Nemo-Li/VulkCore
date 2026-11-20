@@ -4,6 +4,9 @@
 #include "vulkcore/Terrain/Grass.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
+#include <cerrno>
+#include <cstdio>
+
 namespace VulkCore {
 
 namespace {
@@ -953,35 +956,58 @@ void Renderer::appendImportedModel(
     recalculateSceneBounds();
 }
 
-void Renderer::createNewEmptyScene() {
-    clearSceneData();
-    sceneStatusFailed_ = false;
-
-    if (scenesDirectory_.empty()) {
-        scenesDirectory_ = std::filesystem::current_path() / "scenes";
+bool Renderer::createNewEmptyScene() {
+    const auto path = createSceneFile();
+    if (path.empty()) return false;
+    if (!loadSceneResource(path)) {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        return false;
     }
-    std::filesystem::path newScenePath;
+    sceneStatus_ = "Created empty scene " + currentScenePath_.filename().string() + ".";
+    return true;
+}
+
+std::filesystem::path Renderer::createSceneFile() {
     std::error_code error;
-    for (std::size_t suffix = 0; ; ++suffix) {
-        const std::string fileName = suffix == 0
-            ? "Scene.scene"
-            : "Scene_" + std::to_string(suffix) + ".scene";
-        const std::filesystem::path candidate = scenesDirectory_ / fileName;
-        error.clear();
-        if (!std::filesystem::exists(candidate, error)) {
-            if (error) {
-                sceneStatusFailed_ = true;
-                sceneStatus_ = "Failed to choose a scene filename: " + error.message();
-                return;
-            }
-            newScenePath = candidate;
-            break;
-        }
+    const auto directory = scenesDirectory_.empty()
+        ? std::filesystem::current_path(error) / "scenes" : scenesDirectory_;
+    if (!error) std::filesystem::create_directories(directory, error);
+    if (error) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Failed to create scene directory: " + error.message();
+        return {};
     }
 
-    if (saveSceneResource(newScenePath)) {
-        sceneStatus_ = "Created and saved empty scene " +
-            currentScenePath_.filename().string() + ".";
+    for (std::size_t suffix = 0; ; ++suffix) {
+        const auto path = directory / (suffix == 0
+            ? "Scene.scene" : "Scene_" + std::to_string(suffix) + ".scene");
+        // Exclusive creation keeps both existing scenes and concurrent creations intact.
+        std::FILE* file = nullptr;
+#ifdef _WIN32
+        const int openError = _wfopen_s(&file, path.c_str(), L"wbx");
+#else
+        file = std::fopen(path.c_str(), "wbx");
+        const int openError = file ? 0 : errno;
+#endif
+        if (!file) {
+            if (openError == EEXIST || std::filesystem::exists(std::filesystem::symlink_status(path, error))) {
+                continue;
+            }
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Failed to create scene file: " +
+                std::error_code(openError, std::generic_category()).message();
+            return {};
+        }
+
+        const bool written = std::fputs("# VulkCore scene\n", file) >= 0;
+        const bool closed = std::fclose(file) == 0;
+        if (written && closed) return path;
+
+        std::filesystem::remove(path, error);
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Failed to write scene file: " + path.string();
+        return {};
     }
 }
 
@@ -1035,13 +1061,9 @@ void Renderer::discoverSceneResources() {
 bool Renderer::saveSceneResource(const std::filesystem::path& path) {
     sceneStatusFailed_ = false;
     sceneStatus_.clear();
-    if (path.empty()) {
-        sceneStatusFailed_ = true;
-        sceneStatus_ = "Enter a scene file path before saving.";
-        return false;
-    }
-
-    std::filesystem::path resolvedPath = path;
+    const bool untitled = path.empty();
+    std::filesystem::path resolvedPath = untitled ? createSceneFile() : path;
+    if (resolvedPath.empty()) return false;
     if (resolvedPath.is_relative()) {
         resolvedPath = resolvedPath.parent_path().empty()
             ? scenesDirectory_ / resolvedPath
@@ -1053,7 +1075,7 @@ bool Renderer::saveSceneResource(const std::filesystem::path& path) {
     resolvedPath = normalizedPath(resolvedPath);
 
     std::error_code error;
-    if (!resolvedPath.parent_path().empty()) {
+    if (!untitled && !resolvedPath.parent_path().empty()) {
         std::filesystem::create_directories(resolvedPath.parent_path(), error);
     }
     if (error) {
@@ -1066,6 +1088,7 @@ bool Renderer::saveSceneResource(const std::filesystem::path& path) {
     currentScenePath_ = resolvedPath;
     if (!saveTransformSettings()) {
         currentScenePath_ = previousScenePath;
+        if (untitled) std::filesystem::remove(resolvedPath, error);
         sceneStatusFailed_ = true;
         sceneStatus_ = "Failed to save scene: " + resolvedPath.string();
         return false;
@@ -1211,10 +1234,10 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         }
     }
 
-    // tornado.scene is a self-contained VFX preview. Ignore stale model or
-    // gameplay references that may have been written by an older scene save.
+    // Ignore old unnumbered model references from the standalone VFX preview.
+    // Saved editor instances have stable root IDs and still belong to the scene.
     if (isTornadoScene) {
-        modelReferences.clear();
+        std::erase_if(modelReferences, [](const auto& model) { return !model.rootNodeId; });
         terrainPath.clear();
         waterPath.clear();
         playerModelPath.clear();
@@ -1409,9 +1432,6 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         std::chrono::steady_clock::now() - startTime_
     ).count();
     if (isTornadoScene) {
-        // A previous saved preview could mark the generated node as removed.
-        // The preview scene always owns and shows this node.
-        removedSceneNodeIds_.erase(kPlayerTornadoMeshNodeId);
         createTornadoMeshEffect(true);
     }
     createPlayerAttackEffect();
@@ -2013,16 +2033,10 @@ void Renderer::loadTransformSettings() {
         return;
     }
 
-    if (currentScenePath_.filename() == "tornado.scene") {
-        // The Tornado preview is regenerated by the loader. Do not restore
-        // old scene-node deletion records over the generated effect.
-        pendingRemovedNodes.clear();
-    }
-
     for (const PendingRemovedNode& removed : pendingRemovedNodes) {
-        if (!removeSceneNodeById(removed.nodeId)) {
-            // This also covers generated objects (such as particle systems)
-            // that are restored from their own settings later in this method.
+        if (!removeSceneNodeById(removed.nodeId) && removed.nodeId >= kParticleSceneNodeBase) {
+            // Generated objects can be created after this pass. Missing imported
+            // instances are already absent and their IDs can be reused later.
             removedSceneNodeIds_.insert(removed.nodeId);
         }
     }
@@ -2454,8 +2468,12 @@ bool Renderer::saveTransformSettings() const {
         }
     }
     for (const MeshPart& part : meshData_.parts) {
-        if (!removedSceneNodeIds_.contains(part.nodeId) &&
-            part.materialIndex < meshData_.materials.size()) {
+        // Water and grass are regenerated before node removals are loaded.
+        // Keep their material slots so saved overrides still use the right indices.
+        const bool regenerated = (part.nodeId >= kWaterSceneNodeId && part.nodeId < kGrassSceneNodeId) ||
+            grassLodForLayer(part.nodeId - kGrassLodNodeBase).has_value();
+        if (part.materialIndex < meshData_.materials.size() &&
+            (regenerated || !removedSceneNodeIds_.contains(part.nodeId))) {
             activeMaterialIndices.insert(part.materialIndex);
         }
     }
@@ -2482,13 +2500,20 @@ bool Renderer::saveTransformSettings() const {
         collectActiveNodeMaterials(collectActiveNodeMaterials, node);
     }
     MaterialIndexRemap materialIndexRemap;
-    std::size_t serializedMaterialIndex = 0;
-    for (std::size_t materialIndex = 0;
-         materialIndex < meshData_.materials.size();
-         ++materialIndex) {
-        if (activeMaterialIndices.contains(materialIndex)) {
-            materialIndexRemap.emplace(materialIndex, serializedMaterialIndex++);
+    const auto addMaterial = [&](std::size_t index) {
+        if (activeMaterialIndices.contains(index)) materialIndexRemap.try_emplace(index, materialIndexRemap.size());
+    };
+    addMaterial(0);
+    // The loader creates regular model materials before terrain and player materials,
+    // including models added after those objects were created in the editor.
+    for (const auto& model : sceneModelResources_) {
+        if (model.playerModel) continue;
+        for (std::size_t index = 0; index < model.materialCount; ++index) {
+            addMaterial(model.materialStart + index);
         }
+    }
+    for (std::size_t index = 1; index < meshData_.materials.size(); ++index) {
+        addMaterial(index);
     }
     saveNodeTransformSettings(file, meshData_.hierarchy);
     for (const ModelNode& node : meshData_.additionalNodes) {
@@ -2521,6 +2546,7 @@ bool Renderer::saveTransformSettings() const {
     for (const ModelNode& node : meshData_.additionalNodes) {
         saveNodeMaterialSettings(file, node, materialIndexRemap);
     }
+    file.close();
     return static_cast<bool>(file);
 }
 
@@ -2555,10 +2581,28 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
             collectModelNodeIds(*nodeIt, removedNodeIds);
             meshData_.additionalNodes.erase(nodeIt);
             removed = true;
+        } else {
+            for (auto& object : meshData_.additionalNodes) {
+                if (removeModelNodeFromChildren(object, nodeId, removedNodeIds)) {
+                    removed = true;
+                    break;
+                }
+            }
         }
     }
     if (!removed) {
         return false;
+    }
+    selectedModelNode_ = nullptr;
+
+    const bool removingPlayer = std::find(removedNodeIds.begin(), removedNodeIds.end(),
+        kPlayerSceneNodeId) != removedNodeIds.end();
+    if (removingPlayer) {
+        if (physicsWorld_) physicsWorld_->removePlayer();
+        playerController_.clear();
+        removedNodeIds.insert(removedNodeIds.end(),
+            {kPlayerAttackParticleNodeId, kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId});
+        removeSceneNodeById(kPlayerTornadoMeshNodeId);
     }
 
     bool hasParticleResources = false;
@@ -2594,16 +2638,6 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
     if (std::find(
             removedNodeIds.begin(),
             removedNodeIds.end(),
-            kPlayerSceneNodeId
-        ) != removedNodeIds.end()) {
-        if (physicsWorld_) {
-            physicsWorld_->removePlayer();
-        }
-        playerController_.clear();
-    }
-    if (std::find(
-            removedNodeIds.begin(),
-            removedNodeIds.end(),
             particleTexturePathNodeId_
         ) != removedNodeIds.end()) {
         particleTexturePathNodeId_ = std::numeric_limits<std::uint32_t>::max();
@@ -2626,7 +2660,6 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
     );
 
     recalculateSceneBounds();
-    selectedModelNode_ = nullptr;
     if (removingSun) {
         removeSunMesh();
         rebuildSceneGeometryResources();

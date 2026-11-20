@@ -54,8 +54,13 @@ bool Renderer::importModelResource(
             discoverModelTextureResources(resolvedPath, cache);
             importedMesh = *cache.mesh;
         }
-        if (importedMesh.vertices.empty() || importedMesh.indices.empty()) {
-            throw std::runtime_error("the imported model contains no renderable triangles");
+        if (!importedMesh.hierarchy.hasBounds) {
+            throw std::runtime_error("the imported model has no bounds");
+        }
+        const glm::vec3 extent = importedMesh.hierarchy.boundsMaximum - importedMesh.hierarchy.boundsMinimum;
+        if (!std::isfinite(extent.x) || !std::isfinite(extent.y) || !std::isfinite(extent.z) ||
+            std::max({extent.x, extent.y, extent.z}) <= std::numeric_limits<float>::epsilon()) {
+            throw std::runtime_error("the imported model has no measurable bounds");
         }
     } catch (const std::exception& importError) {
         resourceImportFailed_ = true;
@@ -540,7 +545,7 @@ void Renderer::updateParticleSystems(
 }
 
 void Renderer::createTornadoMeshEffect(bool alwaysVisible) {
-    if (tornadoMeshPresent_) {
+    if (tornadoMeshPresent_ || removedSceneNodeIds_.contains(kPlayerTornadoMeshNodeId)) {
         return;
     }
 
@@ -680,7 +685,7 @@ void Renderer::createPlayerAttackEffect() {
                                std::uint32_t effectId,
                                const ParticleSystemSettings& settings
                            ) {
-        if (particleSystems_.contains(effectId) ||
+        if (removedSceneNodeIds_.contains(effectId) || particleSystems_.contains(effectId) ||
             particleSystems_.size() >= kMaximumParticleSystems) {
             return;
         }
