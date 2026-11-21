@@ -122,6 +122,22 @@ foreach(SHADER_SOURCE IN LISTS VULKCORE_SHADER_SOURCES)
     list(APPEND VULKCORE_SHADER_BINARIES "${SHADER_BINARY}")
 endforeach()
 
+# Compile depth-only forms of materials whose coverage is procedural. They reuse the
+# visible shader's discard and alpha rules without accessing the receiving shadow map.
+foreach(SHADOW_MATERIAL IN ITEMS grass grid particle surface_wipe tornado uv_ribbon)
+    set(SHADER_SOURCE "${VULKCORE_SHADER_SOURCE_DIR}/shader_${SHADOW_MATERIAL}.frag")
+    set(SHADER_BINARY "${VULKCORE_SHADER_BINARY_DIR}/sun_caster_${SHADOW_MATERIAL}.frag.spv")
+    add_custom_command(
+        OUTPUT "${SHADER_BINARY}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VULKCORE_SHADER_BINARY_DIR}"
+        COMMAND "${VULKCORE_GLSLC_EXECUTABLE}" -O -DVULKCORE_SHADOW_PASS=1 "${SHADER_SOURCE}" -o "${SHADER_BINARY}"
+        DEPENDS "${SHADER_SOURCE}" ${VULKCORE_SHADER_INCLUDES}
+        COMMENT "Compiling sun shadow coverage for ${SHADOW_MATERIAL}"
+        VERBATIM
+    )
+    list(APPEND VULKCORE_SHADER_BINARIES "${SHADER_BINARY}")
+endforeach()
+
 add_custom_target(VulkCoreShaders ALL DEPENDS ${VULKCORE_SHADER_BINARIES})
 endif()
 
@@ -282,6 +298,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/RendererResources.cpp
     src/Renderer/RendererScene.cpp
     src/Renderer/RendererSceneGraph.cpp
+    src/Renderer/RendererSunShadows.cpp
     src/Renderer/RendererUI.cpp
     src/Renderer/RendererGameEditor.cpp
     src/Renderer/SwapChain.cpp

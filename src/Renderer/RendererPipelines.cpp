@@ -6,7 +6,7 @@ namespace VulkCore {
 void Renderer::createDescriptorSetLayout() {
     std::array<VkDescriptorSetLayoutBinding, 1 + kMaterialImageBindingCount> bindings{};
     bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT |
@@ -58,6 +58,8 @@ void Renderer::createDescriptorSetLayout() {
     bindings[kAlphaMaskBinding].binding = kAlphaMaskBinding;
     bindings[kGrassGroundBinding] = bindings[6];
     bindings[kGrassGroundBinding].binding = kGrassGroundBinding;
+    bindings[kSunShadowBinding] = bindings[6];
+    bindings[kSunShadowBinding].binding = kSunShadowBinding;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -437,7 +439,7 @@ void Renderer::discoverShaderBinaries() {
         }
         // Full-screen demo shaders use a different vertex interface and are
         // owned by the post-process pipeline, not by mesh materials.
-        if (shaderName == "shader_fullscreen.vert" ||
+        if (shaderName.starts_with("sun_caster_") || shaderName == "shader_fullscreen.vert" ||
             shaderName == "shader_postprocess.frag" ||
             shaderName == "shader_skybox.vert" ||
             shaderName == "shader_skybox.frag") {
@@ -503,6 +505,17 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         );
     }
     const bool isWaterShader = isWaterShaderConfiguration(configuration);
+    const bool shadow = pass == sunShadowRenderPass_;
+    const auto casterFragment = [&]() -> std::string {
+        const auto& fragment = configuration.shader(ShaderStage::Fragment);
+        for (const std::string_view name : {"grass", "grid", "surface_wipe", "tornado", "uv_ribbon"}) {
+            if (fragment == "shader_" + std::string(name) + ".frag") {
+                return "sun_caster_" + std::string(name) + ".frag";
+            }
+        }
+        return (isWaterShader || isTransparentMaterial(material) || material.alphaCutoff >= 0.0f)
+            ? "sun_caster_mesh.frag" : "";
+    };
 
     const std::array<ShaderStage, 5> graphicsStages = {
         ShaderStage::Vertex,
@@ -514,8 +527,9 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     shaderStages.reserve(graphicsStages.size());
     for (const ShaderStage stage : graphicsStages) {
-        std::string shaderName = configuration.shader(stage);
-        if (shaderName.empty()) {
+        const bool casterStage = shadow && stage == ShaderStage::Fragment;
+        std::string shaderName = casterStage ? casterFragment() : configuration.shader(stage);
+        if (!casterStage && shaderName.empty()) {
             shaderName = defaultShaderForStage(stage);
         }
         if (shaderName.empty()) {
@@ -523,7 +537,7 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         }
 
         const auto& stageShaders = availableShaders_[static_cast<std::size_t>(stage)];
-        if (std::find(stageShaders.begin(), stageShaders.end(), shaderName) == stageShaders.end()) {
+        if (!casterStage && std::find(stageShaders.begin(), stageShaders.end(), shaderName) == stageShaders.end()) {
             throw std::runtime_error(
                 std::string("shader is not available for ") + shaderStageLabel(stage) + ": " + shaderName
             );
@@ -581,7 +595,9 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = cullMode;
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasEnable = shadow;
+    rasterizer.depthBiasConstantFactor = 0.85f;
+    rasterizer.depthBiasSlopeFactor = 0.90f;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -591,10 +607,8 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = isWaterShader
-        ? VK_FALSE
-        : (material.depthWrite ? VK_TRUE : VK_FALSE);
-    depthStencil.depthCompareOp = material.depthLessEqual ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+    depthStencil.depthWriteEnable = shadow || (!isWaterShader && material.depthWrite);
+    depthStencil.depthCompareOp = !shadow && material.depthLessEqual ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
@@ -635,6 +649,10 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
 
+    if (shadow) {
+        colorBlending.attachmentCount = 0;
+        colorBlending.pAttachments = nullptr;
+    }
     VkPipelineTessellationStateCreateInfo tessellationState{};
     tessellationState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
     tessellationState.patchControlPoints = 3;
@@ -705,6 +723,26 @@ VkPipeline Renderer::graphicsPipelineForMaterial(
         const VkPipeline fallback = createMaterialGraphicsPipeline({}, material, pass, cullMode);
         nodeGraphicsPipelines_.emplace(key, fallback);
         return fallback;
+    }
+}
+
+VkPipeline Renderer::sunShadowPipelineForMaterial(const MaterialData& material) {
+    const std::string key = graphicsPipelineKey(material.shaderConfiguration, material, false, VK_CULL_MODE_NONE) +
+        ";sunCaster;cutout=" + std::to_string(material.alphaCutoff >= 0.0f) +
+        ";transparent=" + std::to_string(isTransparentMaterial(material));
+    if (const auto existing = nodeGraphicsPipelines_.find(key); existing != nodeGraphicsPipelines_.end()) {
+        return existing->second;
+    }
+    if (failedNodeGraphicsPipelineKeys_.contains(key)) return VK_NULL_HANDLE;
+    try {
+        const VkPipeline pipeline = createMaterialGraphicsPipeline(material.shaderConfiguration, material,
+            sunShadowRenderPass_, VK_CULL_MODE_NONE);
+        nodeGraphicsPipelines_.emplace(key, pipeline);
+        return pipeline;
+    } catch (const std::exception& error) {
+        failedNodeGraphicsPipelineKeys_.insert(key);
+        std::cerr << "warning: sun shadow pipeline for '" << material.name << "': " << error.what() << '\n';
+        return VK_NULL_HANDLE;
     }
 }
 
@@ -810,6 +848,7 @@ void Renderer::createGraphicsPipeline() {
 void Renderer::createParticlePipelines() {
     particleAlphaPipeline_ = createParticlePipeline(false, renderPass_);
     particleAdditivePipeline_ = createParticlePipeline(true, renderPass_);
+    if (sunShadowRenderPass_) sunShadowParticlePipeline_ = createParticlePipeline(false, sunShadowRenderPass_);
 }
 
 void Renderer::createPostProcessPipeline() {
@@ -995,6 +1034,7 @@ VkPipeline Renderer::createSkyboxPipeline(VkRenderPass pass) {
 }
 
 VkPipeline Renderer::createParticlePipeline(bool additiveBlending, VkRenderPass pass) {
+    const bool shadow = pass == sunShadowRenderPass_;
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1004,7 +1044,7 @@ VkPipeline Renderer::createParticlePipeline(bool additiveBlending, VkRenderPass 
     VkPipelineShaderStageCreateInfo fragmentStage{};
     fragmentStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragmentStage.module = shaderModule("shader_particle.frag");
+    fragmentStage.module = shaderModule(shadow ? "sun_caster_particle.frag" : "shader_particle.frag");
     fragmentStage.pName = "main";
     const std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {
         vertexStage,
@@ -1050,7 +1090,7 @@ VkPipeline Renderer::createParticlePipeline(bool additiveBlending, VkRenderPass 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = shadow;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -1074,8 +1114,8 @@ VkPipeline Renderer::createParticlePipeline(bool additiveBlending, VkRenderPass 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = shadow ? 0u : 1u;
+    colorBlending.pAttachments = shadow ? nullptr : &colorBlendAttachment;
 
     const std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,

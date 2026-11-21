@@ -1,4 +1,9 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sun_shadow.glsl"
+#include "sun_shadow_coverage.glsl"
+
+// 龙卷风的发光片元材质。用网格 UV 重建各层密度与高亮纹样，供加法混合累积。
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
@@ -6,18 +11,6 @@ layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 layout(location = 4) in vec3 fragLocalPosition;
 layout(location = 5) in vec3 fragLayerMotion;
-
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-    vec4 cameraPosition;
-} ubo;
 
 layout(set = 0, binding = 1) uniform sampler2D tornadoTexture;
 layout(set = 0, binding = 3) uniform sampler2D distortionTexture;
@@ -33,7 +26,7 @@ layout(push_constant) uniform MaterialPushConstants {
     vec4 waterSurface;
 } material;
 
-layout(location = 0) out vec4 outColor;
+SUN_SHADOW_OUTPUT
 
 const float TAU = 6.28318530718;
 
@@ -41,6 +34,7 @@ float hash11(float value) {
     return fract(sin(value * 127.1 + 311.7) * 43758.5453123);
 }
 
+// 用到中心的距离生成软带。带宽和羽化分别控制亮芯与外缘过渡。
 float softBand(float value, float center, float halfWidth, float feather) {
     float distanceFromCenter = abs(value - center);
     return 1.0 - smoothstep(halfWidth, halfWidth + feather, distanceFromCenter);
@@ -64,14 +58,15 @@ vec2 fallbackNoise(vec2 point) {
 }
 
 vec2 sampleDistortion(vec2 coordinate) {
+    // binding 3 复用法线贴图的槽位，但这里的 RG 保存扭曲噪声。
     if ((material.textureFlags & 2u) == 0u) {
         return fallbackNoise(coordinate);
     }
     return texture(distortionTexture, fract(coordinate)).rg;
 }
 
-// Dual-phase flow mapping continuously cross-fades two advected samples. It
-// avoids the obvious texture reset that a single fract(scrollingUv) produces.
+// 用错开半周期的两个相位限制平流偏移，按三角波权重交叉混合。
+// 交换坐标轴、改变频率与偏移，使两次纹理读取带来不同尺度的流动细节。
 vec2 flowMappedDistortion(
     vec2 coordinate,
     float seed,
@@ -94,8 +89,7 @@ vec2 flowMappedDistortion(
     return mix(sampleB, sampleA, phaseBlend) * 2.0 - 1.0;
 }
 
-// Domain warping feeds a coarse field into a second sample. The result curls
-// and folds instead of looking like diagonal noise sliding across a surface.
+// 域扭曲将粗流场作为第二次采样的坐标偏移。局部纹理会卷曲和折叠，形成涡流的外观。
 vec2 domainWarp(
     vec2 coordinate,
     float seed,
@@ -125,6 +119,7 @@ vec2 domainWarp(
 
 void main() {
     float elapsed = ubo.time.x;
+    // 与顶点阶段解码同样的 UV 区段，保证几何动画与发光纹样选择同一类部件。
     int kind = int(floor(fragTexCoord.y * 0.5 + 0.0001));
     float seed = floor(fragTexCoord.x * 0.5 + 0.0001);
     float along = fract(fragTexCoord.x);
@@ -132,6 +127,7 @@ void main() {
     float randomPhase = hash11(seed) * TAU;
 
     vec3 viewDirection = normalize(ubo.cameraPosition.xyz - fragWorldPosition);
+    // 部件为双面材质。用 |N·V| 使正反两侧都能在掠视角获得边缘光。
     float fresnel = pow(
         1.0 - abs(dot(normalize(fragNormal), viewDirection)),
         1.55
@@ -148,8 +144,7 @@ void main() {
     float emissiveEdge = 0.0;
 
     if (kind == 0) {
-        // Core: polar domain warp creates independently folding translucent
-        // sheets. Vertex-flow feedback keeps internal light aligned to shape.
+        // 角度与高度的线性相位在圆柱壳上形成螺旋。叠加域扭曲和顶点流场使内部光带随外形摆动。
         float heightRatio = across;
         float shell = floor(fragTexCoord.x * 0.5 + 0.0001);
         float angular = fract(fragTexCoord.x);
@@ -177,6 +172,7 @@ void main() {
             warped.y * 0.27 -
             sin(elapsed * 0.59 - heightRatio * 9.0 + shell) * 0.07
         );
+        // 在两个不同的相位方向上生成宽亮带和细丝。靠近顶部时用噪声打散渐隐边沿。
         float broadBlade = softBand(
             spiralPhaseA,
             0.50 + warped.y * 0.035,
@@ -228,8 +224,7 @@ void main() {
         alpha *= shell < 0.5 ? 1.0 : 0.48;
         emissiveEdge = densityEdge * 0.23;
     } else if (kind == 1) {
-        // Hero blades: opposing flow directions per ribbon, warped centerlines,
-        // animated dissolve holes and bright erosion borders.
+        // 相邻主条带反向传播。先扭曲亮带中心，再从噪声的消融阈值附近提取发亮边缘。
         float direction = mod(seed, 2.0) < 0.5 ? -1.0 : 1.0;
         vec2 warped = domainWarp(
             vec2(along, across),
@@ -288,8 +283,7 @@ void main() {
             (0.14 + luminousVein * 0.48 + secondaryVein * 0.15 + fresnel * 0.14);
         emissiveEdge = erosionEdge * 0.18;
     } else if (kind == 2) {
-        // Wisps: high-frequency snake flow, travelling dash clusters and
-        // intermittent overbright pulses prevent a uniform orbiting line.
+        // 狭窄的蛇形亮带上叠加移动的虚线和短促脉冲，使细风丝的亮度沿长度变化。
         float direction = mod(seed, 3.0) < 1.0 ? -1.0 : 1.0;
         vec2 warped = domainWarp(
             vec2(along * 1.65, across * 0.72),
@@ -333,8 +327,7 @@ void main() {
             (0.14 + centerLine * 0.67 + pulse * 0.13);
         emissiveEdge = pulse * centerLine * 0.20;
     } else if (kind == 3) {
-        // Ground shock: no texture rotation. Pressure fronts crawl around the
-        // circumference while noisy sectors repeatedly break and reconnect.
+        // 沿冲击环周向移动压力前缘，并用扇区遮罩弱化部分圆弧。顶点脉冲同步驱动闪光。
         vec2 warped = domainWarp(
             vec2(along, across),
             seed,
@@ -387,8 +380,7 @@ void main() {
             ringLayerStrength;
         emissiveEdge = reconnectEdge * 0.16;
     } else {
-        // Shards: chaotic texture flicker, hot center and short-lived violet
-        // corona. Vertex deformation supplies the independent flutter.
+        // 用加权曼哈顿距离裁出菱形碎屑。中心加热到白色，外晕跟随噪声短促闪动。
         vec2 warped = domainWarp(
             vec2(along, across),
             seed,
@@ -420,15 +412,15 @@ void main() {
         emissiveEdge = flicker * diamond * 0.34;
     }
 
-    // A small emission boost on distortion/dissolve borders mimics the hot
-    // fringe used by game VFX graph erosion nodes.
+    // 强化消融边缘和流场产生的边界。发光颜色可超出 1，在 HDR 合成中进一步产生 Bloom。
+    // Alpha 在加法混合时调节每一层的贡献，极低权重的片元直接丢弃。
     color = mix(color, whiteCore, clamp(emissiveEdge, 0.0, 0.48));
-    color *= material.baseColor.rgb * fragVertexColor.rgb;
+    color *= material.baseColor.rgb * fragVertexColor.rgb * mix(0.72, 1.0, sunVisibility(fragWorldPosition));
     color += material.waterSurface.rgb * material.waterSurface.a *
         (0.085 + emissiveEdge * 0.12);
     alpha *= material.baseColor.a * fragVertexColor.a * material.opacity;
     if (alpha <= 0.004) {
         discard;
     }
-    outColor = vec4(color, clamp(alpha, 0.0, 1.0));
+    SUN_SHADOW_COLOR(vec4(color, clamp(alpha, 0.0, 1.0)));
 }

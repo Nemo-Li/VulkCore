@@ -34,11 +34,25 @@ inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
     return std::nullopt;
 }
 
+struct GrassGrowthSettings {
+    static constexpr float kMaxTilt = 60.0f;
+    static constexpr float kMinNoiseSize = 0.25f;
+    static constexpr float kMaxNoiseSize = 12.0f;
+    static constexpr float kMinBladeWidth = 0.005f;
+    static constexpr float kMaxBladeWidth = 0.20f;
+
+    float minimumTilt = 5.0f; // Degrees from the ground normal.
+    float maximumTilt = 32.0f;
+    float noiseSize = 2.5f; // Terrain units per noise cell.
+    float minimumBladeWidth = 0.028f; // Terrain units at the blade base.
+    float maximumBladeWidth = 0.060f;
+};
+
 // Per-instance vertex stream shared by the curved blade and card templates.
 struct GrassInstance {
     glm::vec4 rootHeight;
-    glm::vec4 normalWidth;
-    glm::vec4 motion; // yaw, lean, wind phase, color variation
+    glm::vec4 normalWidth; // xyz ground normal, w blade width seed or flower card width
+    glm::vec4 motion; // yaw, tilt seed, wind phase, color variation
     std::array<std::uint8_t, 4> tint; // RGB plus a map-presence flag
 };
 

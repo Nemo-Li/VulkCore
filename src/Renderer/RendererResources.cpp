@@ -6,6 +6,27 @@
 namespace VulkCore {
 namespace {
 
+struct MistPuff {
+    glm::vec4 centerAndDensity;
+    glm::vec4 inverseRadiiAndSeed;
+    float distance;
+};
+
+auto mistCellRandom(int x, int z) {
+    std::uint32_t seed = static_cast<std::uint32_t>(x) * 747796405u +
+        static_cast<std::uint32_t>(z) * 2891336453u + 277803737u;
+    return [seed]() mutable {
+        seed = seed * 747796405u + 2891336453u;
+        const std::uint32_t word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+        return static_cast<float>((word ^ (word >> 22u)) >> 8u) * (1.0f / 16777216.0f);
+    };
+}
+
+void sortNearestPuffs(std::vector<MistPuff>& puffs, std::size_t count) {
+    std::partial_sort(puffs.begin(), puffs.begin() + count, puffs.end(),
+        [](const MistPuff& a, const MistPuff& b) { return a.distance < b.distance; });
+}
+
 void fillFloatingMist(UniformBufferObject& ubo, const TerrainScene& terrain,
                       float opacity, float time, const glm::mat4& clipFromWorld) {
     constexpr float cellSize = 185.0f;
@@ -17,22 +38,11 @@ void fillFloatingMist(UniformBufferObject& ubo, const TerrainScene& terrain,
     const glm::ivec2 first(glm::floor((cameraXZ - searchRadius) / cellSize));
     const glm::ivec2 last(glm::floor((cameraXZ + searchRadius) / cellSize));
 
-    struct Puff {
-        glm::vec4 centerAndDensity;
-        glm::vec4 inverseRadiiAndSeed;
-        float distance;
-    };
-    std::vector<Puff> visible;
+    std::vector<MistPuff> visible;
     for (int z = first.y; z <= last.y; ++z) {
         for (int x = first.x; x <= last.x; ++x) {
             // Seed each world cell so translating or rotating the camera keeps the same wisps.
-            std::uint32_t seed = static_cast<std::uint32_t>(x) * 747796405u +
-                static_cast<std::uint32_t>(z) * 2891336453u + 277803737u;
-            const auto random = [&seed] {
-                seed = seed * 747796405u + 2891336453u;
-                const std::uint32_t word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
-                return static_cast<float>((word ^ (word >> 22u)) >> 8u) * (1.0f / 16777216.0f);
-            };
+            auto random = mistCellRandom(x, z);
             if (random() < 0.37f) continue;
             const float jitterX = random();
             const float jitterZ = random();
@@ -60,13 +70,75 @@ void fillFloatingMist(UniformBufferObject& ubo, const TerrainScene& terrain,
         }
     }
     const std::size_t count = std::min(visible.size(), ubo.mistCenters.size());
-    std::partial_sort(visible.begin(), visible.begin() + count, visible.end(),
-        [](const Puff& a, const Puff& b) { return a.distance < b.distance; });
+    sortNearestPuffs(visible, count);
     ubo.floatingMist = glm::vec4(static_cast<float>(count), opacity, time, 0.0f);
     for (std::size_t i = 0; i < count; ++i) {
         ubo.mistCenters[i] = visible[i].centerAndDensity;
         ubo.mistInverseRadii[i] = visible[i].inverseRadiiAndSeed;
     }
+}
+
+void fillCloudMist(UniformBufferObject& ubo, float time, glm::mat4 cloudClip) {
+    struct Layer {
+        float height;
+        float cellSize;
+        float windSpeed;
+        float opacity;
+    };
+    constexpr std::array layers = {Layer{940.0f, 2200.0f, 13.0f, 0.95f},
+                                   Layer{1530.0f, 2800.0f, 19.0f, 0.58f}};
+    constexpr float maximumDistance = 15000.0f;
+    const glm::vec3 camera = (glm::vec3(ubo.cameraPosition) - glm::vec3(ubo.model[3])) / ubo.cameraPosition.w;
+    const glm::vec2 cameraXZ(camera.x, camera.z);
+
+    // Sky rays extend beyond the geometry clip planes. Keep the side planes
+    // and reject puffs entirely behind the camera.
+    for (int i = 0; i < 4; ++i) cloudClip[i][2] = 0.5f * cloudClip[i][3];
+
+    std::size_t count = 0;
+    float lowest = std::numeric_limits<float>::max();
+    float highest = std::numeric_limits<float>::lowest();
+    for (std::size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
+        const Layer& layer = layers[layerIndex];
+        const glm::vec2 drift = glm::vec2(0.821f, 0.571f) * (time * layer.windSpeed);
+        const glm::vec2 localCamera = cameraXZ - drift;
+        const glm::ivec2 first(glm::floor((localCamera - maximumDistance) / layer.cellSize));
+        const glm::ivec2 last(glm::floor((localCamera + maximumDistance) / layer.cellSize));
+        std::vector<MistPuff> visible;
+        for (int z = first.y; z <= last.y; ++z) {
+            for (int x = first.x; x <= last.x; ++x) {
+                auto random = mistCellRandom(x + static_cast<int>(layerIndex) * 41, z);
+                if (random() < 0.28f) continue;
+                const float jitterX = random();
+                const float jitterZ = random();
+                const glm::vec2 position = (glm::vec2(x, z) + 0.18f +
+                    glm::vec2(jitterX, jitterZ) * 0.64f) * layer.cellSize + drift;
+                const glm::vec3 center(position.x, layer.height, position.y);
+                const float distance = glm::distance(camera, center);
+                const float fade = 1.0f - glm::smoothstep(8500.0f, maximumDistance, distance);
+                if (fade <= 0.0f) continue;
+
+                const float radiusX = layer.cellSize * std::lerp(0.36f, 0.57f, random());
+                const float radiusY = std::lerp(105.0f, 205.0f, random());
+                const float radiusZ = layer.cellSize * std::lerp(0.24f, 0.44f, random());
+                const glm::vec3 radii(radiusX, radiusY, radiusZ);
+                if (isOutsideVulkanFrustum(cloudClip, center - radii, center + radii)) continue;
+                visible.push_back({glm::vec4(center, fade * layer.opacity * std::lerp(0.62f, 1.0f, random())),
+                                   glm::vec4(1.0f / radii, random() * 51.0f), distance});
+            }
+        }
+        const std::size_t layerCount = std::min(visible.size(), ubo.cloudCenters.size() / layers.size());
+        sortNearestPuffs(visible, layerCount);
+        for (std::size_t i = 0; i < layerCount; ++i, ++count) {
+            const MistPuff& puff = visible[i];
+            ubo.cloudCenters[count] = puff.centerAndDensity;
+            ubo.cloudInverseRadii[count] = puff.inverseRadiiAndSeed;
+            const float radiusY = 1.0f / puff.inverseRadiiAndSeed.y;
+            lowest = std::min(lowest, layer.height - radiusY);
+            highest = std::max(highest, layer.height + radiusY);
+        }
+    }
+    if (count > 0) ubo.cloudMist = glm::vec4(static_cast<float>(count), lowest, highest, 0.0f);
 }
 
 } // namespace
@@ -1102,7 +1174,11 @@ void Renderer::rebuildMaterialResources() {
 }
 
 void Renderer::createUniformBuffers() {
-    const VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_->physicalDevice(), &properties);
+    const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+    uniformSliceStride_ = static_cast<std::uint32_t>(((sizeof(UniformBufferObject) + alignment - 1) / alignment) * alignment);
+    const VkDeviceSize bufferSize = uniformSliceStride_ * (sunShadowRenderPass_ ? 1 + kSunShadowCascadeCount : 1);
     uniformBuffers_.resize(kMaxFramesInFlight);
 
     for (auto& uniformBuffer : uniformBuffers_) {
@@ -1122,12 +1198,12 @@ void Renderer::createDescriptorPool() {
         kMaxFramesInFlight * kMaximumParticleSystems;
     const uint32_t skyboxDescriptorCount = kMaxFramesInFlight;
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     poolSizes[0].descriptorCount =
         materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity) *
-        kMaterialImageBindingCount + skyboxDescriptorCount;
+    poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount) *
+        kMaterialImageBindingCount;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1218,7 +1294,12 @@ void Renderer::createDescriptorSets() {
             const VkDescriptorImageInfo grassGroundInfo{
                 grassGround.sampler(), grassGround.imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             };
+            const auto shadowInfo = sunShadowImageInfo(i);
             std::array<VkWriteDescriptorSet, kMaterialImageBindingCount> descriptorWrites{};
+            descriptorWrites[9] = {
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSets_[descriptorSetIndex],
+                kSunShadowBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shadowInfo, nullptr, nullptr
+            };
             descriptorWrites[7] = {
                 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSets_[descriptorSetIndex],
                 kAlphaMaskBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &maskInfo, nullptr, nullptr
@@ -1231,7 +1312,7 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];
             descriptorWrites[0].dstBinding = 0;
             descriptorWrites[0].dstArrayElement = 0;
-            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
             descriptorWrites[0].descriptorCount = 1;
             descriptorWrites[0].pBufferInfo = &bufferInfo;
 
@@ -1323,7 +1404,7 @@ void Renderer::createDescriptorSets() {
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = skyboxDescriptorSets_[frameIndex];
         writes[0].dstBinding = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         writes[0].descriptorCount = 1;
         writes[0].pBufferInfo = &bufferInfo;
 
@@ -1407,11 +1488,14 @@ void Renderer::updateParticleTextureDescriptors(std::uint32_t nodeId) {
         imageInfo.imageView = texture->imageView();
         imageInfo.sampler = texture->sampler();
 
-        std::array<VkWriteDescriptorSet, 2> writes{};
+        const auto shadowInfo = sunShadowImageInfo(frameIndex);
+        std::array<VkWriteDescriptorSet, 3> writes{};
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorIt->second[frameIndex],
+            kSunShadowBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shadowInfo, nullptr, nullptr};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptorIt->second[frameIndex];
         writes[0].dstBinding = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         writes[0].descriptorCount = 1;
         writes[0].pBufferInfo = &bufferInfo;
 
@@ -1599,6 +1683,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
+    ubo.grassBladeWidthRange = glm::vec4(grassGrowth_.minimumBladeWidth, grassGrowth_.maximumBladeWidth, 0.0f, 0.0f);
     if (skyboxTexture_ != nullptr && skyboxEnabled_) {
         ubo.daylight = glm::vec4(1.0f, weatherTime, 0.0f, 0.0f);
     }
@@ -1617,9 +1702,13 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     }
 
     const glm::mat4 clipFromWorld = ubo.projection * ubo.view * ubo.model;
+    if (ubo.daylight.x > 0.0f) {
+        fillCloudMist(ubo, weatherTime, clipFromWorld);
+    }
     if (terrainScene_ && distanceFogSettings_.floatingMistOpacity > 0.0f) {
         fillFloatingMist(ubo, *terrainScene_, distanceFogSettings_.floatingMistOpacity, weatherTime, clipFromWorld);
     }
+    updateSunShadowUniforms(ubo);
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
     return clipFromWorld;
 }

@@ -71,7 +71,7 @@ void writeText(const std::filesystem::path& path, const std::string& source) {
 }
 
 void compileShader(const std::filesystem::path& source, const std::filesystem::path& binary,
-                   const std::filesystem::path& logPath) {
+                   const std::filesystem::path& logPath, bool shadowCaster = false) {
     bool success = false;
 #ifdef _WIN32
     SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
@@ -85,8 +85,10 @@ void compileShader(const std::filesystem::path& source, const std::filesystem::p
     startup.hStdError = output;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION child{};
-    std::wstring command = L"\"" + kCompiler.wstring() + L"\" -O \"-I" +
-        kSourceDirectory.wstring() + L"\" \"" + source.wstring() + L"\" -o \"" + binary.wstring() + L"\"";
+    std::wstring command = L"\"" + kCompiler.wstring() + L"\" -O ";
+    if (shadowCaster) command += L"-DVULKCORE_SHADOW_PASS=1 ";
+    command += L"\"-I" + kSourceDirectory.wstring() + L"\" \"" + source.wstring() +
+        L"\" -o \"" + binary.wstring() + L"\"";
     const bool started = CreateProcessW(kCompiler.c_str(), command.data(), nullptr, nullptr,
         TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child) != 0;
     CloseHandle(output);
@@ -97,9 +99,10 @@ void compileShader(const std::filesystem::path& source, const std::filesystem::p
     CloseHandle(child.hThread);
     CloseHandle(child.hProcess);
 #else
-    std::array<std::string, 6> args{kCompiler.string(), "-O", "-I" + kSourceDirectory.string(),
+    std::vector<std::string> args{kCompiler.string(), "-O", "-I" + kSourceDirectory.string(),
         source.string(), "-o", binary.string()};
-    std::array<char*, 7> argv{};
+    if (shadowCaster) args.emplace_back("-DVULKCORE_SHADOW_PASS=1");
+    std::vector<char*> argv(args.size() + 1, nullptr);
     for (std::size_t i = 0; i < args.size(); ++i) argv[i] = args[i].data();
     posix_spawn_file_actions_t actions;
     if (posix_spawn_file_actions_init(&actions) != 0) {
@@ -252,6 +255,9 @@ void Renderer::applyEditorShader() {
     const auto& name = dialog.chosen;
     VkShaderModule oldModule = VK_NULL_HANDLE;
     VkShaderModule candidateModule = VK_NULL_HANDLE;
+    VkShaderModule oldCasterModule = VK_NULL_HANDLE;
+    VkShaderModule candidateCasterModule = VK_NULL_HANDLE;
+    std::string casterName;
     bool registered = false;
     ShaderConfiguration selectedConfiguration;
     try {
@@ -260,6 +266,18 @@ void Renderer::applyEditorShader() {
         const auto binary = temporary.path / (name + ".spv");
         writeText(source, dialog.source);
         compileShader(source, binary, temporary.path / "glslc.log");
+        const auto binaryDirectory = std::filesystem::path(kShaderBinaryDirectory);
+        std::filesystem::path casterBinary;
+        if (dialog.stage == ShaderStage::Fragment && name.starts_with("shader_")) {
+            casterName = "sun_caster_" + name.substr(7);
+            if (std::filesystem::is_regular_file(binaryDirectory / (casterName + ".spv"))) {
+                casterBinary = temporary.path / (casterName + ".spv");
+                compileShader(source, casterBinary, temporary.path / "glslc-shadow.log", true);
+                candidateCasterModule = createShaderModule(readBinaryFile(casterBinary));
+                oldCasterModule = shaderModules_[casterName];
+                shaderModules_[casterName] = candidateCasterModule;
+            }
+        }
         candidateModule = createShaderModule(readBinaryFile(binary));
         oldModule = shaderModules_[name];
         shaderModules_[name] = candidateModule;
@@ -276,6 +294,9 @@ void Renderer::applyEditorShader() {
         } else if (dialog.family == "particle") {
             fixedPipelines.emplace_back(&particleAlphaPipeline_, createParticlePipeline(false, renderPass_));
             fixedPipelines.emplace_back(&particleAdditivePipeline_, createParticlePipeline(true, renderPass_));
+            if (sunShadowRenderPass_) {
+                fixedPipelines.emplace_back(&sunShadowParticlePipeline_, createParticlePipeline(false, sunShadowRenderPass_));
+            }
             if (hdrComposition_) {
                 fixedPipelines.emplace_back(&hdrParticleAlphaPipeline_,
                     createParticlePipeline(false, hdrComposition_->geometryPass()));
@@ -313,7 +334,11 @@ void Renderer::applyEditorShader() {
                 if (hdrComposition_) buildCullModes(true);
             }
         }
-        std::filesystem::copy_file(binary, std::filesystem::path(kShaderBinaryDirectory) / (name + ".spv"),
+        if (!casterBinary.empty()) {
+            std::filesystem::copy_file(casterBinary, binaryDirectory / casterBinary.filename(),
+                std::filesystem::copy_options::overwrite_existing);
+        }
+        std::filesystem::copy_file(binary, binaryDirectory / (name + ".spv"),
             std::filesystem::copy_options::overwrite_existing);
         if (dialog.source != dialog.original) writeText(kSourceDirectory / name, dialog.source);
     } catch (const std::exception& error) {
@@ -323,6 +348,11 @@ void Renderer::applyEditorShader() {
             if (oldModule) shaderModules_[name] = oldModule;
             else shaderModules_.erase(name);
             vkDestroyShaderModule(device, candidateModule, nullptr);
+        }
+        if (candidateCasterModule) {
+            if (oldCasterModule) shaderModules_[casterName] = oldCasterModule;
+            else shaderModules_.erase(casterName);
+            vkDestroyShaderModule(device, candidateCasterModule, nullptr);
         }
         if (registered) std::erase(stageBinaries, name);
         dialog.status = error.what();
@@ -352,6 +382,18 @@ void Renderer::applyEditorShader() {
         }
     }
     if (oldModule) vkDestroyShaderModule(device, oldModule, nullptr);
+    if (oldCasterModule) vkDestroyShaderModule(device, oldCasterModule, nullptr);
+    if (dialog.material) {
+        // Rebuild cached depth pipelines with the updated deformation and coverage shaders.
+        std::erase_if(nodeGraphicsPipelines_, [device](const auto& entry) {
+            if (entry.first.find(";sunCaster;") == std::string::npos) return false;
+            vkDestroyPipeline(device, entry.second, nullptr);
+            return true;
+        });
+        std::erase_if(failedNodeGraphicsPipelineKeys_, [](const std::string& key) {
+            return key.find(";sunCaster;") != std::string::npos;
+        });
+    }
     dialog.original = dialog.source;
     dialog.status = "Compiled and applied.";
 }

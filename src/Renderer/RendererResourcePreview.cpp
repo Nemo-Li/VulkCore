@@ -226,7 +226,7 @@ void Renderer::createResourcePreviewBuffers() {
     const auto setCount = materialCount * kMaxFramesInFlight;
     // Scene material resources may be rebuilt while the preview stays open.
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, setCount},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaterialImageBindingCount * setCount},
     }};
     VkDescriptorPoolCreateInfo pool{};
@@ -269,9 +269,13 @@ void Renderer::createResourcePreviewBuffers() {
         for (std::uint32_t frame = 0; frame < kMaxFramesInFlight; ++frame) {
             const auto set = preview.descriptorSets[frame * materialCount + i];
             const VkDescriptorBufferInfo uniform{preview.uniforms[frame]->handle(), 0, sizeof(UniformBufferObject)};
-            std::array<VkWriteDescriptorSet, 1 + kPreviewTextureBindings.size()> writes{};
+            const VkDescriptorImageInfo whiteDepth{preview.fallback->sampler(), preview.fallback->imageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            std::array<VkWriteDescriptorSet, 2 + kPreviewTextureBindings.size()> writes{};
             writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1,
-                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uniform, nullptr};
+                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &uniform, nullptr};
+            writes.back() = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, kSunShadowBinding, 0, 1,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &whiteDepth, nullptr, nullptr};
             for (std::size_t j = 0; j < images.size(); ++j) {
                 writes[j + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, kPreviewTextureBindings[j],
                     0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &images[j], nullptr, nullptr};
@@ -353,7 +357,9 @@ void Renderer::recordResourcePreview(VkCommandBuffer commandBuffer) {
             if (!pipeline) continue;
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             const auto set = preview.descriptorSets[currentFrame_ * preview.mesh.materials.size() + part.materialIndex];
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, &set, 0, nullptr);
+            const std::uint32_t uniformOffset = 0;
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout_, 0, 1, &set, 1, &uniformOffset);
             MaterialPushConstants params{};
             params.baseColor = material.baseColor;
             params.metallic = material.metallic;

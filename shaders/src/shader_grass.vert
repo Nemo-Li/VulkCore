@@ -1,23 +1,17 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
+// 草叶和花卡的实例化顶点阶段。从少量实例属性重建轮廓、风动和踩踏。
+
+// 与 CPU GrassInstance 对应。xyz 分别保存根位置和地表法线。
+// w 分别保存高度和宽度参数，草叶存随机种子，花卡存实际宽度。
+// motion 为朝向角、倾斜随机值、风相位、染色变化。tint.a 标记是否有地表导入颜色。
 layout(location = 0) in vec4 inRootHeight;
 layout(location = 1) in vec4 inNormalWidth;
 layout(location = 2) in vec4 inMotion;
 layout(location = 3) in vec4 inTint;
 
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambientLight;
-    vec4 sunLightDirection;
-    vec4 sunLightColor;
-    vec4 cameraPosition;
-    vec4 playerPosition;
-    vec4 playerVelocity;
-} ubo;
+#include "scene_frame.glsl"
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -34,14 +28,36 @@ layout(location = 0) out vec2 fragBladeUv;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) flat out vec4 fragTint;
 layout(location = 3) out vec3 fragWorldPosition;
+// 逐实例数据保持 flat，使整个图元共用同一个可见性、随机种子和材质分支。
 layout(location = 4) flat out float fragLodVisibility;
 layout(location = 5) flat out vec2 fragRoot;
 layout(location = 6) flat out float fragLod;
 layout(location = 7) flat out vec2 fragPalette;
+layout(location = 8) out vec2 fragGroundUv;
+layout(location = 9) out vec3 fragGroundPosition;
+layout(location = 10) flat out vec3 fragGroundNormal;
 
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
+vec2 growthNoiseAt(ivec2 cell) {
+    uint seed = (uint(cell.x) * 0x9E3779B9u) ^ (uint(cell.y) * 0x85EBCA6Bu) ^ 0xB07F123u;
+    seed = (seed ^ (seed >> 16u)) * 0x7FEB352Du;
+    seed = (seed ^ (seed >> 15u)) * 0x846CA68Bu;
+    seed ^= seed >> 16u;
+    return vec2(uvec2(seed & 0xFFFFu, seed >> 16u)) * (2.0 / 65535.0) - 1.0;
+}
+
+vec2 growthNoise(vec2 position) {
+    ivec2 cell = ivec2(floor(position));
+    vec2 t = fract(position);
+    t = t * t * (3.0 - 2.0 * t);
+    vec2 lower = mix(growthNoiseAt(cell), growthNoiseAt(cell + ivec2(1, 0)), t.x);
+    vec2 upper = mix(growthNoiseAt(cell + ivec2(0, 1)), growthNoiseAt(cell + ivec2(1, 1)), t.x);
+    return mix(lower, upper, t.y);
+}
+
 void main() {
+    // waterSurface 分别保存高度倍率、最小和最大倾斜弧度、GrassLod。
     float lod = material.waterSurface.w;
     bool nearBlade = lod < 0.5;
     vec3 root = inRootHeight.xyz;
@@ -49,22 +65,37 @@ void main() {
     float yaw = inMotion.x;
     vec3 right = vec3(cos(yaw), 0.0, sin(yaw));
     vec3 forward = vec3(-right.z, 0.0, right.x);
+    // 近处草叶由四对边缘顶点和一个尖端构成，花卡只用两行。与 CPU 的 kGrassIndices 对应。
     bool tip = nearBlade && gl_VertexIndex == 8;
     float side = tip ? 0.0 : float(gl_VertexIndex & 1) * 2.0 - 1.0;
     int row = gl_VertexIndex / 2;
     float heightWeight = nearBlade ? bladeRows[row] : float(row);
+    // 二次弯曲让草根保持固定、叶尖偏移更大。沿高度收窄并扭转宽度轴以塑造叶片轮廓。
     float bendWeight = heightWeight * heightWeight;
-    float leanWeight = mix(heightWeight, bendWeight, 0.80);
     float bladeHeight = inRootHeight.w * material.waterSurface.x;
-    float width = inNormalWidth.w * (nearBlade ? 1.0 - 0.62 * heightWeight : 1.0);
+    float width = inNormalWidth.w;
+    if (nearBlade) {
+        float baseWidth = mix(ubo.grassBladeWidthRange.x, ubo.grassBladeWidthRange.y, width);
+        width = baseWidth * (1.0 - 0.62 * heightWeight);
+    }
     float twist = nearBlade ? (inMotion.w - 0.5) * 0.58 * heightWeight : 0.0;
     vec3 widthAxis = right * cos(twist) + forward * sin(twist);
-    vec3 localPosition = root
-        + rootNormal * (bladeHeight * heightWeight)
-        + widthAxis * (width * 0.5 * side)
-        + forward * (inMotion.y * bladeHeight * leanWeight);
+    vec3 growthOffset = rootNormal * heightWeight;
+    if (nearBlade && material.waterSurface.z > 0.0) {
+        // 根坐标上的连续噪声决定草丛走向，每叶朝向再增加局部差异。
+        vec2 direction = growthNoise(root.xz * material.waterFlow.x) + right.xz * 0.40;
+        direction = dot(direction, direction) > 0.000001 ? normalize(direction) : right.xz;
+        vec3 tangentX = normalize(vec3(rootNormal.y, -rootNormal.x, 0.0));
+        vec3 tangentZ = cross(tangentX, rootNormal);
+        vec3 tiltDirection = direction.x * tangentX + direction.y * tangentZ;
+        float tilt = mix(material.waterSurface.y, material.waterSurface.z, inMotion.y);
+        float leanWeight = mix(heightWeight, bendWeight, 0.80);
+        growthOffset = rootNormal * (cos(tilt) * heightWeight)
+            + tiltDirection * (sin(tilt) * leanWeight);
+    }
+    vec3 localPosition = root + growthOffset * bladeHeight + widthAxis * (width * 0.5 * side);
 
-    // A shared gust moves the clump. Individual phases soften the tips' motion.
+    // 低频阵风让附近草叶一起摆动，高频项使用独立相位以减弱整片草叶的同步感。
     float broadWave = sin(root.x * 0.115 + root.z * 0.073 + ubo.time.w * 1.28);
     float detailWave = sin(root.x * -0.31 + root.z * 0.27 + ubo.time.w * 2.15 +
                            inMotion.z * 6.2831853);
@@ -75,6 +106,7 @@ void main() {
     mat4 model = ubo.model * material.nodeTransform;
     float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
     vec3 rootScene = (model * vec4(root, 1.0)).xyz;
+    // 玩家与草根都在归一化场景空间。把原始场景的踩踏半径换到同一空间再比较。
     vec2 playerDeltaScene = rootScene.xz - ubo.playerPosition.xz;
     float playerDistanceScene = length(playerDeltaScene);
     float interaction = ubo.playerPosition.w * (
@@ -86,19 +118,21 @@ void main() {
     vec2 movementDirection = length(ubo.playerVelocity.xz) > 0.08
         ? normalize(ubo.playerVelocity.xz)
         : radialDirection;
+    // 结合远离脚步的径向和角色移动方向，使静止时草向外倒、移动时沿脚步方向弯折。
     vec2 trampleDirection = normalize(
         radialDirection * 0.58 + movementDirection * 0.72 + vec2(0.0001)
     );
     localPosition.xz += trampleDirection * interaction * bendWeight * (nearBlade ? 0.30 : 0.18);
     localPosition.y -= interaction * bendWeight * 0.14;
 
+    // LOD 采用原始场景单位的水平距离，与地表草纹理的切换尺度一致。
+    // 草叶复用 waterFlow.x 传入噪声频率。花卡保留 xy 淡入区间，zw 始终是淡出区间。
     float distanceWorld = distance(ubo.cameraPosition.xz, rootScene.xz) / sceneScale;
     vec4 fade = material.waterFlow;
-    float fadeIn = fade.y > fade.x ? smoothstep(fade.x, fade.y, distanceWorld) : 1.0;
+    float fadeIn = !nearBlade && fade.y > fade.x ? smoothstep(fade.x, fade.y, distanceWorld) : 1.0;
     float visibility = fadeIn * (1.0 - smoothstep(fade.z, fade.w, distanceWorld));
 
-    // Sink the outgoing representation as well as dissolving whole blades in
-    // the fragment shader. This masks silhouettes during the LOD crossfade.
+    // 草叶随淡出下沉，再由片元阶段按整株淘汰，让轮廓过渡更平滑。可见性为零时移到近裁剪面外。
     localPosition.y -= (1.0 - visibility) * inRootHeight.w * 0.65;
     vec3 worldPosition = (model * vec4(localPosition, 1.0)).xyz;
     gl_Position = visibility > 0.0
@@ -107,11 +141,19 @@ void main() {
 
     mat3 normalMatrix = transpose(inverse(mat3(model)));
     fragBladeUv = vec2(side * 0.5 + 0.5, heightWeight);
+    // 用前向与地表法线混合近似草叶的受光方向，让草丛与下方地表的亮度更接近。
     fragNormal = normalize(normalMatrix * mix(forward, rootNormal, nearBlade ? 0.90 : 0.68));
     fragTint = inTint;
     fragWorldPosition = worldPosition;
     fragLodVisibility = visibility;
     fragRoot = root.xz;
     fragLod = lod;
-    fragPalette = inMotion.wz; // clump/leaf shade, individual color seed
+    fragPalette = inMotion.wz; // 草丛和叶片的深浅变化、逐叶颜色种子。
+    // 把叶片投回草根处的地表切平面，使倾斜和风动后的颜色仍与下方地面衔接。
+    vec2 groundUv = localPosition.xz;
+    float groundHeight = root.y - 0.012 -
+        dot(rootNormal.xz, groundUv - root.xz) / max(rootNormal.y, 0.35);
+    fragGroundUv = groundUv;
+    fragGroundPosition = (model * vec4(groundUv.x, groundHeight, groundUv.y, 1.0)).xyz;
+    fragGroundNormal = normalize(normalMatrix * rootNormal);
 }

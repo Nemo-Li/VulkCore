@@ -36,6 +36,7 @@ Renderer::Renderer(
 
     createRenderPass();
     createSceneRenderResources();
+    createSunShadowResources();
     createDescriptorSetLayout();
     createGraphicsPipeline();
     createPostProcessPipeline();
@@ -155,6 +156,7 @@ Renderer::~Renderer() {
     if (skyboxPipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(context_->device(), skyboxPipeline_, nullptr);
     }
+    destroySunShadowResources();
     if (pipelineLayout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(context_->device(), pipelineLayout_, nullptr);
     }

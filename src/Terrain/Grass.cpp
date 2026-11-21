@@ -73,12 +73,12 @@ GrassCoverage::Cell GrassCoverage::buildCell(
     const bool flower = lod != GrassLod::NearMesh;
     const bool yellowFlower = lod == GrassLod::YellowFlowerCard;
     const float flowerChance = yellowFlower ? 0.39f : 0.05f;
-    const auto append = [&](glm::vec3 root, glm::vec3 normal, float height, float width,
-                            float yaw, float lean, std::uint32_t seed, float shade,
+    const auto append = [&](glm::vec3 root, glm::vec3 normal, float height, float widthOrSeed,
+                            float yaw, float tiltSeed, std::uint32_t seed, float shade,
                             const std::optional<GrassSample>& map) {
         GrassInstance instance{
-            glm::vec4(root, height), glm::vec4(normal, width),
-            glm::vec4(yaw, lean, hash01(seed + 8u), shade), {0, 0, 0, 0}
+            glm::vec4(root, height), glm::vec4(normal, widthOrSeed),
+            glm::vec4(yaw, tiltSeed, hash01(seed + 8u), shade), {0, 0, 0, 0}
         };
         if (map) {
             for (int channel = 0; channel < 3; ++channel) {
@@ -88,9 +88,11 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             }
             instance.tint[3] = 255;
         }
-        // Include orientation, wind, trample and the downward LOD deformation.
-        const float reach = height * (1.0f + std::abs(lean)) + width + 0.9f;
-        cell.minimum = glm::min(cell.minimum, root - glm::vec3(reach, 1.1f, reach));
+        // Use the widest allowed blade so changing the width range keeps these bounds valid.
+        const float maxWidth = flower ? widthOrSeed : GrassGrowthSettings::kMaxBladeWidth;
+        const float reach = height + maxWidth + 0.9f;
+        const float drop = flower ? 1.1f : height * 1.65f + 0.14f;
+        cell.minimum = glm::min(cell.minimum, root - glm::vec3(reach, drop, reach));
         cell.maximum = glm::max(cell.maximum, root + glm::vec3(reach, height, reach));
         cell.instances.push_back(instance);
     };
@@ -151,12 +153,12 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                         glm::dot(glm::vec2(normal.x, normal.z), offset) / std::max(normal.y, 0.35f);
                     const float bladeHeight = bladeMap ? bladeMap->height * kMappedGrassHeight : canopyHeight;
                     const float bladeYaw = angle + std::lerp(-0.85f, 0.85f, hash01(bladeSeed + 5u));
-                    // Neighboring leaves share some color, while still leaning across one another.
+                    // Neighboring leaves share some color, while still varying individually.
                     const float shade = std::lerp(hash01(bladeSeed + 9u), hash01(seed + 19u), 0.30f);
                     append({bladePoint.x, y, bladePoint.y}, normal,
                            bladeHeight * std::lerp(0.79f, 1.20f, hash01(bladeSeed + 1u)),
-                           std::lerp(0.028f, 0.060f, hash01(bladeSeed + 2u)), bladeYaw,
-                           std::lerp(-0.29f, 0.29f, hash01(bladeSeed + 3u)), bladeSeed, shade, bladeMap);
+                           hash01(bladeSeed + 2u), bladeYaw,
+                           hash01(bladeSeed + 3u), bladeSeed, shade, bladeMap);
                 }
             } else {
                 float height = 0.48f + heightVariation * 0.32f;

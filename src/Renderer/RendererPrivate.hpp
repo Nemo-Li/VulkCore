@@ -24,7 +24,11 @@ namespace VulkCore {
 
 namespace renderer_detail {
 
-constexpr std::uint32_t kMaterialImageBindingCount = 9;
+constexpr std::uint32_t kMaterialImageBindingCount = 10;
+constexpr std::uint32_t kSunShadowBinding = 10;
+constexpr std::uint32_t kShadowBlendFlag = 1u << 30;
+constexpr std::uint32_t kShadowWaterFlag = 1u << 29;
+constexpr std::uint32_t kShadowCutoutFlag = 1u << 28;
 constexpr std::uint32_t kGrassGroundBinding = 9;
 constexpr std::uint32_t kGrassGroundTextureFlag = 64u;
 constexpr std::uint32_t kAlphaMaskBinding = 8;

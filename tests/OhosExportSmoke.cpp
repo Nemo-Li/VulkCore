@@ -37,9 +37,12 @@ int main() {
         write(source / "include/engine.hpp", "// interface");
         write(source / "third_party/stb/stb_image.h", "// dependency");
         write(source / "shaders/src/shader_base.vert", "// shader");
+        write(source / "shaders/src/shader_particle.frag", "// shader with a sun coverage variant");
         write(source / "CMakeLists.txt", "# runtime build");
         write(source / "cmake/OhosPhysX.cmake", "# platform compatibility");
         write(root / "spirv/shader_base.vert.spv", std::string("\x03\x02\x23\x07", 4));
+        write(root / "spirv/shader_particle.frag.spv", std::string("\x03\x02\x23\x07", 4));
+        write(root / "spirv/sun_caster_particle.frag.spv", std::string("\x03\x02\x23\x07", 4));
         fs::create_directories(source / "platform/ohos");
         fs::copy(fs::path(__FILE__).parent_path().parent_path() / "platform/ohos/template",
             source / "platform/ohos/template", fs::copy_options::recursive);
@@ -72,6 +75,8 @@ int main() {
                 ("lib" + component + "_static_64.a")), "Prebuilt PhysX archive was lost");
         }
         const auto payload = options.outputDirectory / "entry/src/main/resources/rawfile/vulkcore";
+        require(fs::is_regular_file(payload / "shaders/sun_caster_particle.frag.spv"),
+            "Sun shadow coverage shader is missing from the export");
         const auto exported = read(payload / "scenes/tornado.scene");
         require(exported.find(root.generic_string()) == std::string::npos, "Host absolute paths leaked into scene");
         require(exported.find("../assets/external/0/external model/mesh.gltf\" 42") != std::string::npos, "Model IDs/path were not preserved");

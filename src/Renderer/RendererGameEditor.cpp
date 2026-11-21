@@ -742,7 +742,7 @@ void Renderer::drawGameInspector() {
             };
             if (const auto* part = firstPart(firstPart, node)) drawEditorMaterial(materialIndexForPart(*part), family);
         };
-        const auto drawGrassHeight = [&] {
+        const auto drawGrassGrowth = [&] {
             float height = grassHeightScale_ * kDefaultGrassHeight;
             if (ImGui::SliderFloat("Average height", &height,
                 0.25f * kDefaultGrassHeight, 3.0f * kDefaultGrassHeight, "%.2f m",
@@ -750,6 +750,23 @@ void Renderer::drawGameInspector() {
                 grassHeightScale_ = height / kDefaultGrassHeight;
                 editorDirty_ = true;
             }
+            constexpr float centimetersPerMeter = 100.0f;
+            float minimumWidth = grassGrowth_.minimumBladeWidth * centimetersPerMeter;
+            float maximumWidth = grassGrowth_.maximumBladeWidth * centimetersPerMeter;
+            if (ImGui::DragFloatRange2("Base width range", &minimumWidth, &maximumWidth, 0.05f,
+                GrassGrowthSettings::kMinBladeWidth * centimetersPerMeter,
+                GrassGrowthSettings::kMaxBladeWidth * centimetersPerMeter,
+                "%.1f cm", nullptr, ImGuiSliderFlags_AlwaysClamp)) {
+                grassGrowth_.minimumBladeWidth = minimumWidth / centimetersPerMeter;
+                grassGrowth_.maximumBladeWidth = maximumWidth / centimetersPerMeter;
+                editorDirty_ = true;
+            }
+            editorDirty_ |= ImGui::DragFloatRange2("Tilt range", &grassGrowth_.minimumTilt,
+                &grassGrowth_.maximumTilt, 0.25f, 0.0f, GrassGrowthSettings::kMaxTilt,
+                "%.1f deg", nullptr, ImGuiSliderFlags_AlwaysClamp);
+            editorDirty_ |= ImGui::SliderFloat("Direction noise size", &grassGrowth_.noiseSize,
+                GrassGrowthSettings::kMinNoiseSize, GrassGrowthSettings::kMaxNoiseSize,
+                "%.2f m", ImGuiSliderFlags_AlwaysClamp);
         };
         const auto drawGrassGround = [&] {
             drawEditorTexture("Ground texture", grassGroundTexturePath_, {},
@@ -787,7 +804,7 @@ void Renderer::drawGameInspector() {
         }
         if (node.nodeId == kGrassSceneNodeId) {
             ImGui::SeparatorText("Grass / LOD0");
-            drawGrassHeight();
+            drawGrassGrowth();
             if (!node.children.empty()) drawFirstMaterial(node.children.front(), "grass");
             ImGui::SeparatorText("Grass Ground");
             drawGrassGround();
@@ -795,7 +812,7 @@ void Renderer::drawGameInspector() {
         }
         if (const auto lod = grassLodForLayer(node.nodeId - kGrassLodNodeBase)) {
             if (*lod == GrassLod::NearMesh) {
-                drawGrassHeight();
+                drawGrassGrowth();
             }
             if (*lod != GrassLod::YellowFlowerCard) drawFirstMaterial(node, "grass");
             return;

@@ -20,11 +20,9 @@ flowchart LR
 
 ## 晴天天空与距离雾
 
-`scenes/game.scene` 使用 `assets/textures/skybox_botw_day.png` 的无云深蓝至浅青渐变作为天空底色。两层程序云以场景单位固定高度，由风驱动，并以不同速度移动。云在远处逐渐融入空气透视，太阳方向、颜色和强度同时驱动日盘、Rayleigh／Mie 近似散射、云侧亮边和逆光透射。低层云的覆盖率沿日照方向投至地面，柔和地衰减地形、草、普通网格和水面上的直射光。
+`scenes/game.scene` 使用 `assets/textures/skybox_botw_day.png` 的无云深蓝至浅青渐变作为天空底色。高空云和贴地浮雾共用椭球体积采样、噪声和半透明混合。云在两个固定高度随风漂移，远处逐渐淡出。视线在场景表面处截断，因此地形和模型可以遮住后方的云雾。太阳方向、颜色和强度驱动日盘与 Rayleigh／Mie 近似散射。
 
-天空通常只绘制不透明物体留下的背景像素，之后的水面继续使用包含天空的不透明场景快照。兼容前向渲染和 HDR 合成。固定帧捕获的 `time` 参数也驱动云和云影，方便比较同一镜头下的变化。
-
-《旷野之息》的公开逆向资料记录了云层分速滚动、叠加噪声、云层逆光和云影开关，以及环境色板中独立的 Rayleigh／Mie 参数。VulkCore 借鉴这些机制，以两层程序云和近似散射实现晴天效果。[SkyMgr](https://github.com/zeldaret/botw/blob/master/src/KingSystem/World/worldSkyMgr.cpp) · [EnvMgr](https://github.com/zeldaret/botw/blob/master/src/KingSystem/World/worldEnvMgr.cpp)
+天空通常只绘制不透明物体留下的背景像素，之后的水面继续使用包含天空的不透明场景快照。兼容前向渲染和 HDR 合成。固定帧捕获的 `time` 参数也驱动云雾，方便比较同一镜头下的变化。
 
 地形、草、普通网格和水面按到相机的实际距离计算雾量。晴天雾还使用视线高度估算光程，低处与平视方向的蓝青空气透视更明显，抬头方向的雾更淡。水面只为自身颜色和高光计算雾，采样的不透明场景颜色已经包含雾效。
 

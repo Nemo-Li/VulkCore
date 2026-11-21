@@ -1,5 +1,7 @@
 #version 450
 
+// 水面顶点位移。低频程序波驱动网格轮廓，片元阶段再补充更密的法线和颜色扰动。
+
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
@@ -33,8 +35,7 @@ layout(location = 2) out vec4 fragVertexColor;
 layout(location = 3) out vec3 fragWorldPosition;
 
 void main() {
-    // Two slightly different waves avoid a uniform sine-wave look while
-    // keeping the displacement stable for arbitrary imported water meshes.
+    // waterFlow.xy 为流向，z 为流速，w 为强度。流向过短时回退到默认方向以稳定归一化。
     float time = ubo.time.x;
     float directionLength = length(pushConstants.waterFlow.xy);
     vec2 flowDirection = directionLength > 0.001
@@ -45,9 +46,8 @@ void main() {
     float turbulence = clamp(pushConstants.waterSurface.x, 0.0, 1.0);
     float waveScale = max(pushConstants.waterSurface.y, 0.1);
     float waveHeight = max(pushConstants.waterSurface.z, 0.0);
-    // VulkCore uses Y-up terrain coordinates. Keep the wave phase in UV
-    // space so large BOTW world coordinates do not create excessively dense
-    // ripples, while the per-vertex extm flow data remains interpolated.
+    // 用 UV 控制波的相位和密度，在跨度很大的导入水面上也能维持纹样尺度。
+    // 多组传播方向和频率叠加，减少单一正弦带来的平行条纹。
     vec2 scaledPosition = inTexCoord * waveScale * 12.0;
     vec2 flowOffset = flowDirection * flowSpeed * time;
     float waveA = sin(dot(scaledPosition, vec2(1.8, 2.6)) +
@@ -61,6 +61,8 @@ void main() {
     float displacement = (waveA * 0.55 + waveB * 0.3 + waveC * 0.15 +
         turbulenceWave * turbulence * 0.2) * waveHeight * flowStrength;
 
+    // 沿输入网格的局部法线位移，保留导入水面的朝向。
+    // 输出法线仍来自原网格，细波的法线变化由片元阶段近似。
     vec3 displacedPosition = inPosition + normalize(inNormal) * displacement;
     mat4 model = ubo.model * pushConstants.nodeTransform;
     mat3 normalMatrix = transpose(inverse(mat3(model)));

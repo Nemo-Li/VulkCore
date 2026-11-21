@@ -1,22 +1,15 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sun_shadow.glsl"
+#include "sun_shadow_coverage.glsl"
+
+// 线框过渡的流动材质。把 UV 噪声与边缘遮罩用于 Alpha，保留网格自身的顶点配色。
 
 layout(location = 0) in vec2 uv;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec4 vertexColor;
 layout(location = 3) in vec3 worldPosition;
-layout(location = 0) out vec4 outColor;
-
-layout(set = 0, binding = 0) uniform Frame {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 time;
-    vec4 viewport;
-    vec4 ambient;
-    vec4 lightDirection;
-    vec4 lightColor;
-    vec4 cameraPosition;
-} frame;
+SUN_SHADOW_OUTPUT
 
 layout(push_constant) uniform Material {
     mat4 model;
@@ -34,6 +27,8 @@ vec2 hash(vec2 p) {
     return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
 }
 
+// 二维 Simplex 梯度噪声。斜切坐标落入三角网格，再按三个角点之间的位置选取贡献。
+// h⁴ 权重将角点贡献平滑衰减到零，使 UV 平流连续。
 float noise2d(vec2 p) {
     const float k1 = 0.366025404;
     const float k2 = 0.211324865;
@@ -48,11 +43,13 @@ float noise2d(vec2 p) {
 }
 
 void main() {
+    // 用独立的流动时钟平移 U。parameters0.xy 为噪声频率，z 为强度，w 为滚动速度。
     vec4 wave = material.parameters0;
-    vec2 point = (uv + vec2(frame.time.y * wave.w, 0.0)) * wave.xy;
+    vec2 point = (uv + vec2(ubo.time.y * wave.w, 0.0)) * wave.xy;
     float noiseMask = noise2d(point) * wave.z;
+    // 矩形两轴的软边遮罩相乘，以免条带在起止和侧缘处突然截断。opacity 控制整体显现进度。
     vec2 mask = smoothstep(vec2(0.05), vec2(0.4), uv) *
                 (1.0 - smoothstep(vec2(0.6), vec2(0.95), uv));
-    outColor = vec4(clamp(vertexColor.rgb * 2.0, 0.0, 1.0),
-                    clamp(noiseMask * mask.x * mask.y * material.opacity, 0.0, 1.0));
+    vec3 color = clamp(vertexColor.rgb * 2.0, 0.0, 1.0) * mix(0.72, 1.0, sunVisibility(worldPosition));
+    SUN_SHADOW_COLOR(vec4(color, clamp(noiseMask * mask.x * mask.y * material.opacity, 0.0, 1.0)));
 }

@@ -35,6 +35,14 @@ struct UniformBufferObject {
     glm::vec4 floatingMist{0.0f}; // count, opacity, time, reserved
     std::array<glm::vec4, kMaxFloatingMistPuffs> mistCenters{}; // world center, density
     std::array<glm::vec4, kMaxFloatingMistPuffs> mistInverseRadii{}; // xyz, noise seed
+    static constexpr std::size_t kMaxCloudPuffs = 16;
+    glm::vec4 cloudMist{0.0f}; // count, minimum height, maximum height, reserved
+    std::array<glm::vec4, kMaxCloudPuffs> cloudCenters{}; // world center, density
+    std::array<glm::vec4, kMaxCloudPuffs> cloudInverseRadii{}; // xyz, noise seed
+    std::array<glm::mat4, 3> sunShadowMatrices{}; // normalized scene to cascade clip space
+    glm::vec4 sunShadowParams{0.0f}; // two view-depth splits, atlas tile size, enabled
+    glm::vec4 sunShadowBias{0.0f}; // comparison bias in normalized light depth for each cascade
+    glm::vec4 grassBladeWidthRange{0.0f}; // xy minimum and maximum base width in terrain units
 };
 
 } // namespace VulkCore

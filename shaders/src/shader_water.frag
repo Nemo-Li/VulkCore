@@ -1,14 +1,18 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+// 常规水面。组合程序波、可选法线贴图、地形水流数据与不透明场景颜色快照。
+
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
 #include "scene_fog.glsl"
+#include "sun_shadow.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
+// 渲染器在画水面前提供不透明颜色快照，使采样来源与水面正在写入的颜色附件分离。
 layout(set = 0, binding = 2) uniform sampler2D sceneColorTexture;
 layout(set = 0, binding = 3) uniform sampler2D normalTexture;
 layout(set = 0, binding = 4) uniform sampler2D specularTexture;
@@ -26,6 +30,7 @@ layout(push_constant) uniform MaterialPushConstants {
 
 layout(location = 0) out vec4 outColor;
 
+// UV 在流向上随时间偏移。不同方向的正弦分量叠加出主波纹，额外分量控制扰动。
 float waveHeight(
     vec2 uv,
     float time,
@@ -43,6 +48,8 @@ float waveHeight(
         turbulenceWave * flowTurbulence * 0.16;
 }
 
+// 与基础材质一致，用 UV 雅可比和位置差分构建场景空间的切线基。
+// UV 退化时保留几何法线，以免求逆放大误差。
 vec3 applyNormalMap(vec3 geometricNormal, vec3 worldPosition, vec2 uv) {
     vec3 positionDerivativeX = dFdx(worldPosition);
     vec3 positionDerivativeY = dFdy(worldPosition);
@@ -80,9 +87,8 @@ void main() {
     float waveScale = max(material.waterSurface.y, 0.1);
     vec2 flowOffset = flowDirection * flowSpeed * time * 0.12;
 
-    // terrain_water stores a signed flow vector per sample. The generated
-    // water mesh carries it in vertex color RG, while material settings stay
-    // as a stable fallback for cells with no meaningful local flow.
+    // terrain_water 网格把有符号流速编码到顶点色 RG，A 较低表示地形水数据。
+    // 有足够的局部流速才覆盖材质方向，静水区域保留材质默认流向。
     vec2 extmFlow = fragVertexColor.rg * 2.0 - 1.0;
     float extmFlowLength = length(extmFlow);
     if (fragVertexColor.a < 0.75 && extmFlowLength > 0.025) {
@@ -98,6 +104,7 @@ void main() {
         flowTurbulence,
         waveScale
     );
+    // 在 UV 的两个方向取前向有限差分。epsilon 固定，因此差值直接作为可调强度的斜率近似。
     float epsilon = 0.012;
     float slopeX = waveHeight(
         fragTexCoord + vec2(epsilon, 0.0), time, flowDirection,
@@ -108,8 +115,7 @@ void main() {
         flowSpeed, flowTurbulence, waveScale
     ) - height;
 
-    // The imported demo scene uses Z-up water. Perturbing the view-space
-    // normal this way also works when the water mesh has no normal map.
+    // Y-up 水面用高度斜率的负值扰动场景法线的 XZ 分量。这样没有法线贴图也有细波。
     vec3 normal = normalize(fragNormal);
     if ((material.textureFlags & 2u) != 0u) {
         normal = applyNormalMap(normal, fragWorldPosition, fragTexCoord);
@@ -126,6 +132,7 @@ void main() {
     vec3 diffuseLight = max(ubo.sunLightColor.rgb, vec3(0.0)) * max(ubo.sunLightDirection.w, 0.0);
     vec3 specularLight = mix(vec3(0.72, 0.9, 1.0), diffuseLight, 0.35);
     float diffuseFactor = max(dot(normal, lightDirection), 0.0);
+    // 经验 Fresnel 权重使用固定视线方向。掠射角提高反射比重，粗糙度另外控制高光宽度。
     float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
     vec3 halfwayDirection = normalize(lightDirection + viewDirection);
     float roughness = clamp(material.roughness, 0.04, 1.0);
@@ -138,15 +145,16 @@ void main() {
         specularMapFactor = texture(specularTexture, fragTexCoord).r;
     }
 
+    // 用波面高度在深浅色之间过渡，提供随波起伏的颜色变化。
     vec3 deepWater = vec3(0.015, 0.16, 0.24);
     vec3 shallowWater = vec3(0.04, 0.48, 0.58);
     vec3 waterColor = mix(deepWater, shallowWater, height * 0.18 + 0.48);
     if ((material.textureFlags & 1u) != 0u) {
-        // The material texture supplies the local tint while the procedural
-        // waves keep the effect visible even without a dedicated flow map.
+        // 滚动材质贴图补充局部色调，基础波纹由程序函数提供。
         vec3 materialColor = texture(textureSampler, fragTexCoord + flowOffset).rgb;
         waterColor *= mix(vec3(0.72), materialColor, 0.22);
     }
+    // 顶点色 B 存放量化的水材质编号，舍入到最近的 0 至 7 档选择色调。
     float waterMaterial = clamp(floor(fragVertexColor.b * 7.0 + 0.5), 0.0, 7.0);
     vec3 materialTint = vec3(1.0);
     if (waterMaterial == 1.0) {
@@ -164,6 +172,8 @@ void main() {
     }
     waterColor *= material.baseColor.rgb * materialTint;
 
+    // 用片元坐标和视口倒数定位场景快照。法线扰动采样点近似折射，翻转屏幕 Y 模拟反射。
+    // 将 UV 限在视口内。两次采样只查询颜色，反射范围受当前快照可见内容限制。
     vec2 screenUv = gl_FragCoord.xy * ubo.viewport.zw;
     vec2 refractionUv = clamp(
         screenUv + vec2(normal.x, normal.z) * 0.035,
@@ -178,12 +188,10 @@ void main() {
     vec3 sceneRefraction = texture(sceneColorTexture, refractionUv).rgb;
     vec3 sceneReflection = texture(sceneColorTexture, reflectionUv).rgb;
     vec3 skyReflection = mix(vec3(0.08, 0.22, 0.32), vec3(0.42, 0.72, 0.82), fresnel);
-    // Screen samples already contain the scene's fog. Apply it to the
-    // water's own color and lighting contributions.
+    // 场景快照已包含雾。雾只混入水面自身的颜色、反射底色，并按透射率衰减高光。
     vec4 fog = sceneFogAt(fragWorldPosition);
-    float sunlightVisibility = cloudSunVisibility(fragWorldPosition);
-    vec3 litWater = applySceneFog(waterColor *
-        (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility), fog);
+    float sunlightVisibility = sunVisibility(fragWorldPosition, sunReceiverNormal(fragWorldPosition));
+    vec3 litWater = applySceneFog(waterColor * (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility), fog);
     vec3 refractedColor = mix(litWater, sceneRefraction, 0.42);
     vec3 reflectedColor = mix(applySceneFog(skyReflection, fog), sceneReflection, 0.72);
     vec3 color = mix(refractedColor, reflectedColor, 0.22 + fresnel * 0.68);

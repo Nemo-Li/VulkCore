@@ -1,5 +1,7 @@
 #version 450
 
+// 渲染场景中的太阳球体网格，用色带、轮廓脉动和自发光表现插画式日面。
+
 layout(location = 1) in vec3 fragNormal;
 layout(location = 3) in vec3 fragWorldPosition;
 
@@ -22,8 +24,7 @@ layout(push_constant) uniform MaterialPushConstants {
     float roughness;
     float opacity;
     vec4 waterFlow;
-    // The default material shader uses this slot for emission. The water
-    // shaders keep using it for their surface settings.
+    // 复用共享材质末尾的四个浮点数，保存自发光 RGB 和强度。
     vec4 waterSurface;
 } material;
 
@@ -35,15 +36,13 @@ void main() {
     vec3 viewDirection = normalize(vec3(0.42, 0.48, 0.77));
     float diffuse = max(dot(normal, lightDirection), 0.0);
 
-    // Three broad lighting bands create a graphic, poster-like sun surface
-    // instead of a smooth physically-based sphere.
+    // 将漫反射量化为三档。上界略低于 1，使乘以 3 后向下取整的最大档位仍是 2。
     float band = floor(clamp(diffuse * 0.75 + 0.25, 0.0, 0.999) * 3.0) / 2.0;
     vec3 shadowColor = material.baseColor.rgb * vec3(0.72, 0.12, 0.015);
     vec3 highlightColor = material.baseColor.rgb * vec3(1.0, 0.72, 0.08);
     vec3 color = mix(shadowColor, highlightColor, band);
 
-    // A small animated contour break keeps the generated sphere feeling
-    // illustrated while remaining stable at any camera distance.
+    // 用场景坐标驱动轮廓纹理，使图案附着在球面上。掠射角处的 rim 叠加动画和暖色边光。
     float contour = 0.5 + 0.5 * sin(
         fragWorldPosition.x * 13.0 + fragWorldPosition.y * 9.0 + ubo.time.x * 0.8
     );

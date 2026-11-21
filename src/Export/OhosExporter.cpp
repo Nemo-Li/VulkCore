@@ -232,10 +232,7 @@ std::filesystem::path exportOhosProject(const OhosExportOptions& options) {
         const auto payload = staging / "entry/src/main/resources/rawfile/vulkcore";
         copyTree(source / "assets", payload / "assets");
         std::size_t shaderCount = 0;
-        for (const auto& item : fs::directory_iterator(source / "shaders/src")) {
-            const auto ext = item.path().extension();
-            if (ext != ".vert" && ext != ".frag" && ext != ".tesc" && ext != ".tese" && ext != ".geom" && ext != ".comp") continue;
-            const auto binary = shaders / (item.path().filename().string() + ".spv");
+        const auto copyShader = [&](const fs::path& binary) {
             std::ifstream file(binary, std::ios::binary);
             unsigned char magic[4]{};
             file.read(reinterpret_cast<char*>(magic), sizeof(magic));
@@ -244,6 +241,17 @@ std::filesystem::path exportOhosProject(const OhosExportOptions& options) {
             }
             copyTree(binary, payload / "shaders" / binary.filename());
             ++shaderCount;
+        };
+        for (const auto& item : fs::directory_iterator(source / "shaders/src")) {
+            const auto ext = item.path().extension();
+            if (ext != ".vert" && ext != ".frag" && ext != ".tesc" && ext != ".tese" && ext != ".geom" && ext != ".comp") continue;
+            copyShader(shaders / (item.path().filename().string() + ".spv"));
+        }
+        // These coverage variants are created by CMake from the visible materials.
+        for (const std::string name : {"grass", "grid", "particle", "surface_wipe", "tornado", "uv_ribbon"}) {
+            if (fs::is_regular_file(source / "shaders/src" / ("shader_" + name + ".frag"))) {
+                copyShader(shaders / ("sun_caster_" + name + ".frag.spv"));
+            }
         }
         if (shaderCount == 0) throw std::runtime_error("No runtime shaders were found.");
         ResourceCollector collector(source, scene, payload, staging);

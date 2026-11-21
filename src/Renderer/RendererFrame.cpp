@@ -366,10 +366,8 @@ void Renderer::recordCommandBuffer(
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-#ifndef VULKCORE_OHOS
-    if (resourcePreview_.draw) recordResourcePreview(commandBuffer);
-#endif
     const VkExtent2D extent = swapChain_->extent();
+    std::uint32_t uniformOffset = 0;
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
 
     VkViewport viewport{};
@@ -397,6 +395,7 @@ void Renderer::recordCommandBuffer(
     };
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
+    std::vector<DrawItem> casters;
     bool needsOpaqueSnapshot = false;
     terrainDrawCandidates_ = 0;
     terrainDrawCulled_ = 0;
@@ -412,6 +411,11 @@ void Renderer::recordCommandBuffer(
         if (material.transitionOpacity && transitionSettings_.enabled &&
             (transitionPlayer_.progress < material.transitionVisibleFrom ||
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
+        // The light sees off-camera geometry that can still occlude visible surfaces.
+        // Skip dense grass blades to avoid drawing them again for each shadow cascade.
+        if (sunShadowsActive_ && part.nodeId != kSunSceneNodeId && grassLod != GrassLod::NearMesh) {
+            casters.push_back({&part, index, grassLod});
+        }
         if (const auto& bounds = part.terrainBounds) {
             ++terrainDrawCandidates_;
             // The terrain shader applies the same transform as the CPU test.
@@ -438,24 +442,36 @@ void Renderer::recordCommandBuffer(
         queue.push_back({&part, index, grassLod});
     }
 
+    const bool grassEnabled = isSceneNodeRenderEnabled(kGrassSceneNodeId);
     VkPipeline boundPipeline = VK_NULL_HANDLE;
     VkDescriptorSet boundSet = VK_NULL_HANDLE;
-    const auto drawPart = [&](const DrawItem& item, bool hdr) {
+    const auto drawPart = [&](const DrawItem& item, bool hdr, int cascade = -1) {
         const MeshPart& part = *item.part;
+        const bool shadow = cascade >= 0;
         const std::uint32_t materialIndex = item.materialIndex;
         const MaterialData& material = meshData_.materials[materialIndex];
+        const auto& shaders = material.shaderConfiguration;
+        const glm::mat4 nodeTransform = transformForSceneNode(part.nodeId);
+        if (shadow && part.terrainBounds && shaders.shader(ShaderStage::Vertex) == "shader_terrain.vert" &&
+            shaders.shader(ShaderStage::TessellationControl).empty() &&
+            shaders.shader(ShaderStage::TessellationEvaluation).empty() &&
+            shaders.shader(ShaderStage::Geometry).empty() && isOutsideVulkanFrustum(
+                sunShadowClipFromWorld_[cascade] * nodeTransform,
+                part.terrainBounds->minimum, part.terrainBounds->maximum)) return;
         const VkDescriptorSet set = descriptorSets_[currentFrame_ * materialCount + materialIndex];
         if (set != boundSet) {
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelineLayout_, 0, 1, &set, 0, nullptr);
+                                    pipelineLayout_, 0, 1, &set, 1, &uniformOffset);
             boundSet = set;
         }
 
         MaterialPushConstants materialPushConstants{};
-        materialPushConstants.nodeTransform = transformForSceneNode(part.nodeId);
+        materialPushConstants.nodeTransform = nodeTransform;
         materialPushConstants.baseColor = material.baseColor;
         const bool terrainMaterial = part.nodeId >= kTerrainChunkNodeBase &&
             part.nodeId < kPlayerSceneNodeId;
+        const bool grassGroundMaterial = terrainMaterial || (item.grassLod == GrassLod::NearMesh &&
+            shaders.shader(ShaderStage::Fragment) == "shader_grass.frag");
         const bool terrainMacro = terrainMaterial && terrainAlbedoLayers_ &&
             material.texturePath.filename() == "terrain_atlas.png" && materialTextures_[materialIndex];
         materialPushConstants.textureFlags =
@@ -465,8 +481,7 @@ void Renderer::recordCommandBuffer(
             (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
             (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u) |
             (terrainMacro ? 32u : 0u) |
-            (terrainMaterial && grassGroundTexture_ && isSceneNodeRenderEnabled(kGrassSceneNodeId)
-                ? kGrassGroundTextureFlag : 0u);
+            (grassGroundMaterial && grassGroundTexture_ && grassEnabled ? kGrassGroundTextureFlag : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled
@@ -504,12 +519,26 @@ void Renderer::recordCommandBuffer(
         }
         if (item.grassLod) {
             materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
-            materialPushConstants.waterSurface.x = *item.grassLod == GrassLod::NearMesh
-                ? grassHeightScale_ : 1.0f;
+            materialPushConstants.waterSurface.x = 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
-        } else if ((materialPushConstants.textureFlags & kGrassGroundTextureFlag) != 0u &&
-                   fragment == "shader_terrain.frag") {
+            if (*item.grassLod == GrassLod::NearMesh) {
+                // Near grass has no fade-in, leaving waterFlow.x free for the growth noise frequency.
+                materialPushConstants.waterFlow.x = 1.0f / grassGrowth_.noiseSize;
+                materialPushConstants.waterSurface.x = grassHeightScale_;
+                materialPushConstants.waterSurface.y = glm::radians(grassGrowth_.minimumTilt);
+                materialPushConstants.waterSurface.z = glm::radians(grassGrowth_.maximumTilt);
+            }
+        } else if (terrainMaterial && grassEnabled && fragment == "shader_terrain.frag") {
             materialPushConstants.waterFlow = grassFadeDistances(GrassLod::NearMesh);
+        }
+        if (shadow) {
+            if (isTransparentMaterial(material)) materialPushConstants.textureFlags |= kShadowBlendFlag;
+            if (isWaterShaderConfiguration(shaders)) {
+                materialPushConstants.textureFlags |= kShadowWaterFlag | kShadowBlendFlag;
+            } else if (material.alphaCutoff >= 0.0f && !item.grassLod) {
+                materialPushConstants.textureFlags |= kShadowCutoutFlag;
+                materialPushConstants.waterFlow.x = material.alphaCutoff;
+            }
         }
         vkCmdPushConstants(
             commandBuffer,
@@ -520,7 +549,8 @@ void Renderer::recordCommandBuffer(
             &materialPushConstants
         );
         const auto drawFaces = [&](VkCullModeFlags cullMode) {
-            const VkPipeline pipeline = graphicsPipelineForMaterial(material, hdr, cullMode);
+            const VkPipeline pipeline = shadow ? sunShadowPipelineForMaterial(material)
+                : graphicsPipelineForMaterial(material, hdr, cullMode);
             if (pipeline == VK_NULL_HANDLE) return;
             if (pipeline != boundPipeline) {
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -536,8 +566,8 @@ void Renderer::recordCommandBuffer(
             vkCmdBindIndexBuffer(commandBuffer, grassIndexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT16);
             const std::uint32_t indexCount = *item.grassLod == GrassLod::NearMesh
                 ? static_cast<std::uint32_t>(kGrassIndices.size()) : 6u;
-            const auto clipFromGrass = clipFromScene
-                ? std::optional(*clipFromScene * materialPushConstants.nodeTransform) : std::nullopt;
+            const auto clipFromGrass = shadow ? std::optional(sunShadowClipFromWorld_[cascade] * nodeTransform)
+                : (clipFromScene ? std::optional(*clipFromScene * nodeTransform) : std::nullopt);
             std::uint32_t first = 0;
             std::uint32_t count = 0;
             for (const auto& range : grassCoverage_.ranges()) {
@@ -559,7 +589,9 @@ void Renderer::recordCommandBuffer(
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
             vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
         };
-        if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
+        if (shadow) {
+            drawFaces(VK_CULL_MODE_NONE);
+        } else if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
             drawFaces(VK_CULL_MODE_FRONT_BIT);
             drawFaces(VK_CULL_MODE_BACK_BIT);
         } else {
@@ -586,8 +618,8 @@ void Renderer::recordCommandBuffer(
             0,
             1,
             &skyboxDescriptorSet,
-            0,
-            nullptr
+            1,
+            &uniformOffset
         );
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
         boundPipeline = VK_NULL_HANDLE;
@@ -603,7 +635,7 @@ void Renderer::recordCommandBuffer(
         if (drawDaylight && !skyBeforeOpaque) drawSky(hdr);
     };
 
-    const auto drawParticles = [&](bool hdr) {
+    const auto drawParticles = [&](bool hdr, bool shadow = false) {
         if (!particleDrawRanges_.empty()) {
             const VkBuffer particleBuffer = particleVertexBuffers_[currentFrame_]->handle();
             const VkDeviceSize particleOffset = 0;
@@ -613,10 +645,10 @@ void Renderer::recordCommandBuffer(
                 if (descriptorIt == particleDescriptorSets_.end()) {
                     continue;
                 }
-                const VkPipeline particlePipeline =
-                    range.blendMode == ParticleSystemSettings::BlendMode::Additive
+                const VkPipeline particlePipeline = shadow ? sunShadowParticlePipeline_
+                    : (range.blendMode == ParticleSystemSettings::BlendMode::Additive
                         ? (hdr ? hdrParticleAdditivePipeline_ : particleAdditivePipeline_)
-                        : (hdr ? hdrParticleAlphaPipeline_ : particleAlphaPipeline_);
+                        : (hdr ? hdrParticleAlphaPipeline_ : particleAlphaPipeline_));
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
                 const VkDescriptorSet& particleDescriptorSet =
                     descriptorIt->second[currentFrame_];
@@ -627,8 +659,8 @@ void Renderer::recordCommandBuffer(
                     0,
                     1,
                     &particleDescriptorSet,
-                    0,
-                    nullptr
+                    1,
+                    &uniformOffset
                 );
                 MaterialPushConstants particlePushConstants{};
                 particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
@@ -646,6 +678,45 @@ void Renderer::recordCommandBuffer(
             }
         }
     };
+
+    if (sunShadowRenderPass_) {
+        const auto atlasSize = 2 * sunShadowTileSize_;
+        VkClearValue clearDepth{};
+        clearDepth.depthStencil = {1.0f, 0};
+        VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        pass.renderPass = sunShadowRenderPass_;
+        pass.framebuffer = sunShadowTargets_[currentFrame_].framebuffer;
+        pass.renderArea.extent = {atlasSize, atlasSize};
+        pass.clearValueCount = 1;
+        pass.pClearValues = &clearDepth;
+        vkCmdBeginRenderPass(commandBuffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        if (sunShadowsActive_) {
+            for (std::uint32_t i = 0; i < kSunShadowCascadeCount; ++i) {
+                const auto x = (i % 2) * sunShadowTileSize_;
+                const auto y = (i / 2) * sunShadowTileSize_;
+                const float tile = static_cast<float>(sunShadowTileSize_);
+                const VkViewport shadowViewport{static_cast<float>(x), static_cast<float>(y), tile, tile, 0.0f, 1.0f};
+                const VkRect2D shadowScissor{{static_cast<std::int32_t>(x), static_cast<std::int32_t>(y)},
+                                            {sunShadowTileSize_, sunShadowTileSize_}};
+                vkCmdSetViewport(commandBuffer, 0, 1, &shadowViewport);
+                vkCmdSetScissor(commandBuffer, 0, 1, &shadowScissor);
+                // Swap the camera UBO slice while keeping the material descriptors and live geometry.
+                uniformOffset = uniformSliceStride_ * (i + 1);
+                boundPipeline = VK_NULL_HANDLE;
+                boundSet = VK_NULL_HANDLE;
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+                for (const DrawItem& item : casters) drawPart(item, false, static_cast<int>(i));
+                drawParticles(false, true);
+            }
+        }
+        vkCmdEndRenderPass(commandBuffer);
+        uniformOffset = 0;
+    }
+#ifndef VULKCORE_OHOS
+    if (resourcePreview_.draw) recordResourcePreview(commandBuffer);
+#endif
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->handle(), 0, VK_INDEX_TYPE_UINT32);
 
     const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
     const bool hdr = hdrComposition_ != nullptr;
@@ -733,8 +804,8 @@ void Renderer::recordCommandBuffer(
             0,
             1,
             &postProcessDescriptorSet,
-            0,
-            nullptr
+            1,
+            &uniformOffset
         );
         MaterialPushConstants postProcessConstants{};
         postProcessConstants.textureFlags = postProcessEffect_;
@@ -773,8 +844,8 @@ void Renderer::recordCommandBuffer(
             0,
             1,
             &uniformDescriptorSet,
-            0,
-            nullptr
+            1,
+            &uniformOffset
         );
         MaterialPushConstants boundingBoxPushConstants{};
         vkCmdPushConstants(

@@ -1,5 +1,7 @@
 #version 450
 
+// 龙卷风的网格动画。共享同一个顶点阶段，为核心外壳、主条带、细风丝、冲击环和碎屑赋予不同的运动。
+
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
@@ -65,14 +67,15 @@ vec2 flowSample(
         vec2(seed * 0.071, seed * 0.113);
     vec2 secondUv = coordinate.yx * (frequency * 1.91) -
         velocity.yx * elapsed * 0.73 + vec2(seed * 0.137, -seed * 0.053);
-    // Geometry uses a continuous analytic field. Texture-driven high
-    // frequencies are intentionally reserved for the fragment stage so the
-    // ribbon silhouette never inherits texel-scale saw teeth.
+    // 顶点位移只用连续、低频的解析流场，避免纹理高频细节把几何轮廓拉成锯齿。
+    // 两组不同频率和流向的采样叠加，削弱单一波形的周期感。
     return analyticFlow(firstUv * TAU * 0.43) * 0.68 +
         analyticFlow(secondUv * TAU * 0.31) * 0.32;
 }
 
 void main() {
+    // 模型将类别和实例种子存进间隔为 2 的 UV 区段。减去区段起点后可取得图元内的局部坐标。
+    // 用稳定种子改变相位和速度，保持同一片几何运动连贯，并避免所有部件同步摆动。
     float kind = floor(inTexCoord.y * 0.5 + 0.0001);
     float seed = floor(inTexCoord.x * 0.5 + 0.0001);
     float along = fract(inTexCoord.x);
@@ -88,8 +91,7 @@ void main() {
     float brightnessPulse = 0.0;
 
     if (kind < 0.5) {
-        // Volume core: two nested skins continuously shear at different
-        // heights. Its centerline wanders while the radius inhales in patches.
+        // 核心的两层壳按高度以不同相位扭动，同时让中心线偏移、半径起伏，形成有厚度的剪切感。
         flow = flowSample(
             vec2(fract(inTexCoord.x), heightRatio),
             seed,
@@ -117,8 +119,7 @@ void main() {
         localPosition.y += flow.y * 0.028 * smoothstep(0.08, 0.92, heightRatio);
         brightnessPulse = 0.5 + 0.5 * tallWave;
     } else if (kind < 1.5) {
-        // Hero ribbons: a low-frequency domain warp bends the whole blade,
-        // while a travelling high-frequency wave ripples different sections.
+        // 主条带用低频流场摆动整体轮廓，并让不同频率的行波沿长度方向传播。
         float direction = mod(seed, 2.0) < 0.5 ? -1.0 : 1.0;
         float speedJitter = mix(0.72, 1.28, hash11(seed + 9.0));
         flow = flowSample(
@@ -147,7 +148,7 @@ void main() {
             secondaryWave * 0.024 * sin(across * 3.14159265);
         brightnessPulse = 0.5 + 0.5 * secondaryWave;
     } else if (kind < 2.5) {
-        // Thin wisps: quick snake-like waves and turbulent radial flutter.
+        // 细风丝提高传播速度和空间频率，叠加短周期的径向和高度抖动。
         float direction = mod(seed, 3.0) < 1.0 ? -1.0 : 1.0;
         flow = flowSample(
             vec2(along * 1.7, seed * 0.019),
@@ -173,8 +174,7 @@ void main() {
         localPosition.y += flow.x * 0.038 + tremor * 0.018;
         brightnessPulse = 0.5 + 0.5 * tremor;
     } else if (kind < 3.5) {
-        // Impact rings stay anchored: travelling pressure waves change radius,
-        // height and ellipticity instead of spinning the whole decal.
+        // 沿冲击环的方位角传播压力波，使半径、高度和椭圆率起伏，环的中心保持在撞击点。
         float polarAngle = atan(inPosition.z, inPosition.x) / TAU + 0.5;
         flow = flowSample(
             vec2(polarAngle, seed * 0.023),
@@ -202,8 +202,7 @@ void main() {
         angleWarp = flow.x * 0.018;
         brightnessPulse = 0.5 + 0.5 * pressureWave;
     } else {
-        // Detached shards flutter independently. Every crossed pair shares its
-        // seed, so the spark remains coherent while following a chaotic orbit.
+        // 两张交叉卡片共享种子，作为同一碎屑一起漂移和起伏。碎屑之间用随机相位区分。
         flow = flowSample(
             vec2(seed * 0.037, seed * 0.071),
             seed,
@@ -219,6 +218,7 @@ void main() {
         brightnessPulse = 0.5 + 0.5 * flutter;
     }
 
+    // 水平转角同步应用于位置和法线。径向伸缩与偏移后的法线以此作为近似。
     localPosition.xz = rotation2d(angleWarp) * localPosition.xz;
     localNormal.xz = rotation2d(angleWarp) * localNormal.xz;
 
@@ -231,5 +231,6 @@ void main() {
     fragVertexColor = inColor;
     fragWorldPosition = worldPosition;
     fragLocalPosition = localPosition;
+    // 将低频流场与亮度脉冲交给片元阶段，让发光纹样跟随形变。
     fragLayerMotion = vec3(flow, brightnessPulse);
 }

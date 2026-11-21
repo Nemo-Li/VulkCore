@@ -672,6 +672,7 @@ void Renderer::clearSceneData() {
     grassGroundTexturePath_.clear();
     grassGroundTexture_.reset();
     grassHeightScale_ = 1.0f;
+    grassGrowth_ = {};
     cameraPosition_ = {0.0f, 0.0f, 4.0f};
     ambientLightColor_ = {0.18f, 0.21f, 0.24f};
     ambientLightIntensity_ = 1.0f;
@@ -1135,6 +1136,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     std::string skyboxImage;
     std::string grassGroundImage;
     float grassHeightScale = 1.0f;
+    GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
@@ -1270,6 +1272,28 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 grassHeightScale > 3.0f) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid grass settings.";
+                return false;
+            }
+        } else if (key == "grass_growth") {
+            if (!(sceneFile >> grassGrowth.minimumTilt >> grassGrowth.maximumTilt >> grassGrowth.noiseSize) ||
+                !std::isfinite(grassGrowth.minimumTilt) || !std::isfinite(grassGrowth.maximumTilt) ||
+                !std::isfinite(grassGrowth.noiseSize) || grassGrowth.minimumTilt < 0.0f ||
+                grassGrowth.maximumTilt > GrassGrowthSettings::kMaxTilt ||
+                grassGrowth.minimumTilt > grassGrowth.maximumTilt ||
+                grassGrowth.noiseSize < GrassGrowthSettings::kMinNoiseSize ||
+                grassGrowth.noiseSize > GrassGrowthSettings::kMaxNoiseSize) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid grass growth settings.";
+                return false;
+            }
+        } else if (key == "grass_blade_width") {
+            if (!(sceneFile >> grassGrowth.minimumBladeWidth >> grassGrowth.maximumBladeWidth) ||
+                !std::isfinite(grassGrowth.minimumBladeWidth) || !std::isfinite(grassGrowth.maximumBladeWidth) ||
+                grassGrowth.minimumBladeWidth < GrassGrowthSettings::kMinBladeWidth ||
+                grassGrowth.maximumBladeWidth > GrassGrowthSettings::kMaxBladeWidth ||
+                grassGrowth.minimumBladeWidth > grassGrowth.maximumBladeWidth) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid grass blade widths.";
                 return false;
             }
         } else if (key == "sun_present") {
@@ -1462,6 +1486,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     currentScenePath_ = resolvedScenePath;
     skyboxEnabled_ = sceneHasSkybox.value_or(resolvedScenePath.filename() == "game.scene");
     grassHeightScale_ = grassHeightScale;
+    grassGrowth_ = grassGrowth;
     const auto sceneImagePath = [&](const std::string& image) {
         return image.empty() ? std::filesystem::path{} :
             normalizedPath(resolvedScenePath.parent_path() / std::filesystem::path(std::u8string(image.begin(), image.end())));
@@ -2418,7 +2443,11 @@ bool Renderer::saveTransformSettings() const {
          << std::quoted(sceneReference(skyboxTexturePath_)) << '\n';
     if (terrainScene_) {
         file << "grass_settings " << grassHeightScale_ << ' '
-             << std::quoted(sceneReference(grassGroundTexturePath_)) << '\n';
+             << std::quoted(sceneReference(grassGroundTexturePath_)) << '\n'
+             << "grass_growth " << grassGrowth_.minimumTilt << ' '
+             << grassGrowth_.maximumTilt << ' ' << grassGrowth_.noiseSize << '\n'
+             << "grass_blade_width " << grassGrowth_.minimumBladeWidth << ' '
+             << grassGrowth_.maximumBladeWidth << '\n';
     }
     if (!terrainResourcePath_.empty()) {
         std::error_code relativeError;

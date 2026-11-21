@@ -37,6 +37,7 @@ class SwapChain;
 class VulkanContext;
 class TerrainScene;
 class HdrComposition;
+struct UniformBufferObject;
 
 class Renderer {
 public:
@@ -275,6 +276,11 @@ private:
     void createRenderPass();
     void createSceneRenderResources();
     void destroySceneRenderResources();
+    void createSunShadowResources();
+    void destroySunShadowResources();
+    void updateSunShadowUniforms(UniformBufferObject& frame);
+    VkDescriptorImageInfo sunShadowImageInfo(std::uint32_t frame) const;
+    VkPipeline sunShadowPipelineForMaterial(const MaterialData& material);
     void createSceneRenderTarget(SceneRenderTarget& target, VkExtent2D extent, bool sampleDepth);
     void destroySceneRenderTarget(SceneRenderTarget& target);
     void createDescriptorSetLayout();
@@ -395,6 +401,21 @@ private:
     std::unordered_set<std::string> failedNodeGraphicsPipelineKeys_;
     std::unordered_set<std::string> failedNodeComputePipelineKeys_;
     std::vector<SceneRenderTarget> sceneRenderTargets_;
+    static constexpr std::size_t kSunShadowCascadeCount = 3;
+    struct SunShadowTarget {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    };
+    std::array<SunShadowTarget, kMaxFramesInFlight> sunShadowTargets_;
+    std::array<glm::mat4, kSunShadowCascadeCount> sunShadowClipFromWorld_{};
+    VkRenderPass sunShadowRenderPass_ = VK_NULL_HANDLE;
+    VkSampler sunShadowSampler_ = VK_NULL_HANDLE;
+    VkPipeline sunShadowParticlePipeline_ = VK_NULL_HANDLE;
+    std::uint32_t sunShadowTileSize_ = 0;
+    std::uint32_t uniformSliceStride_ = 0;
+    bool sunShadowsActive_ = false;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
     GrassCoverage grassCoverage_;
@@ -461,6 +482,7 @@ private:
     std::filesystem::path grassGroundTexturePath_;
     bool skyboxEnabled_ = false;
     float grassHeightScale_ = 1.0f;
+    GrassGrowthSettings grassGrowth_;
     std::unique_ptr<Texture> fallbackTexture_;
     std::unique_ptr<Texture> fallbackNormalTexture_;
     std::vector<std::unique_ptr<Buffer>> uniformBuffers_;
