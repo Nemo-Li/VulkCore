@@ -1029,7 +1029,10 @@ void Renderer::applySkyboxTexture(const std::filesystem::path& path) {
 
 void Renderer::applyGrassGroundTexture(const std::filesystem::path& path) {
     std::unique_ptr<Texture> texture;
-    if (!path.empty()) texture = std::make_unique<Texture>(*context_, path);
+    if (!path.empty()) {
+        texture = std::make_unique<Texture>(*context_, path,
+            VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
+    }
     context_->waitIdle();
     grassGroundTexture_ = std::move(texture);
     grassGroundTexturePath_ = path;
@@ -1540,7 +1543,8 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         glm::translate(glm::mat4(1.0f), -modelCenter_);
 
     ubo.model = modelNormalization;
-    ubo.time = glm::vec4(elapsedSeconds, transitionPlayer_.flowTime, hdrSettings_.exposure, 0.0f);
+    const float weatherTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
+    ubo.time = glm::vec4(elapsedSeconds, transitionPlayer_.flowTime, hdrSettings_.exposure, weatherTime);
     ubo.view = glm::lookAt(cameraPosition_, cameraTarget_, cameraUp_);
 
     const VkExtent2D extent = swapChain_->extent();
@@ -1595,7 +1599,6 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f
     );
     ubo.cameraPosition = glm::vec4(cameraPosition_, modelScale_);
-    const float weatherTime = fixedFrameOutput_.empty() ? elapsedSeconds : transitionPlayer_.flowTime;
     if (skyboxTexture_ != nullptr && skyboxEnabled_) {
         ubo.daylight = glm::vec4(1.0f, weatherTime, 0.0f, 0.0f);
     }

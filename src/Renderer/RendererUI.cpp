@@ -12,6 +12,10 @@ void Renderer::initializeImGui() {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
+#ifndef VULKCORE_OHOS
+    io.FontDefault = io.Fonts->AddFontDefault();
+    editorShaderFont_ = io.Fonts->AddFontDefaultVector();
+#endif
 
     if (!initializeWindowImGui(context_->window())) {
         ImGui::DestroyContext();

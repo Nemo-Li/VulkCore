@@ -507,6 +507,9 @@ void Renderer::recordCommandBuffer(
             materialPushConstants.waterSurface.x = *item.grassLod == GrassLod::NearMesh
                 ? grassHeightScale_ : 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
+        } else if ((materialPushConstants.textureFlags & kGrassGroundTextureFlag) != 0u &&
+                   fragment == "shader_terrain.frag") {
+            materialPushConstants.waterFlow = grassFadeDistances(GrassLod::NearMesh);
         }
         vkCmdPushConstants(
             commandBuffer,

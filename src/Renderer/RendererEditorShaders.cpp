@@ -3,6 +3,8 @@
 
 #include <misc/cpp/imgui_stdlib.h>
 
+#include <cmath>
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -165,10 +167,28 @@ void Renderer::drawEditorShaderDialog() {
         editorShaderRequested_ = false;
         ImGui::OpenPopup("Shader Editor");
     }
+    if (!ImGui::IsPopupOpen("Shader Editor")) return;
+
+    const auto format = swapChain_->imageFormat();
+    const bool srgb = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB;
+    // ImGui vertex colors are written as linear values to an sRGB attachment.
+    const auto channel = [srgb](int value) {
+        const float c = static_cast<float>(value) / 255.0f;
+        if (!srgb) return c;
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    const auto color = [&](int red, int green, int blue, float alpha = 1.0f) {
+        return ImVec4(channel(red), channel(green), channel(blue), alpha);
+    };
     const auto extent = ImGui::GetMainViewport()->WorkSize;
     ImGui::SetNextWindowSize(ImVec2(std::min(900.0f, extent.x * 0.9f),
         std::min(680.0f, extent.y * 0.9f)), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Shader Editor")) return;
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, color(29, 34, 41));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, color(0, 0, 0, 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, color(49, 60, 74));
+    const bool visible = ImGui::BeginPopupModal("Shader Editor");
+    ImGui::PopStyleColor(3);
+    if (!visible) return;
     auto& dialog = editorShader_;
     if (dialog.candidates.size() > 1 && ImGui::BeginCombo("Shader", dialog.chosen.c_str())) {
         for (const auto& candidate : dialog.candidates) {
@@ -189,7 +209,26 @@ void Renderer::drawEditorShaderDialog() {
     }
     ImGui::TextWrapped("Source changes apply to all materials using this file. Keep the shader's pipeline interface compatible.");
     const float footer = ImGui::GetFrameHeightWithSpacing() * (dialog.status.empty() ? 2.0f : 5.0f);
+    ImGui::PushFont(editorShaderFont_, 18.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 8.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, color(37, 43, 52));
+    ImGui::PushStyleColor(ImGuiCol_Text, color(221, 228, 236));
+    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, color(59, 82, 105));
+    ImGui::PushStyleColor(ImGuiCol_InputTextCursor, color(255, 209, 138));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, color(107, 132, 156));
+    auto& io = ImGui::GetIO();
+    auto& style = ImGui::GetStyle();
+    const bool cursorBlink = io.ConfigInputTextCursorBlink;
+    const float cursorSize = style.InputTextCursorSize;
+    io.ConfigInputTextCursorBlink = false;
+    style.InputTextCursorSize = std::max(2.0f, cursorSize);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
     ImGui::InputTextMultiline("##GLSL", &dialog.source, ImVec2(-1.0f, -footer), ImGuiInputTextFlags_AllowTabInput);
+    style.InputTextCursorSize = cursorSize;
+    io.ConfigInputTextCursorBlink = cursorBlink;
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar();
+    ImGui::PopFont();
     ImGui::BeginDisabled(dialog.source.empty() || editorShaderApplyRequested_);
     if (ImGui::Button("Compile and apply")) editorShaderApplyRequested_ = true;
     ImGui::EndDisabled();

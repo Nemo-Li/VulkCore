@@ -27,6 +27,8 @@
 
 #include "vulkcore/Platform/Window.hpp"
 
+struct ImFont;
+
 namespace VulkCore {
 
 class Buffer;
@@ -516,6 +518,7 @@ private:
         std::string status;
         std::vector<std::string> candidates;
     } editorShader_;
+    ImFont* editorShaderFont_ = nullptr;
     bool editorShaderRequested_ = false;
     bool editorShaderApplyRequested_ = false;
     glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
