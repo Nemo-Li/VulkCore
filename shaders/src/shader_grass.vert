@@ -37,7 +37,7 @@ layout(location = 3) out vec3 fragWorldPosition;
 layout(location = 4) flat out float fragLodVisibility;
 layout(location = 5) flat out vec2 fragRoot;
 layout(location = 6) flat out float fragLod;
-layout(location = 7) flat out float fragColorVariation;
+layout(location = 7) flat out vec2 fragPalette;
 
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
@@ -54,29 +54,23 @@ void main() {
     int row = gl_VertexIndex / 2;
     float heightWeight = nearBlade ? bladeRows[row] : float(row);
     float bendWeight = heightWeight * heightWeight;
-    float width = inNormalWidth.w * (nearBlade ? 1.0 - 0.72 * heightWeight : 1.0);
+    float leanWeight = mix(heightWeight, bendWeight, 0.80);
     float bladeHeight = inRootHeight.w * material.waterSurface.x;
+    float width = inNormalWidth.w * (nearBlade ? 1.0 - 0.62 * heightWeight : 1.0);
+    float twist = nearBlade ? (inMotion.w - 0.5) * 0.58 * heightWeight : 0.0;
+    vec3 widthAxis = right * cos(twist) + forward * sin(twist);
     vec3 localPosition = root
         + rootNormal * (bladeHeight * heightWeight)
-        + right * (width * 0.5 * side)
-        + forward * (inMotion.y * bladeHeight * bendWeight);
-    float phase = inMotion.z * 6.28318530718;
+        + widthAxis * (width * 0.5 * side)
+        + forward * (inMotion.y * bladeHeight * leanWeight);
 
-    // Two differently oriented waves create BOTW's broad gusts plus local
-    // blade flutter. Only the upper vertices move, keeping every root fixed.
-    float broadWave = sin(
-        root.x * 0.115 + root.z * 0.073 +
-        ubo.time.x * 1.28 + phase
-    );
-    float detailWave = sin(
-        root.x * -0.31 + root.z * 0.27 +
-        ubo.time.x * 2.15 + phase * 1.73
-    );
-    vec2 windDirection = normalize(vec2(0.82, 0.57));
-    vec2 crossWind = vec2(-windDirection.y, windDirection.x);
-    vec2 windOffset = windDirection * (broadWave * 0.12 + detailWave * 0.035) +
-        crossWind * detailWave * 0.025;
-    localPosition.xz += windOffset * bendWeight;
+    // A shared gust moves the clump. Individual phases soften the tips' motion.
+    float broadWave = sin(root.x * 0.115 + root.z * 0.073 + ubo.time.w * 1.28);
+    float detailWave = sin(root.x * -0.31 + root.z * 0.27 + ubo.time.w * 2.15 +
+                           inMotion.z * 6.2831853);
+    vec2 windOffset = vec2(0.82, 0.57) * (broadWave * 0.055 + detailWave * 0.016) +
+        vec2(-0.57, 0.82) * detailWave * 0.013;
+    localPosition.xz += windOffset * (bladeHeight * bendWeight);
 
     mat4 model = ubo.model * material.nodeTransform;
     float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
@@ -95,8 +89,8 @@ void main() {
     vec2 trampleDirection = normalize(
         radialDirection * 0.58 + movementDirection * 0.72 + vec2(0.0001)
     );
-    localPosition.xz += trampleDirection * interaction * bendWeight * 0.58;
-    localPosition.y -= interaction * bendWeight * 0.27;
+    localPosition.xz += trampleDirection * interaction * bendWeight * (nearBlade ? 0.30 : 0.18);
+    localPosition.y -= interaction * bendWeight * 0.14;
 
     float distanceWorld = distance(ubo.cameraPosition.xz, rootScene.xz) / sceneScale;
     vec4 fade = material.waterFlow;
@@ -112,12 +106,12 @@ void main() {
         : vec4(0.0, 0.0, -1.0, 1.0);
 
     mat3 normalMatrix = transpose(inverse(mat3(model)));
-    fragBladeUv = vec2(side * 0.5 + 0.5, nearBlade ? heightWeight : 1.0 - heightWeight);
+    fragBladeUv = vec2(side * 0.5 + 0.5, heightWeight);
     fragNormal = normalize(normalMatrix * mix(forward, rootNormal, nearBlade ? 0.90 : 0.68));
     fragTint = inTint;
     fragWorldPosition = worldPosition;
     fragLodVisibility = visibility;
     fragRoot = root.xz;
     fragLod = lod;
-    fragColorVariation = inMotion.w;
+    fragPalette = inMotion.wz; // clump/leaf shade, individual color seed
 }

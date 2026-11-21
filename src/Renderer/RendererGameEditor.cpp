@@ -493,7 +493,7 @@ void Renderer::drawGameOutliner() {
                 for (auto& child : node.children) self(self, child);
             };
             drawParts(drawParts, root);
-            if (grass) select("LOD1 Ground Texture", EditorSelection::GrassGround);
+            if (grass) select("Grass Ground Texture", EditorSelection::GrassGround);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -752,14 +752,14 @@ void Renderer::drawGameInspector() {
             }
         };
         const auto drawGrassGround = [&] {
-            drawEditorTexture("LOD1 ground texture", grassGroundTexturePath_, {},
+            drawEditorTexture("Ground texture", grassGroundTexturePath_, {},
                 [this](const auto& path) { applyGrassGroundTexture(path); });
             if (const auto* terrain = findSceneNodeById(meshData_, kTerrainSceneNodeId)) {
                 drawFirstMaterial(*terrain, "terrain");
             }
         };
         if (editorSelection_ == EditorSelection::GrassGround) {
-            ImGui::SeparatorText("Grass / LOD1");
+            ImGui::SeparatorText("Grass Ground");
             drawGrassGround();
             return;
         }
@@ -789,7 +789,7 @@ void Renderer::drawGameInspector() {
             ImGui::SeparatorText("Grass / LOD0");
             drawGrassHeight();
             if (!node.children.empty()) drawFirstMaterial(node.children.front(), "grass");
-            ImGui::SeparatorText("Grass / LOD1");
+            ImGui::SeparatorText("Grass Ground");
             drawGrassGround();
             return;
         }
@@ -797,7 +797,7 @@ void Renderer::drawGameInspector() {
             if (*lod == GrassLod::NearMesh) {
                 drawGrassHeight();
             }
-            drawFirstMaterial(node, "grass");
+            if (*lod != GrassLod::YellowFlowerCard) drawFirstMaterial(node, "grass");
             return;
         }
         if (node.nodeId >= kTerrainSceneNodeId && node.nodeId < kPlayerSceneNodeId) {

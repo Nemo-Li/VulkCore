@@ -10,8 +10,8 @@ struct UniformBufferObject {
     glm::mat4 model{1.0f};
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f};
-    // x is elapsed time in seconds. The remaining components keep the
-    // value 16-byte aligned for GLSL std140 uniform-buffer layout.
+    // Elapsed seconds, transition time, HDR exposure, and vegetation wind time.
+    // All four values share a 16-byte std140 slot.
     glm::vec4 time{0.0f};
     glm::vec4 viewport{0.0f}; // width, height, 1/width, 1/height
     glm::vec4 ambientLight{0.18f, 0.21f, 0.24f, 1.0f}; // rgb color, intensity

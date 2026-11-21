@@ -592,7 +592,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
     grassNode.boundsMaximum = terrain.boundsMaximum();
 
     constexpr std::array<const char*, kGrassLods.size()> lodNames{
-        "LOD0 Near Curved Blades", "Wildflower Cross Cards"
+        "LOD0 Near Curved Blades", "Wildflower Cross Cards", "Small Yellow Flowers"
     };
     for (std::size_t layer = 0; layer < lodNames.size(); ++layer) {
         const auto lod = kGrassLods[layer];
@@ -602,7 +602,9 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
         node.globalTransform = glm::mat4(1.0f);
         node.meshCount = 1;
         node.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
-        const auto material = lod == GrassLod::FlowerCard ? flowerMaterial : grassMaterial;
+        // Both flower layers use the existing material slot. Only the original
+        // layer samples its texture, and saved material indices stay stable.
+        const auto material = lod == GrassLod::NearMesh ? grassMaterial : flowerMaterial;
         // Each layer has a regular scene part for material/visibility controls.
         // Its instance ranges live outside the shared scene mesh.
         meshData_.parts.push_back({0, 0, material, node.nodeId});
@@ -1469,9 +1471,10 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     createSkyboxTexture();
     if (!grassGroundTexturePath_.empty()) {
         try {
-            grassGroundTexture_ = std::make_unique<Texture>(*context_, grassGroundTexturePath_);
+            grassGroundTexture_ = std::make_unique<Texture>(*context_, grassGroundTexturePath_,
+                VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
         } catch (const std::exception& error) {
-            std::cerr << "warning: failed to load grass LOD1 texture: " << error.what() << '\n';
+            std::cerr << "warning: failed to load grass ground texture: " << error.what() << '\n';
         }
     }
     loadTransformSettings();

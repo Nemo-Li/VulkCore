@@ -1,6 +1,6 @@
 # VulkCore scene
 skybox 1 ""
-grass_settings 1 ""
+grass_settings 1 "../assets/terrain/textures/terrain_grass.png"
 terrain_resource "../assets/terrain"
 player_present 1
 player_spawn_position -205 124 -96

@@ -263,11 +263,24 @@ void checkGrassCoverage() {
     require(near && near->tint == std::array<std::uint8_t, 4>{24, 150, 60, 255},
         "near grass must use the grass map tint");
     const auto startingRoot = near->rootHeight;
+    const auto* flower = nearest({96.0f, 96.0f}, GrassLod::YellowFlowerCard);
+    require(flower && flower->normalWidth.w > 0.0f && flower->normalWidth.w <= 0.092f,
+        "vegetated grass maps must support small yellow flowers");
+    require(nearest({96.0f, 96.0f}, GrassLod::FlowerCard) == nullptr,
+        "legacy flower placement remains limited to unmapped grass");
+    require(flower + 1 < grass.instances().data() + grass.instances().size(),
+        "each flower must have a second card");
+    const auto& otherCard = *(flower + 1);
+    require(otherCard.rootHeight == flower->rootHeight &&
+        std::abs(otherCard.motion.x - flower->motion.x - glm::half_pi<float>()) < 0.00001f &&
+        otherCard.motion.z == flower->motion.z,
+        "the two flower cards must share their root and wind phase");
     const auto nearFade = grassFadeDistances(GrassLod::NearMesh);
     require(nearFade.z == 30.0f && nearFade.w == 40.0f,
         "mesh blades must fade over the ground texture between 30 and 40 units");
-    require(!grassLodForLayer(1) && !grassLodForLayer(2) && grassLodForLayer(3) == GrassLod::FlowerCard,
-        "retiring grass cards must preserve the saved wildflower node ID");
+    require(!grassLodForLayer(1) && !grassLodForLayer(2) &&
+        grassLodForLayer(3) == GrassLod::FlowerCard && grassLodForLayer(4) == GrassLod::YellowFlowerCard,
+        "legacy and yellow flowers must use distinct, stable node IDs");
     const auto* expandedNear = nearest({124.0f, 96.0f}, GrassLod::NearMesh);
     require(expandedNear && std::abs(expandedNear->rootHeight.x - 124.0f) < 1.0f,
         "mesh blades must populate the start of the ground texture handoff");
@@ -276,8 +289,10 @@ void checkGrassCoverage() {
         nearest({102.0f, 94.0f}, GrassLod::NearMesh)->rootHeight == startingRoot,
         "retained grass roots must not jump when the coverage shifts");
     require(grass.update(*scene, {435.0f, 96.0f}) &&
-        nearest({435.0f, 96.0f}, GrassLod::NearMesh) == nullptr,
-        "moving onto mapped bare ground must not generate near grass");
+        nearest({435.0f, 96.0f}, GrassLod::NearMesh) == nullptr &&
+        nearest({435.0f, 96.0f}, GrassLod::FlowerCard) == nullptr &&
+        nearest({435.0f, 96.0f}, GrassLod::YellowFlowerCard) == nullptr,
+        "moving onto mapped bare ground must not generate grass or flowers");
     require(grass.update(*scene, {900.0f, 96.0f}), "long movement must update grass coverage");
     near = nearest({900.0f, 96.0f}, GrassLod::NearMesh);
     require(near && near->tint == std::array<std::uint8_t, 4>{180, 72, 16, 255} &&
@@ -285,6 +300,11 @@ void checkGrassCoverage() {
         "grass coverage must follow long movement and adopt the new map");
 
     require(grass.update(*scene, {96.0f, 900.0f}), "unmapped ground must update coverage");
+    const auto* legacyFlower = nearest({96.0f, 900.0f}, GrassLod::FlowerCard);
+    const auto* yellowFlower = nearest({96.0f, 900.0f}, GrassLod::YellowFlowerCard);
+    require(legacyFlower && yellowFlower && legacyFlower->rootHeight != yellowFlower->rootHeight &&
+        legacyFlower->normalWidth.w == 0.42f && yellowFlower->normalWidth.w <= 0.092f,
+        "legacy and small yellow flowers must coexist with distinct scattering and sizes");
     float canopyHeight = 0.0f;
     std::uint32_t bladeCount = 0;
     for (const auto& range : grass.ranges()) {

@@ -70,13 +70,15 @@ GrassCoverage::Cell GrassCoverage::buildCell(
     const auto& lodSettings = settings(lod);
     const int count = lodSettings.samplesPerSide;
     const float spacing = lodSettings.cellSize / static_cast<float>(count);
-    const bool flower = lod == GrassLod::FlowerCard;
+    const bool flower = lod != GrassLod::NearMesh;
+    const bool yellowFlower = lod == GrassLod::YellowFlowerCard;
+    const float flowerChance = yellowFlower ? 0.39f : 0.05f;
     const auto append = [&](glm::vec3 root, glm::vec3 normal, float height, float width,
-                            float yaw, float lean, std::uint32_t seed,
+                            float yaw, float lean, std::uint32_t seed, float shade,
                             const std::optional<GrassSample>& map) {
         GrassInstance instance{
             glm::vec4(root, height), glm::vec4(normal, width),
-            glm::vec4(yaw, lean, hash01(seed + 8u), hash01(seed + 9u)), {0, 0, 0, 0}
+            glm::vec4(yaw, lean, hash01(seed + 8u), shade), {0, 0, 0, 0}
         };
         if (map) {
             for (int channel = 0; channel < 3; ++channel) {
@@ -98,12 +100,12 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             const int gx = coordinate.first * count + x;
             const int gz = coordinate.second * count + z;
             const std::uint32_t seed = cellSeed(gx, gz, lod);
-            if (flower && hash01(seed) > 0.05f) continue;
+            if (flower && hash01(seed) > flowerChance) continue;
             const glm::vec2 point = (glm::vec2(gx, gz) + glm::vec2(
                 0.12f + hash01(seed + 1u) * 0.76f, 0.12f + hash01(seed + 2u) * 0.76f
             )) * spacing;
             const auto map = terrain.grassAtWorld(point);
-            if (map && (map->height <= 0.0f || flower)) continue;
+            if (map && (map->height <= 0.0f || lod == GrassLod::FlowerCard)) continue;
             const auto ground = terrain.renderedHeightAtWorld(point);
             if (!ground) continue;
             const auto water = terrain.waterHeightAtWorld(point);
@@ -139,7 +141,8 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                 for (int blade = 0; blade < blades; ++blade) {
                     const auto bladeSeed = hashBits(seed + static_cast<std::uint32_t>(blade + 1));
                     const float angle = yaw + kGoldenAngle * static_cast<float>(blade);
-                    const float radius = 0.34f * std::sqrt(static_cast<float>(blade) / blades);
+                    const float radius = 0.34f * std::sqrt(static_cast<float>(blade) / blades) *
+                        std::lerp(0.78f, 1.18f, hash01(bladeSeed + 6u));
                     const glm::vec2 offset = glm::vec2(std::cos(angle), std::sin(angle)) * radius;
                     const glm::vec2 bladePoint = point + offset;
                     const auto bladeMap = terrain.grassAtWorld(bladePoint);
@@ -147,16 +150,25 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                     const float y = root.y -
                         glm::dot(glm::vec2(normal.x, normal.z), offset) / std::max(normal.y, 0.35f);
                     const float bladeHeight = bladeMap ? bladeMap->height * kMappedGrassHeight : canopyHeight;
+                    const float bladeYaw = angle + std::lerp(-0.85f, 0.85f, hash01(bladeSeed + 5u));
+                    // Neighboring leaves share some color, while still leaning across one another.
+                    const float shade = std::lerp(hash01(bladeSeed + 9u), hash01(seed + 19u), 0.30f);
                     append({bladePoint.x, y, bladePoint.y}, normal,
-                           bladeHeight * (0.84f + hash01(bladeSeed + 1u) * 0.30f),
-                           0.045f + hash01(bladeSeed + 2u) * 0.033f, angle,
-                           (hash01(bladeSeed + 3u) - 0.5f) * 0.26f, bladeSeed, bladeMap);
+                           bladeHeight * std::lerp(0.79f, 1.20f, hash01(bladeSeed + 1u)),
+                           std::lerp(0.028f, 0.060f, hash01(bladeSeed + 2u)), bladeYaw,
+                           std::lerp(-0.29f, 0.29f, hash01(bladeSeed + 3u)), bladeSeed, shade, bladeMap);
                 }
             } else {
-                const float height = 0.48f + heightVariation * 0.32f;
-                constexpr float width = 0.42f;
-                append(root, normal, height, width, yaw, 0.0f, seed, map);
-                append(root, normal, height, width, yaw + kPi * 0.5f, 0.0f, seed, map);
+                float height = 0.48f + heightVariation * 0.32f;
+                float width = 0.42f;
+                if (yellowFlower) {
+                    const float canopy = map ? map->height * kMappedGrassHeight : kDefaultGrassHeight;
+                    height = canopy * std::lerp(0.94f, 1.14f, heightVariation);
+                    width = std::min(0.092f, height * 0.092f);
+                }
+                const float shade = hash01(seed + 9u);
+                append(root, normal, height, width, yaw, 0.0f, seed, shade, map);
+                append(root, normal, height, width, yaw + kPi * 0.5f, 0.0f, seed, shade, map);
             }
         }
     }

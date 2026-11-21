@@ -34,6 +34,9 @@ const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
 const uint kMacroTexture = 32u;
 const uint kGrassGroundTexture = 64u;
+// The longest edge of a full ground-texture tile, in terrain units.
+const float kNearGrassGroundTileSize = 8.0;
+const float kFarGrassGroundTileSize = 24.0;
 const int kGrassLayer = 0;
 const int kRockLayer = 2;
 const mat2x3 kProjectionBases[3] = mat2x3[3](
@@ -95,6 +98,11 @@ struct Projection {
 
 Projection projectUv(vec2 uv) {
     return Projection(uv, dFdx(uv), dFdy(uv));
+}
+
+vec3 sampleGrassGround(Projection ground, vec2 frequency) {
+    return textureGrad(grassGroundTexture, ground.uv * frequency,
+                       ground.dx * frequency, ground.dy * frequency).rgb;
 }
 
 vec3 sampleLegacyAtlas(int layer, Projection projection) {
@@ -201,6 +209,7 @@ void main() {
     float detailWeight = (1.0 - distanceFade) * (1.0 - smoothstep(0.7, 3.0, footprint));
     float gradientScale = mix(1.0, 2.2, distanceFade);
     bool hasAlbedo = (material.textureFlags & kAlbedoLayers) != 0u;
+    bool hasGrassGround = (material.textureFlags & kGrassGroundTexture) != 0u;
     // Binding 1 is the traditional atlas when arrays are unavailable. When
     // the layers are present it can carry the terrain-wide control map.
     bool hasMacro = (material.textureFlags & kMacroTexture) != 0u;
@@ -322,9 +331,10 @@ void main() {
         rockVisibility = 1.0 - rock * visibility * min(0.55, cavity * 2.5);
     }
 
-    // The ground already shows the blade palette at the 30–40 unit mesh handoff.
+    // The procedural meadow provides the fallback color beyond the authored ground tiles.
+    float grassGroundDistance = length(cameraRay.xz);
     float paleMeadow = smoothstep(45.0, 235.0, distanceWorld);
-    float farMeadow = smoothstep(245.0, 980.0, distanceWorld);
+    float farMeadow = smoothstep(245.0, 980.0, hasGrassGround ? grassGroundDistance : distanceWorld);
     vec3 grassAlbedo = kMeadowAlbedo;
     vec3 distantGrassBump = vec3(0.0);
     if (grass > 0.0 && paleMeadow > 0.0) {
@@ -338,10 +348,27 @@ void main() {
         distantGrassBump = vec3(bump.x, 0.0, bump.y) * (grass * paleMeadow);
     }
 
-    if ((material.textureFlags & kGrassGroundTexture) != 0u) {
-        vec3 authoredGrass = texture(grassGroundTexture, groundPosition * 0.15).rgb;
-        float lodBlend = smoothstep(30.0, 40.0, distanceWorld) * (1.0 - farMeadow);
-        grassAlbedo = mix(grassAlbedo, authoredGrass, lodBlend);
+    if (hasGrassGround) {
+        Projection groundUv = projectUv(groundPosition);
+        if (grass > 0.0 && farMeadow < 1.0) {
+            // Keep complete, world-aligned tiles through the end of the mesh LOD.
+            // Use the same horizontal distance as the grass instances.
+            float lodEnd = material.waterFlow.w;
+            float coarseBlend = smoothstep(lodEnd, 2.0 * lodEnd, grassGroundDistance);
+            vec2 texels = vec2(textureSize(grassGroundTexture, 0));
+            vec2 aspectCorrection = max(texels.x, texels.y) / texels;
+            vec3 authoredGrass = vec3(0.0);
+            if (coarseBlend < 1.0) {
+                authoredGrass += (1.0 - coarseBlend) *
+                    sampleGrassGround(groundUv, aspectCorrection / kNearGrassGroundTileSize);
+            }
+            if (coarseBlend > 0.0) {
+                authoredGrass += coarseBlend *
+                    sampleGrassGround(groundUv, aspectCorrection / kFarGrassGroundTileSize);
+            }
+            grassAlbedo = mix(authoredGrass, grassAlbedo, farMeadow);
+            distantGrassBump *= farMeadow;
+        }
     }
 
     vec3 macroAlbedo = vec3(0.0);
@@ -369,6 +396,12 @@ void main() {
                 float weight = landforms[layer] * axes[axis];
                 weight *= smoothstep(0.006, 0.028, weight);
                 if (weight <= 0.0) continue;
+                sampledWeight += weight;
+                if (layer == kGrassLayer && hasGrassGround) {
+                    // Preserve the authored RGB and pattern in both terrain detail paths.
+                    detailAlbedo += grassAlbedo * weight;
+                    continue;
+                }
                 bool isRock = layer == kRockLayer;
                 float layerSurfaceFade = isRock ? rockSurfaceFade : surfaceFade;
                 bool sampleSurface = hasSurfaceLayers && layerSurfaceFade > 0.0;
@@ -388,7 +421,6 @@ void main() {
                     normalOffset += kProjectionBases[axis] * surface.gradient * (weight * bumpStrength);
                     occlusion += (1.0 - surface.occlusion) * (weight * layerSurfaceFade);
                 }
-                sampledWeight += weight;
             }
         }
         float inverseWeight = 1.0 / max(sampledWeight, 0.0001);

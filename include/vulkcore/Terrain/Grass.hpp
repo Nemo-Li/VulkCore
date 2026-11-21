@@ -20,9 +20,12 @@ enum class GrassLod : std::uint32_t {
     NearMesh = 0,
     // Slots 1 and 2 belonged to grass cards. Keep the saved wildflower node ID and seed.
     FlowerCard = 3,
+    YellowFlowerCard = 4,
 };
 
-inline constexpr std::array kGrassLods{GrassLod::NearMesh, GrassLod::FlowerCard};
+inline constexpr std::array kGrassLods{
+    GrassLod::NearMesh, GrassLod::FlowerCard, GrassLod::YellowFlowerCard
+};
 
 inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
     for (const auto lod : kGrassLods) {
