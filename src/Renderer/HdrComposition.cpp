@@ -29,8 +29,9 @@ VkRenderPass createPass(VkDevice device, VkFormat color, VkFormat depth, bool pr
 
     attachments[1] = attachments[0];
     attachments[1].format = depth;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[1].storeOp = present ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].finalLayout = present ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                         : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     const VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
@@ -54,6 +55,13 @@ VkRenderPass createPass(VkDevice device, VkFormat color, VkFormat depth, bool pr
     dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    if (!present && depth != VK_FORMAT_UNDEFINED) {
+        // The composite vertex shader probes the completed color and depth at the solar disk.
+        dependencies[1].srcStageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependencies[1].srcAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstStageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    }
 
     VkRenderPassCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -86,7 +94,9 @@ bool HdrComposition::supported(const VulkanContext& context) {
 }
 
 HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChain,
-                               const HdrSettings& settings, const ShaderLookup& shader)
+                               const HdrSettings& settings,
+                               const std::vector<std::unique_ptr<Buffer>>& sceneUniforms,
+                               const ShaderLookup& shader)
     : context_(context), extent_(swapChain.extent()),
       encodeSrgb_(!surfaceEncodesSrgb(swapChain.imageFormat())) {
     try {
@@ -100,7 +110,8 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
             if (size.width == 1 && size.height == 1) break;
         }
         createLayouts(kMaxFramesInFlight * (1 + 2 * bloomSizes.size() + (settings.smaa ? 2 : 0)));
-        composite_ = createPipeline(presentationPass_, shader, "shader_hdr_composite.frag");
+        composite_ = createPipeline(presentationPass_, shader, "shader_hdr_composite.frag",
+                                    "shader_hdr_composite.vert");
         if (!bloomSizes.empty()) {
             filterPass_ = createPass(device, kHdr, VK_FORMAT_UNDEFINED);
             extract_ = createPipeline(filterPass_, shader, "shader_hdr_extract.frag");
@@ -117,7 +128,8 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
             weights_ = createPipeline(aaPass_, shader, "shader_hdr_weights.frag");
         }
         frames_.resize(kMaxFramesInFlight);
-        for (Frame& frame : frames_) {
+        for (std::size_t i = 0; i < frames_.size(); ++i) {
+            Frame& frame = frames_[i];
             createTarget(frame.geometry, extent_, geometryPass_, kHdr, swapChain.depthFormat());
             VkImageView source = frame.geometry.color.view;
             VkImageView bloom = source;
@@ -148,7 +160,8 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
                 frame.weightSet = descriptors(frame.edges.color.view, area_->imageView(), search_->imageView(), true);
                 weights = frame.weights.color.view;
             }
-            frame.composite = descriptors(source, bloom, weights);
+            frame.composite = descriptors(source, bloom, weights, false, frame.geometry.depth.view,
+                                          sceneUniforms.at(i)->handle());
         }
     } catch (...) {
         cleanup();
@@ -169,8 +182,8 @@ void HdrComposition::createImage(Image& image, VkExtent2D extent, VkFormat forma
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                       : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                     : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     check(vkCreateImage(device, &info, nullptr, &image.image), "failed to create HDR target image");
     VkMemoryRequirements requirements{};
     vkGetImageMemoryRequirements(device, image.image, &requirements);
@@ -210,10 +223,13 @@ void HdrComposition::createTarget(Target& target, VkExtent2D extent, VkRenderPas
 
 void HdrComposition::createLayouts(std::size_t setCount) {
     const auto device = context_.device();
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
-    for (uint32_t i = 0; i < bindings.size(); ++i) {
-        bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    }
+    const std::array<VkDescriptorSetLayoutBinding, 5> bindings{{
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT},
+        {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT}
+    }};
     VkDescriptorSetLayoutCreateInfo set{};
     set.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -228,12 +244,15 @@ void HdrComposition::createLayouts(std::size_t setCount) {
     layout.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(device, &layout, nullptr, &layout_), "failed to create HDR pipeline layout");
 
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, uint32_t(3 * setCount)};
+    const std::array<VkDescriptorPoolSize, 2> sizes{{
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, uint32_t(4 * setCount)},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, uint32_t(setCount)}
+    }};
     VkDescriptorPoolCreateInfo pool{};
     pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool.maxSets = uint32_t(setCount);
-    pool.poolSizeCount = 1;
-    pool.pPoolSizes = &size;
+    pool.poolSizeCount = uint32_t(sizes.size());
+    pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device, &pool, nullptr, &pool_), "failed to create HDR descriptor pool");
 
     VkSamplerCreateInfo sampler{};
@@ -246,7 +265,8 @@ void HdrComposition::createLayouts(std::size_t setCount) {
 }
 
 VkDescriptorSet HdrComposition::descriptors(VkImageView source, VkImageView second,
-                                            VkImageView third, bool lookup) const {
+                                            VkImageView third, bool lookup,
+                                            VkImageView depth, VkBuffer sceneUniform) const {
     const auto device = context_.device();
     VkDescriptorSetAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -255,12 +275,13 @@ VkDescriptorSet HdrComposition::descriptors(VkImageView source, VkImageView seco
     allocate.pSetLayouts = &setLayout_;
     VkDescriptorSet set = VK_NULL_HANDLE;
     check(vkAllocateDescriptorSets(device, &allocate, &set), "failed to allocate HDR descriptor set");
-    const std::array views{source, second ? second : source, third ? third : source};
-    std::array<VkDescriptorImageInfo, 3> images{};
-    std::array<VkWriteDescriptorSet, 3> writes{};
-    for (uint32_t i = 0; i < writes.size(); ++i) {
-        images[i] = {lookup && i == 2 ? nearestSampler_ : linearSampler_,
-                     views[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const std::array views{source, second ? second : source, third ? third : source, depth};
+    std::array<VkDescriptorImageInfo, 4> images{};
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    const uint32_t imageCount = depth ? 4 : 3;
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        const bool nearest = i == 3 || (lookup && i == 2);
+        images[i] = {nearest ? nearestSampler_ : linearSampler_, views[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = set;
         writes[i].dstBinding = i;
@@ -268,14 +289,26 @@ VkDescriptorSet HdrComposition::descriptors(VkImageView source, VkImageView seco
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &images[i];
     }
-    vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+    const VkDescriptorBufferInfo uniform{sceneUniform, 0, sizeof(UniformBufferObject)};
+    uint32_t writeCount = imageCount;
+    if (sceneUniform) {
+        VkWriteDescriptorSet& write = writes[writeCount++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = 4;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &uniform;
+    }
+    vkUpdateDescriptorSets(device, writeCount, writes.data(), 0, nullptr);
     return set;
 }
 
-VkPipeline HdrComposition::createPipeline(VkRenderPass pass, const ShaderLookup& shader, const char* fragment) {
+VkPipeline HdrComposition::createPipeline(VkRenderPass pass, const ShaderLookup& shader, const char* fragment,
+                                          const char* vertexShader) {
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages{{
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
-         shader("shader_fullscreen.vert"), "main", nullptr},
+         shader(vertexShader), "main", nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
          shader(fragment), "main", nullptr}
     }};
@@ -438,7 +471,8 @@ void Renderer::configureHdrComposition() {
         return;
     }
     hdrComposition_ = std::make_unique<HdrComposition>(
-        *context_, *swapChain_, hdrSettings_, [this](const char* name) { return shaderModule(name); }
+        *context_, *swapChain_, hdrSettings_, uniformBuffers_,
+        [this](const char* name) { return shaderModule(name); }
     );
     if (hdrSkyboxPipeline_ == VK_NULL_HANDLE) {
         const VkRenderPass pass = hdrComposition_->geometryPass();

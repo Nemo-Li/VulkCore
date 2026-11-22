@@ -30,7 +30,7 @@ void Renderer::createDescriptorSetLayout() {
     bindings[2].binding = 2;
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     bindings[3].binding = 3;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -45,7 +45,7 @@ void Renderer::createDescriptorSetLayout() {
     bindings[5].binding = 5;
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[5].descriptorCount = 1;
-    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     bindings[6].binding = 6;
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -440,7 +440,10 @@ void Renderer::discoverShaderBinaries() {
         // Full-screen demo shaders use a different vertex interface and are
         // owned by the post-process pipeline, not by mesh materials.
         if (shaderName.starts_with("sun_caster_") || shaderName == "shader_fullscreen.vert" ||
+            shaderName == "shader_postprocess.vert" ||
             shaderName == "shader_postprocess.frag" ||
+            shaderName == "shader_hdr_composite.vert" ||
+            shaderName == "shader_hdr_composite.frag" ||
             shaderName == "shader_skybox.vert" ||
             shaderName == "shader_skybox.frag") {
             continue;
@@ -855,7 +858,7 @@ void Renderer::createPostProcessPipeline() {
     VkPipelineShaderStageCreateInfo vertexStage{};
     vertexStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertexStage.module = shaderModule("shader_fullscreen.vert");
+    vertexStage.module = shaderModule("shader_postprocess.vert");
     vertexStage.pName = "main";
 
     VkPipelineShaderStageCreateInfo fragmentStage{};

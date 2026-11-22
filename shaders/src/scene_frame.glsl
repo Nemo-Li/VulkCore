@@ -1,8 +1,12 @@
 #ifndef VULKCORE_SCENE_FRAME_GLSL
 #define VULKCORE_SCENE_FRAME_GLSL
 
+#ifndef VULKCORE_SCENE_FRAME_BINDING
+#define VULKCORE_SCENE_FRAME_BINDING 0
+#endif
+
 // 与 CPU 的 UniformBuffer.hpp 保持相同的 std140 布局。
-layout(set = 0, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = VULKCORE_SCENE_FRAME_BINDING) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 projection;

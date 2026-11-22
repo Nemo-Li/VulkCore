@@ -1,8 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "solar_flare.glsl"
 
 // 旧版全屏后处理。从场景颜色和深度快照读取数据，同一遍绘制按 effect 选择一个预设。
 
 layout(location = 0) in vec2 fragTexCoord;
+layout(location = 1) flat in vec4 solarFlare;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
@@ -89,9 +93,10 @@ void main() {
     vec2 uv = fragTexCoord;
     vec2 split = vec2(clamp(settings.options.x, 0.05, 0.95), 0.0);
     vec3 original = sampleColor(uv);
-    // 分屏左侧直接输出原场景，遮住预设的处理结果并跳过滤波采样。
+    vec3 flare = solarFlareRadiance(uv, solarFlare);
+    // 分屏左侧跳过实验预设，保留场景的镜头光晕。
     if (settings.splitEnabled > 0.5 && uv.x < split.x) {
-        outColor = vec4(original, 1.0);
+        outColor = vec4(original + flare, 1.0);
         return;
     }
 
@@ -253,5 +258,5 @@ void main() {
         color = vec3(edge) + vec3(0.08, 0.22, 0.38) * depth;
     }
 
-    outColor = vec4(max(color, vec3(0.0)), 1.0);
+    outColor = vec4(max(color + flare, vec3(0.0)), 1.0);
 }

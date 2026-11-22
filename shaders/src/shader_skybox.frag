@@ -4,6 +4,7 @@
 // 在天空背景中合成纬向渐变、方向散射、太阳盘与云雾。
 
 #include "scene_fog.glsl"
+#include "solar_disk.glsl"
 
 // 先做深度测试，可跳过已被近处几何遮挡的天空和椭球相交计算。
 layout(early_fragment_tests) in;
@@ -28,9 +29,9 @@ void main() {
     // fwidth 估算一个像素内的弦长变化，以此软化日盘边缘并减轻锯齿。
     float sunDistance = length(ray - sun);
     float edge = max(0.001, fwidth(sunDistance));
-    float disk = 1.0 - smoothstep(0.009 - edge, 0.009 + edge, sunDistance);
-    float sunVisibility = smoothstep(-0.03, 0.03, sun.y);
-    color += sunlight * vec3(1.0, 0.91, 0.73) * sunVisibility *
+    float disk = 1.0 - smoothstep(solarDiskRadius - edge, solarDiskRadius + edge, sunDistance);
+    float sunVisibility = solarElevationFade(sun.y);
+    color += sunlight * vec3(1.0, 0.97, 0.86) * sunVisibility *
         (2.8 * disk + 0.18 * miePhase(sunCosine, 0.91));
 
     // 背景没有实际表面交点，分别给贴地浮雾和高空云设定路径上限。

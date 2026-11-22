@@ -1,8 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
-// HDR 呈现阶段。先做可选的 SMAA 邻域混合，再在线性空间叠加 Bloom。
+#include "solar_flare.glsl"
+
+// HDR 呈现阶段。先做可选的 SMAA 邻域混合，再在线性空间叠加 Bloom 和镜头光晕。
 
 layout(location = 0) in vec2 uv;
+layout(location = 1) flat in vec4 solarFlare;
 layout(location = 0) out vec4 outColor;
 layout(binding = 0) uniform sampler2D source;
 layout(binding = 1) uniform sampler2D bloom;
@@ -35,8 +39,9 @@ vec3 linearToSrgb(vec3 color) {
 void main() {
     vec3 color = texture(source, uv).rgb;
     if (parameters.value.y > 0.5) color = neighborhood(color);
-    // 线性域的 Bloom 加法完成后截到显示范围。UNORM 目标由 shader 编码，sRGB 目标由附件格式编码。
-    color = clamp(color + texture(bloom, uv).rgb * parameters.value.x, 0.0, 1.0);
+    // 线性域的加法完成后截到显示范围。UNORM 目标由 shader 编码，sRGB 目标由附件格式编码。
+    color += texture(bloom, uv).rgb * parameters.value.x + solarFlareRadiance(uv, solarFlare);
+    color = clamp(color, 0.0, 1.0);
     if (parameters.value.z > 0.5) color = linearToSrgb(color);
     outColor = vec4(color, 1.0);
 }

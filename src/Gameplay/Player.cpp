@@ -22,7 +22,8 @@ constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
 constexpr float kCameraTargetHeight = 0.92f;
 constexpr float kCameraCollisionRadius = 0.25f;
-constexpr float kMinCameraElevation = 5.0f * kPi / 180.0f;
+// Negative orbit elevation lets the player tilt up toward the sky. The terrain sweep still limits the camera arm.
+constexpr float kMinCameraElevation = -35.0f * kPi / 180.0f;
 constexpr float kMaxCameraElevation = 65.0f * kPi / 180.0f;
 constexpr float kInitialCameraElevation = 15.0f * kPi / 180.0f;
 constexpr float kFallbackRunCycleSeconds = 0.9f;

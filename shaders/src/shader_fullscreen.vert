@@ -1,6 +1,6 @@
 #version 450
 
-// 旧版后处理和 HDR 全屏通道共用的顶点阶段。
+// HDR 滤波通道共用的顶点阶段。
 
 layout(location = 0) out vec2 fragTexCoord;
 

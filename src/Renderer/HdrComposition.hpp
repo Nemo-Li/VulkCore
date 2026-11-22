@@ -11,6 +11,7 @@
 
 namespace VulkCore {
 
+class Buffer;
 class SwapChain;
 class Texture;
 class VulkanContext;
@@ -24,6 +25,7 @@ public:
     static bool supported(const VulkanContext& context);
     HdrComposition(VulkanContext& context, const SwapChain& swapChain,
                    const HdrSettings& settings,
+                   const std::vector<std::unique_ptr<Buffer>>& sceneUniforms,
                    const ShaderLookup& shader);
     ~HdrComposition();
 
@@ -66,9 +68,11 @@ private:
     void createTarget(Target& target, VkExtent2D extent, VkRenderPass pass, VkFormat color,
                       VkFormat depth = VK_FORMAT_UNDEFINED);
     void createLayouts(std::size_t setCount);
-    VkPipeline createPipeline(VkRenderPass pass, const ShaderLookup& shader, const char* fragment);
+    VkPipeline createPipeline(VkRenderPass pass, const ShaderLookup& shader, const char* fragment,
+                              const char* vertexShader = "shader_fullscreen.vert");
     VkDescriptorSet descriptors(VkImageView source, VkImageView second = VK_NULL_HANDLE,
-                                VkImageView third = VK_NULL_HANDLE, bool lookup = false) const;
+                                VkImageView third = VK_NULL_HANDLE, bool lookup = false,
+                                VkImageView depth = VK_NULL_HANDLE, VkBuffer sceneUniform = VK_NULL_HANDLE) const;
     void run(VkCommandBuffer commands, const Target& target, VkRenderPass pass, VkPipeline pipeline,
              VkDescriptorSet set, const glm::vec4& parameters = {}) const;
     void draw(VkCommandBuffer commands, VkExtent2D extent, VkPipeline pipeline, VkDescriptorSet set,
