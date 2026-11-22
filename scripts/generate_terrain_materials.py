@@ -116,29 +116,31 @@ def render_landform(name, tile):
         color += ((wisps - 0.5) * 8 + (grain - 0.5) * 6)[..., None] * [0.85, 1, 0.5]
         return color, micro_relief * 0.58 + leaf_height * 0.024 + wisps * 0.014, 4.4, 0.20
     if name == "dirt":
-        chips, relief, tone = tile.stones(29, 24, 0.75, 1.28)
-        streaks = tile.noise(17, 35, warp)
-        color = palette(pigment * 0.82 + streaks * 0.18, "7a5b3e", "a18055", "ba9b65", "d5bc84")
-        color = blend(color, palette(tone, "867455", "ab986e", "d2bb8b"), chips * 0.48)
-        return color, micro_relief * 0.71 + relief * 0.106 + streaks * 0.024, 5.0, 0.32
+        chips, relief, tone = tile.stones(34, 29, 0.54, 1.21)
+        streaks = tile.noise(15, 29, warp)
+        crust = smooth(0.39, 0.71, 0.66 * streaks + 0.34 * field)
+        color = palette(pigment, "8c6945", "b3915d", "cba771", "e4c58d")
+        color = blend(color, palette(brush, "b18754", "d7b479", "e8cb95"), crust * 0.37)
+        color = blend(color, palette(tone, "998566", "bda87f", "d5c298"), chips * 0.34)
+        return color, micro_relief * 0.72 + relief * 0.076 + crust * 0.039, 4.8, 0.29
     if name == "rock":
         fracture_warp = (
-            0.075 * (tile.noise(8, 9, warp) - 0.5),
-            0.075 * (tile.noise(9, 8, warp) - 0.5),
+            0.10 * (tile.noise(6, 8, warp) - 0.5),
+            0.075 * (tile.noise(8, 6, warp) - 0.5),
         )
-        edge, face_tone = tile.rock_faces(8, fracture_warp)
-        mottling = tile.noise(12, 12, warp)
-        # Fade across the boundary so only the broken joints have hard edges.
-        face = (face_tone - 0.5) * smooth(0, 0.21, edge)
-        exposed = smooth(0.29, 0.68, 0.55 * brush + 0.45 * grain)
-        joints = (1 - smooth(0.013, 0.060, edge)) * exposed
-        stone = 0.65 * pigment + 0.20 * mottling + 0.15 * grain + 0.14 * face
-        color = palette(stone, "535c5b", "747c77", "9b9c91", "b2ab96")
-        minerals = smooth(0.58, 0.81, 0.60 * mottling + 0.30 * brush + 0.10 * grain)
-        color = blend(color, palette(grain, "938772", "a79b80", "b6aa8a"), minerals * 0.40)
-        color -= (joints * 24)[..., None] * [0.94, 1, 1.07]
-        height = micro_relief * 0.80 + face * 0.035 + mottling * 0.055 - joints * 0.058
-        return color, height, 7.2, 0.43
+        edge, face_tone = tile.rock_faces(6, fracture_warp)
+        mottling = tile.noise(12, 16, warp)
+        # Give each exposed slab a broad value and break up its joints with weathering.
+        face = (face_tone - 0.5) * smooth(0.0, 0.26, edge)
+        exposed = smooth(0.23, 0.70, 0.62 * mottling + 0.38 * brush)
+        joints = (1 - smooth(0.015, 0.070, edge)) * exposed
+        stone = 0.58 * field + 0.25 * mottling + 0.13 * brush + 0.04 * grain + 0.23 * face
+        color = palette(stone, "4d5758", "737f80", "9ba09a", "adaea1")
+        minerals = smooth(0.54, 0.81, 0.61 * mottling + 0.39 * brush)
+        color = blend(color, palette(brush, "928677", "ad9e84", "bcb29c"), minerals * 0.43)
+        color -= (joints * 22)[..., None] * [0.94, 1, 1.06]
+        height = micro_relief * 0.53 + face * 0.069 + mottling * 0.044 - joints * 0.049
+        return color, height, 6.1, 0.36
     if name == "sand":
         phase = tile.y * 18 + tile.x * 2 + (field - 0.5) * 2.3 + (brush - 0.5) * 0.46
         ripple = smooth(-0.72, 0.86, np.sin(phase * (2 * np.pi)))

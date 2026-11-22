@@ -103,18 +103,18 @@ void main() {
         sunlight *= sunVisibility(shadedPosition, receiverNormal);
         vec3 color = vec3(0.0);
         if (detail > 0.0) {
-            vec3 tint = vec3(0.205, 0.386, 0.058);
+            vec3 tint = vec3(0.192, 0.365, 0.075);
             if (fragTint.a > 0.5) {
                 // 将导入色解码至线性 RGB，保留地图给草叶指定的局部色相。
                 vec3 rgb = fragTint.rgb;
                 vec3 linearTint = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)),
                                       greaterThan(rgb, vec3(0.04045)));
-                tint = mix(tint, linearTint * vec3(0.68, 0.77, 0.57), 0.65);
+                tint = mix(tint, linearTint * vec3(0.64, 0.74, 0.65), 0.65);
             }
             float coolGreen = smoothstep(0.74, 0.97, fragPalette.y);
             tint *= mix(vec3(1.0), vec3(0.81, 0.93, 0.65), coolGreen);
             float tipLight = smoothstep(0.03, 0.94, bladeHeight);
-            float shade = mix(0.76, 1.12, tipLight) * mix(0.82, 1.16, variation) * mix(0.96, 1.02, fragBladeUv.x);
+            float shade = mix(0.68, 1.12, tipLight) * mix(0.82, 1.16, variation) * mix(0.96, 1.02, fragBladeUv.x);
             float diffuse = mix(0.22, 0.78, meadowDiffuse(facing));
             vec3 lighting = ambient + sunlight * (diffuse + (backLight + rim) * 0.35);
             color += detail * tint * shade * bladeTexture * material.baseColor.rgb * lighting;

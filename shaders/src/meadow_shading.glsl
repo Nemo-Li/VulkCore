@@ -28,7 +28,7 @@ vec3 meadowGroundAlbedo(vec2 groundPosition, float distanceWorld, vec2 fadeRange
         color += coarseWeight * textureLod(grassGroundTexture, uv / 24.0, max(0.0, mip - log2(24.0))).rgb;
     }
     // 在线性空间校正高亮地表贴图，避免接近直射光时草甸过曝。
-    return color * vec3(0.55, 0.59, 0.63);
+    return color * vec3(0.53, 0.58, 0.67);
 }
 
 vec3 meadowGroundTint(vec3 albedo, float detail) {

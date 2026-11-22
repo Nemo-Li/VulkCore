@@ -37,6 +37,7 @@ const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
 const uint kMacroTexture = 32u;
 const int kGrassLayer = 0;
+const int kDirtLayer = 1;
 const int kRockLayer = 2;
 // 三个投影分别丢弃 X、Y、Z 分量。基向量把二维纹理梯度放回对应的三维平面。
 const mat2x3 kProjectionBases[3] = mat2x3[3](
@@ -46,16 +47,16 @@ const mat2x3 kProjectionBases[3] = mat2x3[3](
 );
 // 生成贴图的线性 RGB 均值，顺序与纹理数组和 landforms 一致。
 const vec3 kLandformAverages[kLandformCount] = vec3[kLandformCount](
-    vec3(0.239, 0.358, 0.101), vec3(0.423, 0.276, 0.115),
-    vec3(0.246, 0.261, 0.226), vec3(0.634, 0.436, 0.179),
+    vec3(0.239, 0.358, 0.101), vec3(0.540, 0.350, 0.147),
+    vec3(0.252, 0.278, 0.260), vec3(0.634, 0.436, 0.179),
     vec3(0.627, 0.731, 0.765), vec3(0.170, 0.130, 0.063),
     vec3(0.316, 0.283, 0.191), vec3(0.173, 0.125, 0.102)
 );
+const vec3 kGrassArrayAverage = vec3(0.463, 0.602, 0.199);
 // 远景草色取自线性色样，并按场景光照和雾调节强度。
-const vec3 kDistantGrassAlbedoScale = vec3(0.88, 0.91, 0.84);
-const vec3 kDistantGrassDark = vec3(0.366, 0.527, 0.254) * kDistantGrassAlbedoScale;
-const vec3 kDistantGrassLight = vec3(0.413, 0.584, 0.279) * kDistantGrassAlbedoScale;
-const vec3 kFarMeadowAlbedo = vec3(0.32, 0.36, 0.25);
+const vec3 kDistantGrassDark = vec3(0.29, 0.40, 0.145);
+const vec3 kDistantGrassLight = vec3(0.36, 0.49, 0.190);
+const vec3 kFarMeadowAlbedo = vec3(0.26, 0.39, 0.16);
 const vec3 kLuminance = vec3(0.2126, 0.7152, 0.0722);
 
 float hash21(vec2 cell) {
@@ -236,65 +237,74 @@ void main() {
     if (hasMacro) {
         controls = texture(textureSampler, fragTerrainMapping.zw);
     }
+    // 地貌权重使用固定的地形坐标。相机距离只控制细节，不改变草、土、岩的边界。
     vec2 facePosition = groundPosition + elevation * vec2(0.51, -0.67);
     float ledge = valueNoise(facePosition * vec2(1.0 / 92.0, 1.0 / 65.0));
-    float patchNoise = mix(valueNoise(facePosition / 23.0), ledge, distanceFade * 0.86);
-    float brush = mix(0.5, valueNoise(facePosition / 5.3), detailWeight);
+    vec2 edgeWarp = vec2(ledge - 0.5, controls.b - 0.5);
+    vec2 weatheredPosition = facePosition + 37.0 * edgeWarp;
+    float patchNoise = mix(valueNoise(weatheredPosition / 31.0), ledge, 0.35);
+    float edgeBreakup = mix(0.5, valueNoise(weatheredPosition / 10.0),
+                            1.0 - smoothstep(2.0, 9.0, footprint));
     float contrast = mix(0.92, 1.10, clamp(fragVertexColor.w / 1.63, 0.0, 1.0));
-    float cover = 0.5 + (0.46 * controls.r + 0.21 * controls.b + 0.24 * patchNoise + 0.09 * brush - 0.5) *
-                  contrast + (clamp(fragVertexColor.z, 0.0, 1.0) - 0.5) * 0.05;
+    float cover = mix(patchNoise, controls.r, 0.60) - 0.12 * (controls.b - 0.5);
+    cover = 0.5 + (cover - 0.5) * contrast + (clamp(fragVertexColor.z, 0.0, 1.0) - 0.5) * 0.05;
     float lowland = 1.0 - smoothstep(80.0, 200.0, elevation);
     float highland = smoothstep(305.0, 510.0, elevation);
-    float brokenSlope = slope + (ledge - 0.5) * 0.14 + (patchNoise - 0.5) * 0.09 + (brush - 0.5) * 0.04;
+    float brokenSlope = slope + (ledge - 0.5) * 0.11 + (patchNoise - 0.5) * 0.11;
     // 积雪优先覆盖高处缓坡。区域控制和噪声改变雪线，陡峭崖面保留裸岩。
     float snowElevation = elevation + (controls.r - 0.5) * 120.0 + (ledge - 0.5) * 88.0;
     float snow = smoothstep(600.0, 760.0, snowElevation) * (1.0 - smoothstep(0.10, 0.37, brokenSlope));
     // 植被密集时提高露岩所需的坡度。剩余覆盖按优先级依次分给灰、沙、泥、砾石、土和草。
     // 每次只从剩余份额中分配，确保地貌权重总和为 1。
-    float vegetation = smoothstep(0.31, 0.61, cover);
-    float rock = (1.0 - snow) * smoothstep(0.18 + 0.15 * vegetation, 0.52 + 0.15 * vegetation, brokenSlope);
+    float vegetation = smoothstep(0.31, 0.64, cover);
+    float cliff = smoothstep(0.13 + 0.10 * vegetation, 0.37 + 0.12 * vegetation, brokenSlope);
+    float highlandExposure = highland * smoothstep(0.055, 0.27, brokenSlope) * (1.0 - 0.42 * vegetation);
+    float rock = (1.0 - snow) * max(cliff, highlandExposure);
     float ground = max(0.0, 1.0 - snow - rock);
-    float ash = ground * highland * smoothstep(0.65, 0.84, controls.g) *
-                smoothstep(0.10, 0.25, brokenSlope) * 0.66;
+    float ash = ground * highland * smoothstep(0.68, 0.88, controls.g) *
+                smoothstep(0.14, 0.32, brokenSlope) * 0.48;
     ground -= ash;
-    float sand = ground * lowland * smoothstep(0.64, 0.85, controls.b) * (1.0 - 0.65 * vegetation);
+    float sand = ground * lowland * smoothstep(0.67, 0.88, controls.b) * (1.0 - 0.65 * vegetation);
     ground -= sand;
-    float mud = ground * lowland * smoothstep(0.65, 0.88, controls.r) * (1.0 - vegetation * 0.65);
+    float mud = ground * lowland * smoothstep(0.70, 0.91, controls.r) * (1.0 - vegetation * 0.65);
     ground -= mud;
-    float gravel = ground * smoothstep(0.13, 0.39, brokenSlope) *
-                   smoothstep(0.25, 0.64, controls.b) * (1.0 - 0.52 * vegetation);
+    float gravel = ground * smoothstep(0.15, 0.39, brokenSlope) *
+                   smoothstep(0.41, 0.74, controls.b) * (1.0 - 0.55 * vegetation);
     ground -= gravel;
-    float erosion = 0.27 * controls.b + 0.24 * patchNoise + 0.27 * (1.0 - controls.r) + 0.54 * brokenSlope;
-    float dirt = ground * smoothstep(0.40, 0.66, erosion) * 0.86;
+    // 裸土形成连续的冲蚀色块。起伏沿边界展开，高频只调节色块内部的明暗。
+    float erosion = 0.42 * controls.b + 0.33 * patchNoise +
+                    0.30 * (1.0 - cover) + 0.37 * brokenSlope;
+    float dirt = ground * smoothstep(0.52, 0.74, erosion);
     float grass = ground - dirt;
-
-    // 中远景向裸岩转移部分草地和土壤权重，使山体轮廓在近处细节淡出后仍清晰。
-    float mountainSlope = smoothstep(0.035, 0.19, brokenSlope);
-    float mountain = max(mountainSlope, smoothstep(135.0, 395.0, elevation));
-    float distantMountain = smoothstep(60.0, 375.0, distanceWorld) * mountain;
-    float cliff = smoothstep(0.095, 0.32, brokenSlope);
-    float exposure = max(distantMountain * mix(0.96, 0.78, vegetation), cliff * 0.59);
-    float exposedGrass = grass * exposure;
-    float exposedDirt = dirt * exposure * mountainSlope * 0.79;
-    float stoneShare = mix(0.72, 0.96, mountainSlope);
-    grass -= exposedGrass;
-    rock += exposedGrass * stoneShare + exposedDirt;
-    dirt += exposedGrass * (1.0 - stoneShare) - exposedDirt;
     float landforms[kLandformCount] = float[kLandformCount](
         grass, dirt, rock, sand, snow, mud, gravel, ash
     );
 
-    // 用旋转、扭曲后的中尺度噪声模拟矿物色带和风化，超出近景贴图范围后仍有地貌变化。
+    // 岩层沿海拔展开，走向缓慢偏移。颜色带跨地形块连续，且不随三平面随机旋转。
     const mat2 turnRock = mat2(0.8, 0.6, -0.6, 0.8);
-    vec2 mineralPosition = turnRock * facePosition;
+    vec2 rockStrike = turnRock * groundPosition;
+    float stratumWarp = valueNoise(rockStrike / vec2(190.0, 127.0));
+    vec2 mineralPosition = turnRock * weatheredPosition;
     vec2 mineralWarp = vec2(ledge, valueNoise(mineralPosition / 53.0 + vec2(13.6, 24.8))) - 0.5;
-    float mineral = valueNoise(mineralPosition / 34.0 + mineralWarp * 1.8);
-    float warmStone = smoothstep(0.36, 0.71, 0.72 * controls.g + 0.15 * mineral + 0.13 * highland);
-    vec3 rockTint = mix(vec3(0.88, 0.99, 1.06), vec3(1.72, 0.78, 0.69), warmStone);
-    float bedHeight = (elevation + (region - 0.5) * 50.0 + mineralWarp.y * 37.0) / 32.0;
-    float bed = valueNoise(vec2(bedHeight, mineralPosition.x / 130.0 + mineralWarp.x));
-    float weathering = 0.22 * (mineral - 0.5) + 0.13 * (brush - 0.5);
-    rockTint *= mix(0.82, 1.13, smoothstep(0.24, 0.78, bed)) * (1.0 + weathering);
+    float mineral = valueNoise(mineralPosition / 39.0 + mineralWarp * 1.4);
+    float ironContent = 0.85 * controls.g + 0.15 * mineral + 0.16 * highland;
+    float warmStone = smoothstep(0.49, 0.72, ironContent);
+    vec3 rockTint = mix(vec3(0.94, 1.01, 1.10), vec3(1.64, 0.91, 0.83), warmStone);
+    float beddingHeight = elevation + (controls.g - 0.5) * 45.0 + (stratumWarp - 0.5) * 27.0;
+    vec2 bedsUv = vec2(rockStrike.x / 150.0, beddingHeight / 29.0);
+    vec2 seamsUv = vec2(rockStrike.x / 205.0, beddingHeight / 10.0);
+    vec3 beds = valueNoiseWithGradient(bedsUv);
+    float seams = valueNoise(seamsUv + vec2(3.5, 7.8));
+    float bandStrength = (0.22 + 0.78 * warmStone) * smoothstep(0.10, 0.39, brokenSlope);
+    float bedsVisible = bandStrength * (1.0 - smoothstep(0.23, 0.86, length(fwidth(bedsUv))));
+    float seamsVisible = bandStrength * (1.0 - smoothstep(0.20, 0.75, length(fwidth(seamsUv))));
+    float bandColor = 1.0 + 0.56 * (beds.x - 0.5) * bedsVisible +
+                      0.16 * (smoothstep(0.45, 0.79, seams) - 0.5) * seamsVisible;
+    rockTint *= bandColor * (0.92 + 0.16 * mineral);
+    vec3 dirtTint = mix(vec3(0.93, 0.91, 0.86), vec3(1.07, 1.01, 0.88), controls.b);
+    // 高处的风化岩屑偏灰，山脚和缓坡保留暖色干土。
+    dirtTint *= mix(vec3(1.0), vec3(0.76, 0.86, 1.10), highland);
+    dirtTint *= 1.0 + 0.19 * (ledge - 0.5) + 0.12 * (edgeBreakup - 0.5);
 
     // 归一化 |N|⁴ 后按轴混合投影，突出最正对表面的投影。平滑压低弱轴以少采样并减轻拉伸。
     vec3 axes = pow(abs(geometryNormal), vec3(4.0));
@@ -303,8 +313,8 @@ void main() {
     bool hasSurfaceLayers = (material.textureFlags & kSurfaceLayers) != 0u && hasAlbedo;
 
     // 岩板使用更大的投影尺度，竖向周期较短以表现层理。用区域扰动打散规则裂纹。
-    vec3 rockPosition = terrainPosition / vec3(82.0, 42.0, 82.0) +
-                        0.27 * vec3(mineralWarp.x, mineral - 0.5, mineralWarp.y);
+    vec3 rockPosition = terrainPosition / vec3(88.0, 49.0, 88.0) +
+                        0.23 * vec3(mineralWarp.x, mineral - 0.5, mineralWarp.y);
     Projection rockProjections[3] = Projection[3](
         projectUv(rockPosition.zy), projectUv(rockPosition.xz), projectUv(rockPosition.xy)
     );
@@ -327,9 +337,12 @@ void main() {
         float visibility = rockDetail * smoothstep(0.01, 0.10, rock);
         // 用贴图均值把岩板色转为相对倍率，保留由区域控制图计算出的岩石底色。
         vec3 stoneTexture = slabColor / kLandformAverages[kRockLayer];
-        rockTint *= mix(vec3(1.0), clamp((stoneTexture - 1.0) * 1.55 + 1.0, 0.42, 1.54), visibility);
-        slabBump = slabGradient * (2.6 * rock * visibility);
-        rockVisibility = 1.0 - rock * visibility * min(0.55, cavity * 2.5);
+        // 近处以细节纹理为主，远处让出对比度给岩层、剪影和雾。
+        float slabContrast = mix(0.46, 0.82, smoothstep(35.0, 145.0, distanceWorld)) *
+                             mix(1.0, 0.71, distanceFade);
+        rockTint *= mix(vec3(1.0), clamp((stoneTexture - 1.0) * slabContrast + 1.0, 0.60, 1.38), visibility);
+        slabBump = slabGradient * (1.35 * rock * visibility);
+        rockVisibility = 1.0 - rock * visibility * min(0.36, cavity * 1.65);
     }
 
     // 程序草提供地表草贴图淡出后的底色和中尺度凹凸，并在最远处收敛到低对比颜色。
@@ -357,11 +370,13 @@ void main() {
     }
 
     // 先混合宏观底色，再按距离和像素尺寸决定是否为各材质和投影轴补采细节。
+    vec3 layerTint[kLandformCount] = vec3[kLandformCount](
+        vec3(1.0), dirtTint, rockTint, vec3(1.0), vec3(1.0), vec3(1.0), vec3(1.0), vec3(1.0)
+    );
     vec3 macroAlbedo = vec3(0.0);
     for (int layer = 0; layer < kLandformCount; ++layer) {
         vec3 layerAlbedo = layer == kGrassLayer ? grassAlbedo : kLandformAverages[layer];
-        if (layer == kRockLayer) layerAlbedo *= rockTint;
-        macroAlbedo += landforms[layer] * layerAlbedo;
+        macroAlbedo += landforms[layer] * layerAlbedo * layerTint[layer];
     }
 
     float surfaceFade = (1.0 - smoothstep(28.0, 110.0, distanceWorld)) * detailWeight;
@@ -394,16 +409,14 @@ void main() {
                 TerrainSample surface = sampleStochasticTerrain(layer, patches, hasAlbedo, sampleSurface, gradientScale);
                 vec3 layerAlbedo = surface.albedo;
                 if (layer == kGrassLayer) {
-                    // 复用细节贴图的明暗变化，保留草叶与地表共享的色相。
-                    float relativeLuminance = dot(surface.albedo, kLuminance) /
-                                              dot(kLandformAverages[kGrassLayer], kLuminance);
+                    // 数组和旧图集的草层来源不同，使用各自的均值归一化明暗变化。
+                    vec3 grassAverage = hasAlbedo ? kGrassArrayAverage : kLandformAverages[kGrassLayer];
+                    float relativeLuminance = dot(surface.albedo, kLuminance) / dot(grassAverage, kLuminance);
                     layerAlbedo = grassAlbedo * mix(1.0, relativeLuminance, 0.65);
-                } else if (isRock) {
-                    layerAlbedo *= rockTint;
                 }
-                detailAlbedo += layerAlbedo * weight;
+                detailAlbedo += layerAlbedo * layerTint[layer] * weight;
                 if (sampleSurface) {
-                    float bumpStrength = layerSurfaceFade * (isRock ? 1.95 : 0.78);
+                    float bumpStrength = layerSurfaceFade * (isRock ? 1.58 : (layer == kDirtLayer ? 1.0 : 0.78));
                     normalOffset += kProjectionBases[axis] * surface.gradient * (weight * bumpStrength);
                     occlusion += (1.0 - surface.occlusion) * (weight * layerSurfaceFade);
                 }
@@ -416,7 +429,9 @@ void main() {
         ao = 1.0 - occlusion * inverseWeight;
     }
     albedo *= mix(0.85, 1.15, controls.a);
-    vec3 bump = normalOffset + slabBump + distantGrassBump;
+    vec3 bedsBump = -vec3(0.8 * beds.y / 150.0, beds.z / 29.0, -0.6 * beds.y / 150.0) *
+                    (5.2 * rock * bedsVisible);
+    vec3 bump = normalOffset + slabBump + bedsBump + distantGrassBump;
     // 将累加的扰动投影到切平面，避免沿原法线的分量改变凹凸强度。
     bump -= geometryNormal * dot(geometryNormal, bump);
     vec3 normal = normalize(geometryNormal + bump);
@@ -424,15 +439,14 @@ void main() {
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float facing = dot(normal, lightDirection);
     // 草地沿用共享的柔和过渡，山体使用更清晰的明暗交界与偏冷的背光填充。
-    float relief = clamp(0.68 * (1.0 - grass) + 0.66 * mountain, 0.0, 1.0);
-    float diffuse = mix(meadowDiffuse(facing), smoothstep(0.04, 0.82, facing), relief);
-    // 岩石使用略压暗的余弦漫反射。凹凸法线影响直射光，表面遮蔽另行调节环境光。
+    float relief = clamp(0.70 * (1.0 - grass) + 0.39 * highland, 0.0, 1.0);
+    float diffuse = mix(meadowDiffuse(facing), smoothstep(0.04, 0.84, facing), relief);
+    // 岩石的背光面以冷色天空填充，迎光面保留矿物色与干燥岩屑的暖色。
     float stoneDiffuse = max(facing, 0.0);
-    stoneDiffuse *= 0.78 + 0.22 * stoneDiffuse;
     diffuse = mix(diffuse, stoneDiffuse, rock);
     float shadedFace = 1.0 - smoothstep(-0.18, 0.49, dot(geometryNormal, lightDirection));
-    float skyVisibility = mix(1.0, mix(0.70, 0.96, up), relief);
-    vec3 shadeTint = mix(vec3(1.0), vec3(0.53, 0.64, 0.80), shadedFace * relief);
+    float skyVisibility = mix(1.0, mix(0.78, 0.98, up), relief);
+    vec3 shadeTint = mix(vec3(1.0), vec3(0.67, 0.76, 0.90), shadedFace * relief);
     vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a * skyVisibility * ao * shadeTint * rockVisibility;
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse *
                     mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility);
