@@ -892,6 +892,18 @@ void Renderer::drawGameInspector() {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
         if (sceneStatusFailed_) ImGui::PopStyleColor();
     }
+    if (!sceneResourceWarnings_.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kEditorFailure);
+        const bool expanded = ImGui::TreeNode("Scene resource warnings", "Skipped resources (%zu)",
+            sceneResourceWarnings_.size());
+        ImGui::PopStyleColor();
+        if (expanded) {
+            for (const auto& warning : sceneResourceWarnings_) {
+                ImGui::TextWrapped("%s", warning.c_str());
+            }
+            ImGui::TreePop();
+        }
+    }
     draw();
     ImGui::PopItemWidth();
 }

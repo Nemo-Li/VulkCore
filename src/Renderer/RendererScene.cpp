@@ -1219,7 +1219,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             std::optional<std::uint32_t> rootNodeId;
             if (suffixStream >> savedRootNodeId) {
                 if (savedRootNodeId == 0 ||
-                    savedRootNodeId > std::numeric_limits<std::uint32_t>::max()) {
+                    savedRootNodeId > std::numeric_limits<std::uint32_t>::max() ||
+                    (savedRootNodeId - 1) % kSceneModelNodeStride != 0) {
                     sceneStatusFailed_ = true;
                     sceneStatus_ = "Scene file has an invalid model root node ID.";
                     return false;
@@ -1348,117 +1349,98 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         sceneHasSun = false;
     }
 
-    if (!terrainPath.empty()) {
-        if (terrainPath.is_relative()) {
-            const std::filesystem::path sceneRelativePath =
-                resolvedScenePath.parent_path() / terrainPath;
-            if (std::filesystem::is_directory(sceneRelativePath, error)) {
-                terrainPath = sceneRelativePath;
-            } else {
-                error.clear();
-                terrainPath = std::filesystem::absolute(terrainPath, error);
-            }
+    sceneResourceWarnings_.clear();
+    const auto resolveSceneAsset = [&](const std::filesystem::path& asset, bool directory = false) {
+        if (!asset.is_relative() || asset.empty()) return normalizedPath(asset);
+        const auto relative = normalizedPath(resolvedScenePath.parent_path() / asset);
+        const auto exists = [&](const std::filesystem::path& candidate) {
+            return directory ? std::filesystem::is_directory(candidate, error) :
+                std::filesystem::is_regular_file(candidate, error);
+        };
+        if (exists(relative)) return relative;
+        // Older scenes can also contain paths relative to the working directory.
+        const auto workingPath = normalizedPath(asset);
+        return exists(workingPath) ? workingPath : relative;
+    };
+    const auto warnResource = [&](std::string_view label, const std::filesystem::path& asset,
+                                  std::string_view detail = "file not found") {
+        const auto message = std::string(label) + ": " + asset.string() + " (" +
+            std::string(detail) + ")";
+        if (std::find(sceneResourceWarnings_.begin(), sceneResourceWarnings_.end(), message) ==
+            sceneResourceWarnings_.end()) {
+            sceneResourceWarnings_.push_back(message);
+            std::cerr << "warning: " << message << '\n';
         }
-        if (!std::filesystem::is_directory(terrainPath, error) ||
-            !std::filesystem::is_regular_file(terrainPath / "MainField.tscb", error)) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Terrain referenced by scene was not found: " +
-                terrainPath.string();
-            return false;
-        }
-        terrainPath = normalizedPath(terrainPath);
+    };
 
-        if (waterPath.empty()) {
-            const std::filesystem::path defaultWaterPath = terrainPath / "terrain_water";
-            if (std::filesystem::is_directory(defaultWaterPath, error)) {
-                waterPath = defaultWaterPath;
-            }
+    terrainPath = resolveSceneAsset(terrainPath, true);
+    const bool terrainReferenced = !terrainPath.empty();
+    bool waterSkipped = false;
+    if (!waterPath.empty()) {
+        waterPath = resolveSceneAsset(waterPath, true);
+        if (!std::filesystem::is_directory(waterPath, error)) {
+            warnResource("Water", waterPath, "directory not found");
+            waterPath.clear();
+            waterSkipped = true;
         }
-        if (!waterPath.empty()) {
-            if (waterPath.is_relative()) {
-                const std::filesystem::path sceneRelativePath =
-                    resolvedScenePath.parent_path() / waterPath;
-                if (std::filesystem::is_directory(sceneRelativePath, error)) {
-                    waterPath = sceneRelativePath;
-                } else {
-                    error.clear();
-                    waterPath = std::filesystem::absolute(waterPath, error);
-                }
-            }
-            if (!std::filesystem::is_directory(waterPath, error)) {
-                sceneStatusFailed_ = true;
-                sceneStatus_ = "Water referenced by scene was not found: " +
-                    waterPath.string();
-                return false;
-            }
-            waterPath = normalizedPath(waterPath);
-        }
-    }
-
-    for (ModelResourceReference& modelReference : modelReferences) {
-        std::filesystem::path& modelPath = modelReference.path;
-        if (modelPath.is_relative()) {
-            const std::filesystem::path sceneRelativePath =
-                resolvedScenePath.parent_path() / modelPath;
-            if (std::filesystem::is_regular_file(sceneRelativePath, error)) {
-                modelPath = sceneRelativePath;
-            } else {
-                error.clear();
-                modelPath = std::filesystem::absolute(modelPath, error);
-            }
-        }
-        if (!std::filesystem::is_regular_file(modelPath, error)) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Model referenced by scene was not found: " + modelPath.string();
-            return false;
-        }
-    }
-    if (!playerModelPath.empty()) {
-        if (playerModelPath.is_relative()) {
-            const std::filesystem::path sceneRelativePath =
-                resolvedScenePath.parent_path() / playerModelPath;
-            if (std::filesystem::is_regular_file(sceneRelativePath, error)) {
-                playerModelPath = sceneRelativePath;
-            } else {
-                error.clear();
-                playerModelPath = std::filesystem::absolute(playerModelPath, error);
-            }
-        }
-        if (!std::filesystem::is_regular_file(playerModelPath, error)) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Player model referenced by scene was not found: " +
-                playerModelPath.string();
-            return false;
-        }
-        playerModelPath = normalizedPath(playerModelPath);
+    } else if (terrainReferenced && std::filesystem::is_directory(terrainPath / "terrain_water", error)) {
+        waterPath = terrainPath / "terrain_water";
     }
 
     std::unique_ptr<TerrainScene> terrain;
-    if (!terrainPath.empty()) {
-        try {
-            terrain = TerrainScene::load(terrainPath / "MainField.tscb", terrainPath, waterPath);
-            if (terrain->tileCount() == 0) throw std::runtime_error("terrain has no heightmap tiles");
-        } catch (const std::exception& terrainError) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Failed to load scene terrain: " + std::string(terrainError.what());
-            return false;
+    if (terrainReferenced) {
+        const auto terrainMap = terrainPath / "MainField.tscb";
+        if (!std::filesystem::is_regular_file(terrainMap, error)) {
+            warnResource("Terrain", terrainMap);
+        } else {
+            try {
+                terrain = TerrainScene::load(terrainMap, terrainPath, waterPath);
+            } catch (const std::exception& terrainError) {
+                warnResource("Terrain", terrainPath, terrainError.what());
+            }
         }
     }
 
     clearSceneData();
     playerSpawnPosition_ = playerSpawnPosition;
-    for (const ModelResourceReference& modelReference : modelReferences) {
-        if (!importModelResource(modelReference.path, modelReference.rootNodeId)) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Failed to load scene model: " + resourceImportStatus_;
-            return false;
+    std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max();
+    const auto markMissingMaterialSlots = [&] {
+        // Saved material overrides use positional indices. The slots owned by
+        // a missing resource cannot be reconstructed from its path alone.
+        firstUnmappedMaterial = std::min(firstUnmappedMaterial, meshData_.materials.size());
+    };
+    for (const auto& modelReference : modelReferences) {
+        const auto modelPath = resolveSceneAsset(modelReference.path);
+        if (!std::filesystem::is_regular_file(modelPath, error)) {
+            warnResource("Model", modelPath);
+        } else if (importModelResource(modelPath, modelReference.rootNodeId)) {
+            continue;
+        } else {
+            warnResource("Model", modelPath, resourceImportStatus_);
+        }
+
+        markMissingMaterialSlots();
+        // Reserve the skipped instance's range so legacy unnumbered models
+        // keep their node IDs and cannot receive its transforms or removals.
+        if (modelReference.rootNodeId) {
+            const auto modelIndex = (*modelReference.rootNodeId - 1u) / kSceneModelNodeStride;
+            nextSceneModelInstanceIndex_ = std::max(nextSceneModelInstanceIndex_, modelIndex + 1u);
+        } else {
+            ++nextSceneModelInstanceIndex_;
         }
     }
+
+    playerModelPath = resolveSceneAsset(playerModelPath);
+    const bool playerModelMissing = !playerModelPath.empty() &&
+        !std::filesystem::is_regular_file(playerModelPath, error);
+    if (playerModelMissing) warnResource("Player model", playerModelPath);
+    if (terrainReferenced && !terrain) markMissingMaterialSlots();
 
     bool generatedGeometryChanged = false;
     if (terrain) {
         try {
             appendTerrainToScene(*terrain, terrainPath);
+            if (waterSkipped) markMissingMaterialSlots();
             appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
             roadPaint_ = std::move(savedRoadPaint);
@@ -1473,15 +1455,11 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 );
                 if (playerModelPath.empty()) {
                     appendPlayerToScene();
-                } else if (!importModelResource(
-                               playerModelPath,
-                               std::nullopt,
-                               true
-                           )) {
-                    sceneStatusFailed_ = true;
-                    sceneStatus_ = "Failed to load player model: " +
-                        resourceImportStatus_;
-                    return false;
+                } else if (playerModelMissing) {
+                    markMissingMaterialSlots();
+                } else if (!importModelResource(playerModelPath, std::nullopt, true)) {
+                    warnResource("Player model", playerModelPath, resourceImportStatus_);
+                    markMissingMaterialSlots();
                 }
                 appendGrassToScene(*terrainScene_);
             }
@@ -1521,16 +1499,39 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     };
     skyboxTexturePath_ = sceneImagePath(skyboxImage);
     grassGroundTexturePath_ = sceneImagePath(grassGroundImage);
-    createSkyboxTexture();
+    if (skyboxEnabled_) {
+        createSkyboxTexture();
+        if (!skyboxTexture_) {
+            warnResource("Skybox", skyboxTexturePath_.empty() ? defaultSkyboxPath() : skyboxTexturePath_,
+                "texture could not be loaded");
+        }
+    } else {
+        skyboxTexture_.reset();
+    }
     if (!grassGroundTexturePath_.empty()) {
         try {
             grassGroundTexture_ = std::make_unique<Texture>(*context_, grassGroundTexturePath_,
                 VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
-        } catch (const std::exception& error) {
-            std::cerr << "warning: failed to load grass ground texture: " << error.what() << '\n';
+        } catch (const std::exception& textureError) {
+            warnResource("Grass ground texture", grassGroundTexturePath_, textureError.what());
         }
     }
-    loadTransformSettings();
+    loadTransformSettings(firstUnmappedMaterial);
+    for (auto& material : meshData_.materials) {
+        bool shaderMissing = false;
+        for (const auto& shaderName : material.shaderConfiguration.shaderNames) {
+            if (shaderName.empty()) continue;
+            const auto shaderPath = std::filesystem::path(kShaderBinaryDirectory) / (shaderName + ".spv");
+            if (!std::filesystem::is_regular_file(shaderPath, error)) {
+                warnResource("Shader", shaderPath);
+                shaderMissing = true;
+            }
+        }
+        if (shaderMissing) {
+            // Fall back as a set so the remaining custom stages have a compatible interface.
+            material.shaderConfiguration = {};
+        }
+    }
     for (const auto& resource : sceneModelResources_) {
         if (!resource.playerModel && std::find(gravityNodeIds.begin(), gravityNodeIds.end(),
             resource.rootNodeId) != gravityNodeIds.end()) {
@@ -1565,13 +1566,32 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         createTornadoMeshEffect(true);
     }
     createPlayerAttackEffect();
-    if (!terrainPath.empty()) {
+    if (terrainScene_) {
         // A game scene starts with a single continuous camera view. The
         // editor's post-process split preview is not part of gameplay.
         postProcessSplitView_ = false;
     }
     createParticleTextures();
+    for (const auto& [nodeId, system] : particleSystems_) {
+        const auto& settings = system.settings();
+        if (!settings.texturePath.empty() && !particleTextures_.contains(nodeId)) {
+            warnResource("Particle texture",
+                settings.texturePath, "texture could not be loaded");
+        }
+    }
     rebuildMaterialResources();
+    const auto checkTexture = [&](const char* label, const std::filesystem::path& texturePath,
+                                  const EmbeddedTextureData& embedded) {
+        if (!texturePath.empty() && embedded.empty() &&
+            !std::filesystem::is_regular_file(texturePath, error)) {
+            warnResource(label, texturePath);
+        }
+    };
+    for (const auto& material : meshData_.materials) {
+        checkTexture("Base color texture", material.texturePath, material.embeddedTexture);
+        checkTexture("Normal texture", material.normalTexturePath, material.embeddedNormalTexture);
+        checkTexture("Specular texture", material.specularTexturePath, material.embeddedSpecularTexture);
+    }
     discoverSceneResources();
     scenePathBuffer_.fill('\0');
     const std::string pathString = currentScenePath_.string();
@@ -1597,7 +1617,7 @@ void Renderer::loadResourceSettings() {
     scenePathBuffer_.fill('\0');
 }
 
-void Renderer::loadTransformSettings() {
+void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
     if (currentScenePath_.empty()) {
         return;
     }
@@ -2249,6 +2269,7 @@ void Renderer::loadTransformSettings() {
         }
     }
     for (PendingMaterial& pending : pendingMaterials) {
+        if (pending.materialIndex >= firstUnmappedMaterial) continue;
         pending.material.baseColor = glm::clamp(
             pending.material.baseColor,
             glm::vec4(0.0f),
@@ -2306,7 +2327,7 @@ void Renderer::loadTransformSettings() {
         }
     }
     for (const MaterialEffect& effect : materialEffects) {
-        if (effect.index >= meshData_.materials.size()) continue;
+        if (effect.index >= firstUnmappedMaterial || effect.index >= meshData_.materials.size()) continue;
         auto& material = meshData_.materials[effect.index];
         const auto& source = effect.settings;
         material.drawBackFacesFirst = source.drawBackFacesFirst;
@@ -2320,7 +2341,8 @@ void Renderer::loadTransformSettings() {
         material.shaderParameters1 = source.shaderParameters1;
     }
     for (const PendingMaterialTextures& pending : pendingMaterialTextures) {
-        if (pending.materialIndex >= meshData_.materials.size()) {
+        if (pending.materialIndex >= firstUnmappedMaterial ||
+            pending.materialIndex >= meshData_.materials.size()) {
             continue;
         }
         MaterialData& material = meshData_.materials[pending.materialIndex];
@@ -2381,7 +2403,8 @@ void Renderer::loadTransformSettings() {
             continue;
         }
         if (material.materialIndex >= 0 &&
-            static_cast<std::size_t>(material.materialIndex) >= meshData_.materials.size()) {
+            static_cast<std::size_t>(material.materialIndex) >=
+                std::min(firstUnmappedMaterial, meshData_.materials.size())) {
             continue;
         }
         node->materialOverride = material.materialIndex;

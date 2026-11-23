@@ -198,7 +198,9 @@ private:
     void applySkyboxTexture(const std::filesystem::path& path);
     void applyGrassGroundTexture(const std::filesystem::path& path);
     void loadResourceSettings();
-    void loadTransformSettings();
+    void loadTransformSettings(
+        std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max()
+    );
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void appendTerrainToScene(
@@ -633,6 +635,7 @@ private:
     std::array<char, 512> scenePathBuffer_{};
     std::string sceneStatus_;
     bool sceneStatusFailed_ = false;
+    std::vector<std::string> sceneResourceWarnings_;
     ResourceSelectionType selectedResourceType_ = ResourceSelectionType::Model;
     ResourceTextureSlot selectedResourceTextureSlot_ = ResourceTextureSlot::BaseColor;
     std::int32_t selectedResourceMaterialIndex_ = -1;
