@@ -913,7 +913,7 @@ bool Renderer::drawFrame() {
         processResourceTransfers();
         processResourceTrash();
         processSceneModelDrop();
-        if (toolUiVisible_ && resourceBrowser_.open) loadResourcePreview();
+        if (toolUiVisible() && resourceBrowser_.open) loadResourcePreview();
         resourceBrowser_.dropZones.clear();
         resourcePreview_.draw = false;
     }
@@ -989,7 +989,7 @@ bool Renderer::drawFrame() {
     );
 #ifndef VULKCORE_OHOS
     if ((playerController_.active() || transitionSettings_.enabled) &&
-        (!toolUiVisible_ || roadEditorActive())) {
+        (!toolUiVisible() || roadEditorActive())) {
         restoreSceneCamera();
     }
 #endif

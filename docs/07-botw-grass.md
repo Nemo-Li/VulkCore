@@ -65,7 +65,7 @@ terrain_grass/5400000000.grass.extm/5400000001.grass.extm
 ./build/vulkcore --scene scenes/game.scene --hide-ui
 ```
 
-不传 `--hide-ui` 时保留编辑器；运行中仍可按 `F1` 切换工具 UI。
+不传 `--hide-ui` 时保留编辑器。窗口模式下可按 `F3` 切换工具 UI，按 `F1` 切换全屏。
 
 ## 6. 当前验证范围
 

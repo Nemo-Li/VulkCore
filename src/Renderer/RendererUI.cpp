@@ -498,18 +498,20 @@ bool Renderer::buildImGuiFrame() {
         return drawModelViewerUi();
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+#ifndef VULKCORE_OHOS
+    if (!fullscreen_ && ImGui::IsKeyPressed(ImGuiKey_F3, false)) {
         toolUiVisible_ = !toolUiVisible_;
         if (!toolUiVisible_) sceneEditMode_ = false;
     }
+#endif
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
-    if (!toolUiVisible_ && effectEditorView_) effectEditorView_->hide();
+    if (!toolUiVisible() && effectEditorView_) effectEditorView_->hide();
 #endif
     const auto& io = ImGui::GetIO();
     const bool sceneShortcuts = io.KeyMods == 0 && !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 #ifndef VULKCORE_OHOS
-    if (sceneShortcuts && fixedFrameOutput_.empty() && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+    if (!fullscreen_ && sceneShortcuts && fixedFrameOutput_.empty() && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         sceneEditMode_ = !sceneEditMode_;
         if (sceneEditMode_) toolUiVisible_ = true;
     }
@@ -533,7 +535,7 @@ bool Renderer::buildImGuiFrame() {
     }
     bool viewportHovered = !io.WantCaptureMouse;
 #ifndef VULKCORE_OHOS
-    if (toolUiVisible_) {
+    if (toolUiVisible()) {
         viewportHovered = drawGameEditor();
     } else
 #endif

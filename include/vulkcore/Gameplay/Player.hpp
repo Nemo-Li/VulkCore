@@ -44,6 +44,9 @@ public:
     static constexpr float kBotwLinkHeight = 1.58f;
     static constexpr float kBotwLinkRadius = 0.27f;
     static constexpr float kCameraDistance = 5.0f;
+    static constexpr float kDefaultMoveSpeedMultiplier = 1.0f;
+    static constexpr float kMinMoveSpeedMultiplier = 0.1f;
+    static constexpr float kMaxMoveSpeedMultiplier = 5.0f;
 
     void clear();
     void reset(
@@ -74,6 +77,8 @@ public:
 
     bool active() const { return active_; }
     bool clickToMoveEnabled() const { return clickToMove_; }
+    float moveSpeedMultiplier() const { return moveSpeedMultiplier_; }
+    void setMoveSpeedMultiplier(float multiplier);
     void setMoveDestination(const glm::vec2& destination) { moveDestination_ = destination; }
     void cancelMove() { moveDestination_.reset(); }
     bool debugModeEnabled() const { return debugModeEnabled_; }
@@ -119,6 +124,7 @@ private:
     float runAnimationTimeSeconds_ = 0.0f;
     float runCycleDurationSeconds_ = 0.0f;
     float runGroundSpeed_ = 0.0f;
+    float moveSpeedMultiplier_ = kDefaultMoveSpeedMultiplier;
     float attackAnimationTimeSeconds_ = 0.0f;
     float tornadoAttackDurationSeconds_ = 0.85f;
     float lightningAttackDurationSeconds_ = 0.72f;

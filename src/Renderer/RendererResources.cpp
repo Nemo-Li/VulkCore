@@ -1766,7 +1766,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     if (effectCamera_ && !roadEditorActive()) {
         glm::vec4 area{0.0f, 0.0f, 1.0f, 1.0f};
 #ifndef VULKCORE_OHOS
-        if (toolUiVisible_ && fixedFrameOutput_.empty()) {
+        if (toolUiVisible() && fixedFrameOutput_.empty()) {
             const auto* viewport = ImGui::GetMainViewport();
             const auto& rect = sceneEditorViewport_;
             if (rect.z > rect.x && rect.w > rect.y && viewport->Size.x > 0 && viewport->Size.y > 0) {

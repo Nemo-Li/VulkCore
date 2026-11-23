@@ -55,7 +55,7 @@ void Renderer::initializeResourceBrowser(const std::filesystem::path& root) {
 
 void Renderer::queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y) {
     auto& browser = resourceBrowser_;
-    if (toolUiVisible_ && browser.open) {
+    if (toolUiVisible() && browser.open) {
         for (auto zone = browser.dropZones.rbegin(); zone != browser.dropZones.rend(); ++zone) {
             if (!zone->contains(x, y)) continue;
             for (auto& path : paths) browser.transfers.push_back({std::move(path), zone->directory, false});

@@ -664,7 +664,7 @@ void Renderer::updatePlayerMoveClick(const glm::mat4& clipFromScene, bool viewpo
     }
     const auto& mouse = ImGui::GetIO().MousePos;
     const auto& area = sceneEditorViewport_;
-    if (toolUiVisible_ && (mouse.x < area.x || mouse.x >= area.z || mouse.y < area.y || mouse.y >= area.w)) {
+    if (toolUiVisible() && (mouse.x < area.x || mouse.x >= area.z || mouse.y < area.y || mouse.y >= area.w)) {
         return;
     }
 
@@ -1204,6 +1204,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
     bool sceneClickToMove = false;
+    float playerMoveSpeedMultiplier = PlayerController::kDefaultMoveSpeedMultiplier;
     RoadPaint savedRoadPaint;
     float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
@@ -1336,6 +1337,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             sceneClickToMove = enabled != 0;
+        } else if (key == "player_move_speed_multiplier") {
+            if (!(sceneFile >> playerMoveSpeedMultiplier) || !std::isfinite(playerMoveSpeedMultiplier) ||
+                playerMoveSpeedMultiplier < PlayerController::kMinMoveSpeedMultiplier ||
+                playerMoveSpeedMultiplier > PlayerController::kMaxMoveSpeedMultiplier) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player move speed multiplier.";
+                return false;
+            }
         } else if (key == "player_spawn_position") {
             glm::vec3 configuredPosition(0.0f);
             if (!(sceneFile >> configuredPosition.x >> configuredPosition.y >> configuredPosition.z) ||
@@ -1518,6 +1527,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 const bool useClickToMove = playerClickToMove_;
 #endif
                 playerController_.reset(*terrainScene_, *physicsWorld_, playerSpawnPosition_, useClickToMove);
+                playerController_.setMoveSpeedMultiplier(playerMoveSpeedMultiplier);
                 if (playerModelPath.empty()) {
                     appendPlayerToScene();
                 } else if (playerModelMissing) {
@@ -2634,6 +2644,9 @@ bool Renderer::saveTransformSettings() const {
         file << "terrain_resource " << std::quoted(terrainReference.generic_string()) << "\n"
              << "player_present " << (playerController_.active() ? 1 : 0) << "\n";
         if (playerClickToMove_) file << "player_click_to_move 1\n";
+        if (playerController_.active()) {
+            file << "player_move_speed_multiplier " << playerController_.moveSpeedMultiplier() << '\n';
+        }
         if (playerSpawnPosition_.has_value()) {
             file << "player_spawn_position " << playerSpawnPosition_->x << ' '
                  << playerSpawnPosition_->y << ' ' << playerSpawnPosition_->z << "\n";

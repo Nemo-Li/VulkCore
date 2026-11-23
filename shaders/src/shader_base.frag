@@ -93,7 +93,7 @@ void main() {
     // Alpha Test 将基础色与遮罩的覆盖率同材质阈值比较，适合镂空边缘和深度写入。
     if ((material.textureFlags & 64u) != 0u) {
         float coverage = texel.a * material.baseColor.a * texture(alphaMask, fragTexCoord).r;
-        if (coverage < material.waterFlow.x) discard;
+        if (coverage <= 0.0 || coverage < material.waterFlow.x) discard;
     }
     // 金属度在这里调节漫反射和镜面权重。waterSurface 在此材质中复用为自发光 RGB 和强度。
     float sunlightVisibility = sunVisibility(fragWorldPosition, shadowNormal);

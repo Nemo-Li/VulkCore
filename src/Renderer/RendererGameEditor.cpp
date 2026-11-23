@@ -212,7 +212,7 @@ bool Renderer::drawGameEditor() {
         }
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Capture screenshot", "F12")) screenshotFromToolbar_ = true;
-            if (ImGui::MenuItem("Hide editor", "F1")) {
+            if (ImGui::MenuItem("Hide editor", "F3")) {
                 toolUiVisible_ = false;
                 sceneEditMode_ = false;
             }
@@ -506,6 +506,7 @@ void Renderer::drawGameOutliner() {
     };
     select("Environment", EditorSelection::Environment);
     if (!currentScenePath_.empty()) select("Skybox", EditorSelection::Skybox);
+    if (playerController_.active()) select("Player Settings", EditorSelection::PlayerSettings);
 
     const auto selectNode = [&](ModelNode& node, std::optional<std::uint32_t> part = std::nullopt) {
         editorSelection_ = EditorSelection::Node;
@@ -842,6 +843,18 @@ void Renderer::drawGameInspector() {
         if (editorSelection_ == EditorSelection::GrassGround) {
             ImGui::SeparatorText("Grass Ground");
             drawGrassGround();
+            return;
+        }
+        if (editorSelection_ == EditorSelection::PlayerSettings && playerController_.active()) {
+            ImGui::SeparatorText("Player Settings");
+            const float previous = playerController_.moveSpeedMultiplier();
+            float multiplier = previous;
+            if (ImGui::SliderFloat("Move Speed", &multiplier,
+                PlayerController::kMinMoveSpeedMultiplier, PlayerController::kMaxMoveSpeedMultiplier,
+                "%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
+                playerController_.setMoveSpeedMultiplier(multiplier);
+                editorDirty_ |= playerController_.moveSpeedMultiplier() != previous;
+            }
             return;
         }
         if (editorSelection_ == EditorSelection::PlayerEffect) {

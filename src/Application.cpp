@@ -9,6 +9,7 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -36,6 +37,33 @@ std::filesystem::path executablePath() {
     return std::filesystem::read_symlink("/proc/self/exe");
 #endif
     throw std::runtime_error("Could not locate the VulkCore executable.");
+}
+
+struct WindowBounds {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+GLFWmonitor* monitorForWindow(const WindowBounds& window) {
+    GLFWmonitor* selected = glfwGetPrimaryMonitor();
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    int largestOverlap = 0;
+    for (int index = 0; index < count; ++index) {
+        GLFWmonitor* monitor = monitors[index];
+        int x = 0, y = 0, width = 0, height = 0;
+        glfwGetMonitorWorkarea(monitor, &x, &y, &width, &height);
+        const int overlapWidth = std::max(0, std::min(window.x + window.width, x + width) - std::max(window.x, x));
+        const int overlapHeight = std::max(0, std::min(window.y + window.height, y + height) - std::max(window.y, y));
+        const int area = overlapWidth * overlapHeight;
+        if (area > largestOverlap) {
+            largestOverlap = area;
+            selected = monitor;
+        }
+    }
+    return selected;
 }
 
 } // namespace
@@ -107,11 +135,30 @@ void Application::initWindow(int width, int height, bool hidden) {
 }
 
 void Application::mainLoop() {
+    WindowBounds windowedBounds;
+    bool fullscreenKeyDown = false;
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
         if (glfwWindowShouldClose(window_)) {
             break;
         }
+
+        const bool fullscreenPressed = glfwGetKey(window_, GLFW_KEY_F1) == GLFW_PRESS;
+        if (fullscreenPressed && !fullscreenKeyDown) {
+            if (glfwGetWindowMonitor(window_)) {
+                glfwSetWindowMonitor(window_, nullptr, windowedBounds.x, windowedBounds.y,
+                    windowedBounds.width, windowedBounds.height, GLFW_DONT_CARE);
+            } else {
+                glfwGetWindowPos(window_, &windowedBounds.x, &windowedBounds.y);
+                glfwGetWindowSize(window_, &windowedBounds.width, &windowedBounds.height);
+                GLFWmonitor* monitor = monitorForWindow(windowedBounds);
+                if (const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : nullptr) {
+                    glfwSetWindowMonitor(window_, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+                }
+            }
+        }
+        fullscreenKeyDown = fullscreenPressed;
+        renderer_->setFullscreen(glfwGetWindowMonitor(window_) != nullptr);
         renderer_->drawFrame();
     }
 }

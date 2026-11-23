@@ -62,6 +62,10 @@ public:
 
     // Returns true once the presentation queue accepts the frame.
     bool drawFrame();
+    void setFullscreen(bool enabled) {
+        fullscreen_ = enabled;
+        if (enabled) sceneEditMode_ = false;
+    }
     void setTerrainFrustumCullingEnabled(bool enabled) { terrainFrustumCullingEnabled_ = enabled; }
     void initializeResourceBrowser(const std::filesystem::path& root);
     void queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y);
@@ -70,6 +74,8 @@ public:
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
 private:
+    bool toolUiVisible() const { return toolUiVisible_ && !fullscreen_; }
+
     struct SceneRenderTarget {
         VkImage colorImage = VK_NULL_HANDLE;
         VkDeviceMemory colorMemory = VK_NULL_HANDLE;
@@ -563,6 +569,7 @@ private:
     bool framebufferResized_ = false;
     bool imguiInitialized_ = false;
     bool toolUiVisible_ = true;
+    bool fullscreen_ = false;
     bool sceneEditMode_ = false;
     bool miniMapVisible_ = true;
     bool screenshotFromToolbar_ = false;
@@ -597,7 +604,7 @@ private:
     std::filesystem::path pendingSceneOpen_;
     bool editorDirty_ = false;
     bool editorSceneChangeConfirmed_ = false;
-    enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerEffect };
+    enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerSettings, PlayerEffect };
     EditorSelection editorSelection_ = EditorSelection::None;
     std::optional<std::uint32_t> editorPart_;
     std::uint32_t editorPlayerEffect_ = 0;

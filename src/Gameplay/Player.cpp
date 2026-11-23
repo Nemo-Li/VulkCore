@@ -168,6 +168,7 @@ CapsuleMeshData createCapsuleMesh(
 void PlayerController::clear() {
     active_ = false;
     clickToMove_ = false;
+    moveSpeedMultiplier_ = kDefaultMoveSpeedMultiplier;
     cancelMove();
     debugModeEnabled_ = false;
     grounded_ = true;
@@ -286,6 +287,12 @@ bool PlayerController::moveSpawn(const TerrainScene& terrain, PhysicsWorld& phys
     lookDragging_ = wasDragging;
     spawnPosition_ = position_;
     return true;
+}
+
+void PlayerController::setMoveSpeedMultiplier(float multiplier) {
+    if (std::isfinite(multiplier)) {
+        moveSpeedMultiplier_ = std::clamp(multiplier, kMinMoveSpeedMultiplier, kMaxMoveSpeedMultiplier);
+    }
 }
 
 void PlayerController::configureRunGait(
@@ -494,7 +501,9 @@ void PlayerController::update(
         facingYawRadians_ = std::remainder(facingYawRadians_ +
             std::clamp(facingDelta, -maximumTurn, maximumTurn), 2.0f * kPi);
     }
-    const float speedMultiplier = debugModeEnabled_ ? kDebugMovementSpeedMultiplier : 1.0f;
+    const float speedMultiplier = moveSpeedMultiplier_ *
+        (debugModeEnabled_ ? kDebugMovementSpeedMultiplier : 1.0f);
+    const float targetSpeed = runGroundSpeed_ * speedMultiplier;
     if (moving_ && runCycleDurationSeconds_ > 0.0f) {
         runAnimationTimeSeconds_ = std::fmod(
             runAnimationTimeSeconds_ + deltaSeconds * speedMultiplier,
@@ -504,7 +513,7 @@ void PlayerController::update(
         runAnimationTimeSeconds_ = 0.0f;
     }
     if (debugModeEnabled_) {
-        float speed = runGroundSpeed_ * speedMultiplier;
+        float speed = targetSpeed;
         if (activeDestination) speed = std::min(speed, destinationDistance * PhysicsWorld::kPlayerDestinationSlowdownRate);
         physics.setPlayerDebugMovement(
             movementDirection2D * speed,
@@ -513,7 +522,7 @@ void PlayerController::update(
     } else {
         physics.setPlayerFootTraction(
             movementDirection2D,
-            moving_ || activeDestination ? runGroundSpeed_ : 0.0f,
+            moving_ || activeDestination ? targetSpeed : 0.0f,
             moving_ ? currentFootTraction() : 1.0f,
             activeDestination
         );

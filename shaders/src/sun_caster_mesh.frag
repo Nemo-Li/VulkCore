@@ -29,8 +29,10 @@ void main() {
     }
     float alpha = material.baseColor.a;
     if ((material.textureFlags & 1u) != 0u) alpha *= texture(baseTexture, uv).a;
-    if ((material.textureFlags & (1u << 28)) != 0u &&
-        alpha * texture(alphaMask, uv).r < material.waterFlow.x) discard;
+    if ((material.textureFlags & (1u << 28)) != 0u) {
+        float coverage = alpha * texture(alphaMask, uv).r;
+        if (coverage <= 0.0 || coverage < material.waterFlow.x) discard;
+    }
     if ((material.textureFlags & (1u << 30)) != 0u) {
         writeSunShadowCoverage(alpha * vertexColor.a * material.opacity);
     }

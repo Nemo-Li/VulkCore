@@ -2,6 +2,7 @@
 #include "vulkcore/Utils/SbfresLoader.hpp"
 
 #include <assimp/Importer.hpp>
+#include <assimp/GltfMaterial.h>
 #include <assimp/anim.h>
 #include <assimp/config.h>
 #include <assimp/material.h>
@@ -502,6 +503,19 @@ VulkCore::MaterialData readMaterial(
     const bool isGltf = extension == ".glb" || extension == ".gltf" ||
                         extension == ".GLB" || extension == ".GLTF";
     if (isGltf) {
+        aiString alphaMode;
+        if (material->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS && alphaMode == aiString("MASK")) {
+            constexpr ai_real defaultCutoff = 0.5f;
+            ai_real cutoff = defaultCutoff;
+            material->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff);
+            materialData.alphaCutoff = std::isfinite(cutoff)
+                ? std::clamp(static_cast<float>(cutoff), 0.0f, 1.0f) : defaultCutoff;
+
+            int doubleSided = 0;
+            if (material->Get(AI_MATKEY_TWOSIDED, doubleSided) == AI_SUCCESS) {
+                materialData.doubleSided = doubleSided != 0;
+            }
+        }
         const auto fallback = defaultDiffuseTexturePath(modelPath, textureMaterialName);
         const auto useExisting = [](const std::filesystem::path& texture) {
             std::error_code error;
