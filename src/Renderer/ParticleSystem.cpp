@@ -49,13 +49,21 @@ ParticleSystemSettings& ParticleSystem::settings() {
     return settings_;
 }
 
+bool ParticleFlipbook::valid() const {
+    return columns > 0 && columns <= 16 && rows > 0 && rows <= 16 &&
+        frames > 0 && frames <= columns * rows &&
+        cellPixels >= 8 && cellPixels <= 256 && gutterPixels < cellPixels / 2 &&
+        std::isfinite(width) && width > 0.0f && width <= 500.0f;
+}
+
 ParticleSystemSettings ParticleSystem::sanitizeSettings(ParticleSystemSettings settings) {
+    if (!settings.flipbook.valid()) settings.flipbook = {};
     settings.maxParticles = std::clamp(
         settings.maxParticles,
         1u,
         kMaximumSupportedParticles
     );
-    settings.duration = std::clamp(settings.duration, 0.05f, 60.0f);
+    settings.duration = std::clamp(settings.duration, 0.05f, settings.flipbook.frames ? 120.0f : 60.0f);
     settings.emissionRate = std::clamp(settings.emissionRate, 0.0f, 2000.0f);
     settings.startLifetime = std::clamp(settings.startLifetime, 0.02f, 60.0f);
     settings.lifetimeRandomness = std::clamp(settings.lifetimeRandomness, 0.0f, 1.0f);
@@ -222,6 +230,16 @@ void ParticleSystem::update(float deltaSeconds) {
     }
 
     const float delta = std::clamp(deltaSeconds, 0.0f, 0.1f);
+    if (settings_.flipbook.frames) {
+        if (playing_) {
+            emissionTime_ += delta;
+            if (emissionTime_ >= settings_.duration) {
+                if (settings_.looping) emissionTime_ = std::fmod(emissionTime_, settings_.duration);
+                else playing_ = false;
+            }
+        }
+        return;
+    }
     for (std::size_t index = 0; index < particles_.size();) {
         Particle& particle = particles_[index];
         particle.age += delta;
@@ -286,6 +304,23 @@ void ParticleSystem::buildVertices(const glm::vec3& cameraRight, const glm::vec3
     const glm::vec3 up = glm::length(cameraUp) < 0.001f
         ? glm::vec3(0.0f, 0.0f, 1.0f)
         : glm::normalize(cameraUp);
+    const auto& book = settings_.flipbook;
+    if (book.frames) {
+        if (!playing_) return;
+        const float progress = std::clamp(emissionTime_ / settings_.duration, 0.0f, 1.0f);
+        const auto frame = std::min(static_cast<std::uint32_t>(progress * book.frames), book.frames - 1);
+        const glm::vec2 grid(book.columns, book.rows);
+        const glm::vec2 cell(frame % book.columns, frame / book.columns);
+        const float padding = (static_cast<float>(book.gutterPixels) + 0.5f) / book.cellPixels;
+        constexpr std::array<glm::vec2, 6> corners{{{0, 1}, {1, 1}, {1, 0}, {1, 0}, {0, 0}, {0, 1}}};
+        for (const auto& corner : corners) {
+            const glm::vec2 uv = (cell + glm::mix(glm::vec2(padding), glm::vec2(1.0f - padding), corner)) / grid;
+            const glm::vec3 offset = right * (corner.x - 0.5f) + up * (0.5f - corner.y);
+            vertices_.push_back({settings_.position + offset * book.width, uv, glm::vec4(1.0f)});
+        }
+        return;
+    }
+
     const glm::vec3 forward = glm::normalize(glm::cross(right, up));
     std::vector<const Particle*> renderParticles;
     renderParticles.reserve(particles_.size());

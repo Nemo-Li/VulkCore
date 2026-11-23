@@ -339,6 +339,7 @@ else()
     add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES}
         src/Platform/DesktopWindow.cpp
         src/Renderer/RendererEditorShaders.cpp
+        src/Renderer/RendererEffectSprites.cpp
         src/Renderer/RendererResourceBrowser.cpp
         src/Renderer/RendererResourcePreview.cpp)
     target_compile_definitions(vulkcore_runtime PRIVATE
@@ -349,6 +350,42 @@ else()
         target_sources(vulkcore_runtime PRIVATE src/Platform/EditorFileDialog.mm src/Platform/EditorTrash.mm)
         target_link_libraries(vulkcore_runtime PRIVATE
             "-framework AppKit" "-framework Foundation" "-framework UniformTypeIdentifiers")
+        option(VULKCORE_EFFECT_EDITOR "Build the embedded effect editor" ON)
+        if(VULKCORE_EFFECT_EDITOR)
+            find_program(VULKCORE_NPM npm)
+            if(VULKCORE_NPM)
+                set(vfx_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/vfx-studio")
+                set(vfx_output "${CMAKE_CURRENT_BINARY_DIR}/vfx-studio")
+                file(GLOB_RECURSE vfx_sources CONFIGURE_DEPENDS
+                    "${vfx_source}/src/*" "${vfx_source}/scripts/*" "${vfx_source}/tests/*")
+                add_custom_command(OUTPUT "${vfx_output}/.npm-ready"
+                    COMMAND "${CMAKE_COMMAND}" -E make_directory "${vfx_output}"
+                    COMMAND "${VULKCORE_NPM}" ci --no-audit --no-fund
+                    COMMAND "${CMAKE_COMMAND}" -E touch "${vfx_output}/.npm-ready"
+                    WORKING_DIRECTORY "${vfx_source}"
+                    DEPENDS "${vfx_source}/package.json" "${vfx_source}/package-lock.json"
+                    COMMENT "Installing effect editor build dependencies"
+                    VERBATIM)
+                add_custom_command(OUTPUT "${vfx_output}/site/index.html"
+                    COMMAND "${VULKCORE_NPM}" run build -- --outDir "${vfx_output}/site" --emptyOutDir
+                    WORKING_DIRECTORY "${vfx_source}"
+                    DEPENDS "${vfx_output}/.npm-ready" ${vfx_sources}
+                        "${vfx_source}/index.html" "${vfx_source}/vite.config.ts"
+                        "${vfx_source}/tsconfig.json"
+                    COMMENT "Building the VulkCore effect editor"
+                    VERBATIM)
+                add_custom_target(VulkCoreEffectEditor DEPENDS "${vfx_output}/site/index.html")
+                add_dependencies(vulkcore_runtime VulkCoreEffectEditor)
+                target_sources(vulkcore_runtime PRIVATE src/Platform/EffectEditorView.mm)
+                set_source_files_properties(src/Platform/EffectEditorView.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+                target_compile_definitions(vulkcore_runtime
+                    PUBLIC VULKCORE_HAS_EFFECT_EDITOR
+                    PRIVATE VULKCORE_EFFECT_EDITOR_DIR="${vfx_output}/site")
+                target_link_libraries(vulkcore_runtime PRIVATE "-framework WebKit")
+            else()
+                message(STATUS "npm unavailable; skipping embedded effect editor")
+            endif()
+        endif()
     else()
         target_sources(vulkcore_runtime PRIVATE src/Platform/EditorTrash.cpp)
         if(WIN32)

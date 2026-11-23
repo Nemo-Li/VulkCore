@@ -9,6 +9,9 @@ namespace VulkCore {
 
 bool Renderer::roadEditorActive() const {
 #ifndef VULKCORE_OHOS
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    if (toolUiVisible_ && effectEditorSelected_) return false;
+#endif
     return mode_ == Mode::Scene && sceneEditMode_ && terrainScene_ && roadBrushEnabled_ &&
         fixedFrameOutput_.empty();
 #else

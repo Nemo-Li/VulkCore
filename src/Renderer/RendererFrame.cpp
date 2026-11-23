@@ -645,6 +645,7 @@ void Renderer::recordCommandBuffer(
             const VkDeviceSize particleOffset = 0;
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
             for (const ParticleDrawRange& range : particleDrawRanges_) {
+                if (shadow && range.flipbook) continue;
                 const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
                 if (descriptorIt == particleDescriptorSets_.end()) {
                     continue;
@@ -670,6 +671,7 @@ void Renderer::recordCommandBuffer(
                 particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
                     ? 1u
                     : 0u;
+                if (range.flipbook) particlePushConstants.textureFlags |= 2u;
                 vkCmdPushConstants(
                     commandBuffer,
                     pipelineLayout_,

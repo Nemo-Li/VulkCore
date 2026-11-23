@@ -591,6 +591,27 @@ void Renderer::updateParticleBuffer() {
     );
 }
 
+bool Renderer::playEffectSprite(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition) {
+    const auto it = particleSystems_.find(nodeId);
+    if (it == particleSystems_.end() || !it->second.settings().flipbook.frames ||
+        !it->second.settings().enabled || !particleTextures_.contains(nodeId)) return false;
+    if (worldPosition) {
+        auto* node = findSceneNodeById(meshData_, nodeId);
+        if (!node || !std::isfinite(worldPosition->x) || !std::isfinite(worldPosition->y) ||
+            !std::isfinite(worldPosition->z)) return false;
+        node->transformTranslation = (*worldPosition - modelCenter_) * modelScale_;
+    }
+    it->second.restart();
+    return true;
+}
+
+bool Renderer::stopEffectSprite(std::uint32_t nodeId) {
+    const auto it = particleSystems_.find(nodeId);
+    if (it == particleSystems_.end() || !it->second.settings().flipbook.frames) return false;
+    it->second.stop();
+    return true;
+}
+
 void Renderer::updateParticleSystems(
     float deltaSeconds,
     const glm::vec3& cameraRight,
@@ -621,13 +642,19 @@ void Renderer::updateParticleSystems(
                     availableVertices
                 );
                 copiedVertexCount -= copiedVertexCount % ParticleSystem::kVerticesPerParticle;
-                if (copiedVertexCount > 0 && isSceneNodeRenderEnabled(node.nodeId)) {
+                const bool flipbook = system.settings().flipbook.frames != 0;
+                if (copiedVertexCount > 0 && isSceneNodeRenderEnabled(node.nodeId) &&
+                    (!flipbook || particleTextures_.contains(node.nodeId))) {
                     ParticleDrawRange range;
                     range.nodeId = node.nodeId;
                     range.firstVertex = static_cast<std::uint32_t>(particleVertices_.size());
                     range.vertexCount = static_cast<std::uint32_t>(copiedVertexCount);
                     range.blendMode = system.settings().blendMode;
-                    const glm::mat4 objectTransform = particleObjectTransform(node);
+                    range.flipbook = flipbook;
+                    const glm::mat4 objectTransform = flipbook
+                        ? glm::translate(glm::mat4(1.0f), node.transformTranslation) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(node.transformScaleFactor * modelScale_))
+                        : particleObjectTransform(node);
                     particleDrawRanges_.push_back(range);
                     particleVertices_.reserve(
                         particleVertices_.size() + copiedVertexCount

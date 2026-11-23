@@ -1,0 +1,25 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+
+/** randomUUID is HTTPS-only; getRandomValues also works on plain LAN HTTP. */
+export function randomUUID(): string {
+  if (globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((n) => n.toString(16).padStart(2, '0')).join('');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
+/** Keep identical SHA-256 content keys on localhost, HTTPS and insecure LAN HTTP. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = globalThis.crypto?.subtle
+    ? new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new Uint8Array(bytes)))
+    : sha256(bytes);
+  return [...digest].map((n) => n.toString(16).padStart(2, '0')).join('');
+}

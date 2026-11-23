@@ -1,5 +1,9 @@
 #include "RendererImplementation.hpp"
 
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+#include "../Platform/EffectEditorView.hpp"
+#endif
+
 #ifndef VULKCORE_OHOS
 #include "../Platform/EditorFileDialog.hpp"
 #include "vulkcore/Physics/PhysicsWorld.hpp"
@@ -106,6 +110,33 @@ bool Renderer::drawGameEditor() {
     ImGui::Begin("VulkCore Game Editor", nullptr, flags);
     ImGui::PopStyleVar(3);
 
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    if (ImGui::BeginTabBar("Editor workspaces")) {
+        if (ImGui::BeginTabItem("Scene")) {
+            effectEditorSelected_ = false;
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Effects")) {
+            effectEditorSelected_ = true;
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    if (effectEditorSelected_) {
+        sceneEditorViewport_ = glm::vec4(0.0f);
+        roadViewportOwnsInput_ = false;
+        const auto top = ImGui::GetCursorScreenPos();
+        const auto size = ImGui::GetContentRegionAvail();
+        if (!effectEditorView_) effectEditorView_ = std::make_unique<EffectEditorView>(window_);
+        if (!effectEditorView_->show(top.x - viewport->Pos.x, top.y - viewport->Pos.y, size.x, size.y)) {
+            ImGui::TextWrapped("Effect editor assets unavailable. Build the VulkCoreEffectEditor target.");
+        }
+        ImGui::End();
+        return false;
+    }
+    if (effectEditorView_) effectEditorView_->hide();
+#endif
+
     const auto available = ImGui::GetContentRegionAvail();
     const auto origin = ImGui::GetCursorScreenPos();
     const float margin = std::min(kPanelMargin, std::min(available.x, available.y) * 0.05f);
@@ -165,6 +196,11 @@ bool Renderer::drawGameEditor() {
         if (ImGui::MenuItem("New Scene", newSceneShortcut)) newScene();
         if (ImGui::MenuItem("Open Scene...")) openScene();
         if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
+        if (ImGui::MenuItem("Import Effect Sprite...")) {
+            openEditorFilePicker("Select the exported atlas.png", false,
+                currentScenePath_.empty() ? scenesDirectory_ : currentScenePath_.parent_path(),
+                [this](const auto& path) { importEffectSprite(path); });
+        }
         ImGui::MenuItem("Edit Mode", "F5", &sceneEditMode_);
         if (sceneEditMode_ && terrainScene_ && ImGui::BeginMenu("Edit Tool")) {
             if (ImGui::MenuItem("Road Brush", nullptr, roadBrushEnabled_)) roadBrushEnabled_ = true;
@@ -343,7 +379,9 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
     }
     if (node.objectType == SceneObjectType::ParticleSystem) {
         // Particle objects store translation directly in scene units.
-        node.transformTranslation += movement / modelScale_;
+        const auto system = particleSystems_.find(node.nodeId);
+        const bool flipbook = system != particleSystems_.end() && system->second.settings().flipbook.frames;
+        node.transformTranslation += flipbook ? movement : movement / modelScale_;
         editorDirty_ = true;
         return glm::vec3(0.0f);
     }
@@ -382,7 +420,15 @@ void Renderer::drawGameSelectionOutline(const glm::mat4& clipFromScene) {
             minimum = glm::min(minimum, vertex.position);
             maximum = glm::max(maximum, vertex.position);
         }
-        transform = particleObjectTransform(node);
+        if (settings.flipbook.frames) {
+            const float radius = 0.5f * settings.flipbook.width;
+            minimum = glm::vec3(-radius);
+            maximum = glm::vec3(radius);
+            transform = glm::translate(glm::mat4(1.0f), node.transformTranslation) *
+                glm::scale(glm::mat4(1.0f), glm::vec3(node.transformScaleFactor * modelScale_));
+        } else {
+            transform = particleObjectTransform(node);
+        }
     } else if (!node.hasBounds) {
         return;
     }
@@ -814,9 +860,12 @@ void Renderer::drawGameInspector() {
         ImGui::TextWrapped("%s", node.name.c_str());
         editorDirty_ |= ImGui::Checkbox("Visible", &node.renderEnabled);
         if (node.objectType == SceneObjectType::ParticleSystem) {
-            ImGui::SeparatorText("Graphics Pipeline");
-            drawEditorShader(ShaderStage::Vertex, "shader_particle.vert", "particle");
-            drawEditorShader(ShaderStage::Fragment, "shader_particle.frag", "particle");
+            const auto system = particleSystems_.find(node.nodeId);
+            if (system == particleSystems_.end() || !system->second.settings().flipbook.frames) {
+                ImGui::SeparatorText("Graphics Pipeline");
+                drawEditorShader(ShaderStage::Vertex, "shader_particle.vert", "particle");
+                drawEditorShader(ShaderStage::Fragment, "shader_particle.frag", "particle");
+            }
             drawParticleSystemControls(node.nodeId, editorDirty_, &node);
             return;
         }

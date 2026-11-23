@@ -38,6 +38,9 @@ class SwapChain;
 class VulkanContext;
 class TerrainScene;
 class HdrComposition;
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+class EffectEditorView;
+#endif
 struct UniformBufferObject;
 
 class Renderer {
@@ -174,6 +177,7 @@ private:
     void acceptSceneModelDrop();
     void processSceneModelDrop();
     void drawResourcePreview();
+    void importEffectSprite(const std::filesystem::path& atlasPath);
     void loadResourcePreview();
     void createResourcePreviewBuffers();
     void destroyResourcePreviewBuffers();
@@ -236,6 +240,8 @@ private:
     std::filesystem::path createSceneFile();
     void discoverSceneResources();
     bool saveSceneResource(const std::filesystem::path& path);
+    bool playEffectSprite(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition = std::nullopt);
+    bool stopEffectSprite(std::uint32_t nodeId);
     bool loadSceneResource(const std::filesystem::path& path);
     void createBoundingBoxPipeline();
     void createParticlePipelines();
@@ -484,6 +490,7 @@ private:
         std::uint32_t vertexCount = 0;
         ParticleSystemSettings::BlendMode blendMode =
             ParticleSystemSettings::BlendMode::Additive;
+        bool flipbook = false;
     };
     std::vector<ParticleDrawRange> particleDrawRanges_;
     std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
@@ -527,6 +534,10 @@ private:
     bool sceneEditMode_ = false;
     bool miniMapVisible_ = true;
     bool screenshotFromToolbar_ = false;
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    bool effectEditorSelected_ = false;
+    std::unique_ptr<EffectEditorView> effectEditorView_;
+#endif
 #ifndef VULKCORE_OHOS
     struct RoadEditorCamera {
         glm::vec3 originalPosition;

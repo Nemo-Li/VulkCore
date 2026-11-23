@@ -1,0 +1,27 @@
+export type Layer = EffectDocument['layers'][number];
+export type Curve = Layer['curves'][string];
+export type ShaderAsset = EffectDocument['shaders'][number];
+export type Asset = EffectDocument['assets'][number];
+export type Vec3 = [number, number, number];
+export type Diagnostic = { code:string;message:string;severity:'error'|'warning';targetId?:string;file?:string;line?:number;path?:string;revision?:number };
+export type PlayOptions = {position?:Vec3;direction?:Vec3;scale?:number;intensity?:number;seed?:number;loop?:boolean;parent?:THREE.Object3D};
+export type RuntimeMetrics = {activeInstances:number;pooledInstances:number;visibleLayers:number;particleSlots:number;activeParticles:number};
+export type RenderMetrics = RuntimeMetrics & {drawCalls:number;triangles:number;cpuSubmitMs:number;gpuMs:number|null;gpuUnavailableReason:string|null;renderWidth:number;renderHeight:number;passes:number;droppedCustomPasses:number;geometries:number;textures:number;programs:number};
+export declare class VfxValidationError extends Error {diagnostics:Diagnostic[];constructor(diagnostics:Diagnostic[]);}
+export declare class VfxInstance {
+ private constructor(); readonly seed:number; readonly id:string;readonly packageId:string;root:THREE.Group;fieldRoot:THREE.Group;doc:EffectDocument;time:number;finished:boolean;loop:boolean;intensity:number;stopTime:number|null;
+ seek(time:number):this;stop(options?:{immediate?:boolean}):this;dispose():void;
+}
+export declare class VfxRuntime {
+ constructor(scene:THREE.Scene,camera:THREE.PerspectiveCamera,renderer:THREE.WebGLRenderer);
+ scene:THREE.Scene;camera:THREE.PerspectiveCamera;renderer:THREE.WebGLRenderer;readonly fieldScene:THREE.Scene;readonly instances:Set<VfxInstance>;
+ register(input:EffectDocument,baseUrl?:string):Promise<string>;preload(url:string):Promise<string>;validate(doc:EffectDocument):Promise<Diagnostic[]>;play(id:string,options?:PlayOptions):VfxInstance;update(dt:number):void;stopAll():void;collect():void;unload(id:string):void;dispose():void;getMetrics():RuntimeMetrics;settings():EffectDocument['settings'];
+}
+export declare class VfxRenderer {
+ constructor(renderer:THREE.WebGLRenderer,runtime:VfxRuntime);renderer:THREE.WebGLRenderer;runtime:VfxRuntime;setSize(width:number,height:number):void;render(soloId?:string|null):void;getMetrics():RenderMetrics;dispose():void;
+}
+export declare function loadEffectDocument(url:string):Promise<EffectDocument>;
+export declare function parseDocument(input:unknown):EffectDocument;
+export declare function evaluateCurve(curve:Curve|undefined,t:number,fallback:number):number;
+export declare function createStage(scene:THREE.Scene,mode?:'dark'|'light'|'arena'):{group:THREE.Group;grid:THREE.GridHelper;reference:THREE.Group;dispose():void};
+export {OrbitControls} from 'three/addons/controls/OrbitControls.js';

@@ -1575,10 +1575,19 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     for (const auto& [nodeId, system] : particleSystems_) {
         const auto& settings = system.settings();
         if (!settings.texturePath.empty() && !particleTextures_.contains(nodeId)) {
-            warnResource("Particle texture",
+            warnResource(settings.flipbook.frames ? "Effect sprite" : "Particle texture",
                 settings.texturePath, "texture could not be loaded");
         }
     }
+    std::erase_if(meshData_.additionalNodes, [&](const ModelNode& node) {
+        if (node.objectType != SceneObjectType::ParticleSystem || particleTextures_.contains(node.nodeId)) {
+            return false;
+        }
+        const auto system = particleSystems_.find(node.nodeId);
+        if (system == particleSystems_.end() || !system->second.settings().flipbook.frames) return false;
+        particleSystems_.erase(system);
+        return true;
+    });
     rebuildMaterialResources();
     const auto checkTexture = [&](const char* label, const std::filesystem::path& texturePath,
                                   const EmbeddedTextureData& embedded) {
@@ -2063,6 +2072,15 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             if (particleStream >> std::quoted(texturePath)) {
                 settings.texturePath = resolveResourcePath(texturePath);
             }
+            std::string mode;
+            if (particleStream >> mode; mode == "flipbook") {
+                auto& book = settings.flipbook;
+                if (!(particleStream >> book.columns >> book.rows >> book.frames >> book.cellPixels >>
+                    book.gutterPixels >> book.width) || !book.valid() || settings.texturePath.empty()) {
+                    valid = false;
+                    break;
+                }
+            }
             settings.enabled = enabled != 0;
             settings.playOnAwake = playOnAwake != 0;
             settings.looping = looping != 0;
@@ -2248,7 +2266,9 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
                 continue;
             }
             ModelNode particleNode;
-            particleNode.name = "Particle System " + std::to_string(pending.nodeId);
+            particleNode.name = pending.settings.flipbook.frames ?
+                pending.settings.texturePath.parent_path().filename().string() + " (Effect)" :
+                "Particle System " + std::to_string(pending.nodeId);
             particleNode.nodeId = pending.nodeId;
             particleNode.objectType = SceneObjectType::ParticleSystem;
             meshData_.additionalNodes.push_back(std::move(particleNode));
@@ -2628,7 +2648,9 @@ bool Renderer::saveTransformSettings() const {
         }
         const auto systemIt = particleSystems_.find(node.nodeId);
         if (systemIt != particleSystems_.end()) {
-            saveParticleSystemSettings(file, node.nodeId, systemIt->second.settings());
+            auto settings = systemIt->second.settings();
+            if (settings.flipbook.frames) settings.texturePath = sceneReference(settings.texturePath);
+            saveParticleSystemSettings(file, node.nodeId, settings);
         }
     }
 

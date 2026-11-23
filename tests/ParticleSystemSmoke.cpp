@@ -59,5 +59,33 @@ int main() {
         std::cerr << "ring nova did not produce renderable billboard vertices\n";
         return 4;
     }
+    // An effect sprite selects one atlas cell at a time through the same
+    // particle buffers. Check that reaching the next frame does not emit a second quad.
+    settings.duration = 0.4f;
+    settings.position = glm::vec3(0.0f);
+    settings.flipbook = {2, 2, 4, 192, 4, 2.0f};
+    system.setSettings(settings);
+    system.restart();
+    const auto buildSprite = [&] {
+        system.buildVertices(glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    };
+    buildSprite();
+    if (system.vertices().size() != 6 || system.vertices().front().texCoord.x <= 0.0f ||
+        system.vertices().front().texCoord.x >= 0.5f) {
+        std::cerr << "effect sprite did not start inside its first atlas cell\n";
+        return 5;
+    }
+    system.update(0.1f);
+    buildSprite();
+    if (system.vertices().size() != 6 || system.vertices().front().texCoord.x <= 0.5f) {
+        std::cerr << "effect sprite did not advance to the next atlas cell\n";
+        return 6;
+    }
+    for (int step = 0; step < 4; ++step) system.update(0.1f);
+    buildSprite();
+    if (system.playing() || !system.vertices().empty()) {
+        std::cerr << "one-shot effect sprite did not stop at the end of its timeline\n";
+        return 7;
+    }
     return 0;
 }

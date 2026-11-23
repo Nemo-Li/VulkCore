@@ -37,6 +37,8 @@ void main() {
         color = vec4(fragColor.rgb, fragColor.a * edgeFade);
     }
     if (color.a <= 0.001) discard;
-    color.rgb *= mix(0.58, 1.0, sunVisibility(fragWorldPosition));
+    if ((particle.textureFlags & 2u) == 0u) {
+        color.rgb *= mix(0.58, 1.0, sunVisibility(fragWorldPosition));
+    }
     SUN_SHADOW_COLOR(color);
 }

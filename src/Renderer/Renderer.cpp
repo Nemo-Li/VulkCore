@@ -2,6 +2,10 @@
 
 #include "HdrComposition.hpp"
 
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+#include "../Platform/EffectEditorView.hpp"
+#endif
+
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Renderer/Renderer.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
@@ -84,6 +88,9 @@ Renderer::~Renderer() {
     }
 
     context_->waitIdle();
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    effectEditorView_.reset();
+#endif
 #ifndef VULKCORE_OHOS
     destroyResourcePreviewTargets();
     destroyResourcePreviewBuffers();

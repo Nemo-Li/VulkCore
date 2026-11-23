@@ -1,5 +1,9 @@
 #include "RendererImplementation.hpp"
 
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+#include "../Platform/EffectEditorView.hpp"
+#endif
+
 #include "vulkcore/Terrain/Terrain.hpp"
 
 namespace VulkCore {
@@ -70,6 +74,22 @@ void Renderer::drawParticleSystemControls(std::uint32_t nodeId, bool& shouldSave
     }
     ParticleSystem& particleSystem = systemIt->second;
     ParticleSystemSettings& settings = particleSystem.settings();
+#ifndef VULKCORE_OHOS
+    if (settings.flipbook.frames && node) {
+        ImGui::SeparatorText("Effect Sprite");
+        ImGui::TextDisabled("%u frames / %.2f s", settings.flipbook.frames, settings.duration);
+        ImGui::TextWrapped("%s", settings.texturePath.string().c_str());
+        shouldSaveSettings |= ImGui::DragFloat3("Position", &node->transformTranslation.x, 0.005f);
+        shouldSaveSettings |= ImGui::DragFloat("Width (m)", &settings.flipbook.width, 0.05f, 0.05f, 500.0f,
+            "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        shouldSaveSettings |= ImGui::Checkbox("Play on awake", &settings.playOnAwake);
+        shouldSaveSettings |= ImGui::Checkbox("Loop", &settings.looping);
+        if (ImGui::Button("Replay")) playEffectSprite(nodeId);
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) stopEffectSprite(nodeId);
+        return;
+    }
+#endif
     bool settingsChanged = false;
     if (particleTexturePathNodeId_ != nodeId) {
         particleTexturePathNodeId_ = nodeId;
@@ -467,6 +487,9 @@ bool Renderer::buildImGuiFrame() {
         toolUiVisible_ = !toolUiVisible_;
         if (!toolUiVisible_) sceneEditMode_ = false;
     }
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    if (!toolUiVisible_ && effectEditorView_) effectEditorView_->hide();
+#endif
     const auto& io = ImGui::GetIO();
     const bool sceneShortcuts = io.KeyMods == 0 && !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
