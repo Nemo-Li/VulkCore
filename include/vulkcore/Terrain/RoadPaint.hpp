@@ -15,6 +15,7 @@ class RoadPaint {
 public:
     static constexpr float kMinimumRadius = 0.5f;
     static constexpr float kMaximumRadius = 32.0f;
+    static constexpr float kDefaultRadius = 3.75f;
 
     static float radiusAt(RoadSurface surface, float radius, glm::vec2 center);
 

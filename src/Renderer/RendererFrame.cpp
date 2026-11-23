@@ -520,6 +520,7 @@ void Renderer::recordCommandBuffer(
         }
         if (item.grassLod) {
             materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
+            materialPushConstants.metallic = ochreDirtRatio_;
             materialPushConstants.waterSurface.x = 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
             if (*item.grassLod == GrassLod::NearMesh) {
@@ -529,8 +530,10 @@ void Renderer::recordCommandBuffer(
                 materialPushConstants.waterSurface.y = glm::radians(grassGrowth_.minimumTilt);
                 materialPushConstants.waterSurface.z = glm::radians(grassGrowth_.maximumTilt);
             }
-        } else if (terrainMaterial && grassEnabled && fragment == "shader_terrain.frag") {
-            materialPushConstants.waterFlow = grassFadeDistances(GrassLod::NearMesh);
+        } else if (terrainMaterial && fragment == "shader_terrain.frag") {
+            if (grassEnabled) materialPushConstants.waterFlow = grassFadeDistances(GrassLod::NearMesh);
+            // Terrain and grass shaders use the metallic slot for the ochre mix.
+            materialPushConstants.metallic = ochreDirtRatio_;
         }
         if (shadow) {
             if (isTransparentMaterial(material)) materialPushConstants.textureFlags |= kShadowBlendFlag;

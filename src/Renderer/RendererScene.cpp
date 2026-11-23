@@ -668,6 +668,7 @@ void Renderer::clearSceneData() {
     editorPart_.reset();
     currentScenePath_.clear();
     roadPaint_.clear();
+    ochreDirtRatio_ = kDefaultOchreDirtRatio;
     roadIndexRevision_ = 0;
     for (auto& frame : roadFrameBuffers_) frame.revision = 0;
 #ifndef VULKCORE_OHOS
@@ -1149,6 +1150,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
     RoadPaint savedRoadPaint;
+    float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
         sceneStatusFailed_ = true;
@@ -1237,6 +1239,13 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!savedRoadPaint.readStroke(sceneFile)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid terrain road stroke.";
+                return false;
+            }
+        } else if (key == "terrain_road_ochre_ratio") {
+            if (!(sceneFile >> savedOchreDirtRatio) || !std::isfinite(savedOchreDirtRatio) ||
+                savedOchreDirtRatio < 0.0f || savedOchreDirtRatio > 1.0f) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid ochre dirt ratio.";
                 return false;
             }
         } else if (key == "water_resource") {
@@ -1453,6 +1462,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
             roadPaint_ = std::move(savedRoadPaint);
+            ochreDirtRatio_ = savedOchreDirtRatio;
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
@@ -2466,6 +2476,7 @@ bool Renderer::saveTransformSettings() const {
              << grassGrowth_.maximumTilt << ' ' << grassGrowth_.noiseSize << '\n'
              << "grass_blade_width " << grassGrowth_.minimumBladeWidth << ' '
              << grassGrowth_.maximumBladeWidth << '\n';
+        file << "terrain_road_ochre_ratio " << ochreDirtRatio_ << '\n';
         roadPaint_.writeStrokes(file);
     }
     if (!terrainResourcePath_.empty()) {

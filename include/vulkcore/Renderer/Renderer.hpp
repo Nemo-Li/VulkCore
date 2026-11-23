@@ -426,6 +426,8 @@ private:
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
     RoadPaint roadPaint_;
+    static constexpr float kDefaultOchreDirtRatio = 0.80f;
+    float ochreDirtRatio_ = kDefaultOchreDirtRatio;
     std::uint64_t roadIndexRevision_ = 0;
     std::vector<std::uint32_t> roadIndex_;
     struct RoadFrameBuffer {
@@ -539,7 +541,7 @@ private:
     bool roadViewportOwnsInput_ = false;
     bool roadStrokeHasPoint_ = false;
     RoadSurface roadBrushSurface_ = RoadSurface::Mud;
-    float roadBrushRadius_ = 3.0f;
+    float roadBrushRadius_ = RoadPaint::kDefaultRadius;
     glm::vec4 sceneEditorViewport_{0.0f}; // left, top, right, bottom in ImGui coordinates
     ResourceBrowser resourceBrowser_;
     ResourcePreview resourcePreview_;

@@ -18,7 +18,7 @@ layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
     uint textureFlags;
-    float metallic;
+    float ochreDirtRatio;
     float roughness;
     float opacity;
     vec4 waterFlow;
@@ -74,14 +74,18 @@ void main() {
     // 二次弯曲让草根保持固定、叶尖偏移更大。沿高度收窄并扭转宽度轴以塑造叶片轮廓。
     float bendWeight = heightWeight * heightWeight;
     float sourceHeight = inRootHeight.w * material.waterSurface.x;
-    vec3 roads = terrainRoadWeights(root.xz);
-    float roadVisibility = 1.0 - clamp(dot(roads, vec3(1.0)), 0.0, 1.0);
-    float shortGrass = 0.0;
-    if (nearBlade && roads.x > 0.0) {
+    float dirtRatio = clamp(material.ochreDirtRatio, 0.0, 1.0);
+    // Keep the full verge height gradient at typical mix values and recover the
+    // original grass height as the painted dirt fades out.
+    float ochreVergeStrength = min(1.0, 2.0 * dirtRatio);
+    float shortGrass;
+    vec3 roads = terrainRoadWeights(root.xz, nearBlade, ochreVergeStrength, shortGrass);
+    float ochreGrass = 1.0 - dirtRatio;
+    if (nearBlade && roads.x > 0.0 && dirtRatio > 0.0 && dirtRatio < 1.0) {
         float tuft = smoothstep(0.42, 0.82, roadGrassClusters(root.xz));
-        roadVisibility += roads.x * tuft * 0.98;
-        shortGrass = smoothstep(0.035, 0.57, roads.x);
+        ochreGrass += (tuft - 0.5) * (2.0 * min(dirtRatio, 1.0 - dirtRatio));
     }
+    float roadVisibility = 1.0 - clamp(dot(roads, vec3(1.0 - ochreGrass, 1.0, 1.0)), 0.0, 1.0);
     float shortHeight = mix(0.085, 0.22, inMotion.y);
     float bladeHeight = mix(sourceHeight, min(sourceHeight, shortHeight), shortGrass);
     float width = inNormalWidth.w;

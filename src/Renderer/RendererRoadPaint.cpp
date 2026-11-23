@@ -74,7 +74,14 @@ void Renderer::drawRoadBrushControls() {
     }
     ImGui::SliderFloat("Radius", &roadBrushRadius_, RoadPaint::kMinimumRadius,
         RoadPaint::kMaximumRadius, "%.1f m", ImGuiSliderFlags_AlwaysClamp);
-    if (roadBrushSurface_ == RoadSurface::Mud) ImGui::TextDisabled("Width varies along the stroke");
+    if (roadBrushSurface_ == RoadSurface::Mud) {
+        ImGui::TextDisabled("Width varies along the stroke");
+        int dirtPercent = static_cast<int>(std::lround(ochreDirtRatio_ * 100.0f));
+        if (ImGui::SliderInt("Ochre dirt mix", &dirtPercent, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
+            ochreDirtRatio_ = static_cast<float>(dirtPercent) / 100.0f;
+            editorDirty_ = true;
+        }
+    }
     constexpr const char* views[] = {"Perspective", "Top-down"};
     int view = roadTopDown_ ? 1 : 0;
     if (ImGui::Combo("View", &view, views, IM_ARRAYSIZE(views))) roadTopDown_ = view == 1;

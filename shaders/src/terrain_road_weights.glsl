@@ -25,8 +25,19 @@ float roadGrassClusters(vec2 position) {
     return smoothstep(0.37, 0.65, mix(clumps, edges, 0.24));
 }
 
-void compositeRoad(inout vec3 weights, inout float remaining, uint surface, float coverage) {
-    if (surface != 0u) weights[surface - 1u] += remaining * coverage;
+// Keep the verge width in sync with the spatial index padding in RoadPaint.cpp.
+const float kRoadGrassVergeWidth = 2.6;
+
+void compositeRoad(inout vec3 weights, inout float remaining, inout float verge,
+                   inout float vergeRemaining, uint surface, float coverage, float vergeCoverage,
+                   float ochreVergeStrength) {
+    if (surface == 0u) {
+        vergeRemaining *= 1.0 - vergeCoverage;
+    } else {
+        weights[surface - 1u] += remaining * coverage;
+        float vergeStrength = surface == 1u ? ochreVergeStrength : 1.0;
+        verge = max(verge, vergeRemaining * vergeCoverage * vergeStrength);
+    }
     remaining *= 1.0 - coverage;
 }
 
@@ -39,7 +50,8 @@ float dirtRoadRadius(float radius, vec2 center) {
         + 0.03 * sin(dot(p, vec2(0.19, -0.16)) + 2.8));
 }
 
-vec3 terrainRoadWeights(vec2 position) {
+vec3 terrainRoadWeights(vec2 position, bool sampleVerge, float ochreVergeStrength, out float verge) {
+    verge = 0.0;
     ivec2 dimensions = ivec2(roadWords[0], roadWords[1]);
     if (dimensions.x == 0) return vec3(0.0);
     vec2 origin = vec2(uintBitsToFloat(roadWords[2]), uintBitsToFloat(roadWords[3]));
@@ -50,7 +62,10 @@ vec3 terrainRoadWeights(vec2 position) {
     uint count = roadWords[cellOffset + 1u];
     vec3 weights = vec3(0.0);
     float remaining = 1.0;
+    float vergeRemaining = 1.0;
     float coverage = 0.0;
+    float vergeCoverage = 0.0;
+    float padding = sampleVerge ? kRoadGrassVergeWidth : 0.0;
     uint stroke = 0xffffffffu;
     uint surface = 0u;
     // Newer strokes cover older ones. Segments of one stroke share a single
@@ -59,13 +74,15 @@ vec3 terrainRoadWeights(vec2 position) {
         uint segment = roadWords[first + i];
         uint id = roadWords[segment + 6u];
         if (id != stroke) {
-            compositeRoad(weights, remaining, surface, coverage);
-            if (remaining <= 0.0) return weights;
+            compositeRoad(weights, remaining, verge, vergeRemaining, surface, coverage, vergeCoverage,
+                          ochreVergeStrength);
+            if (remaining <= 0.0 && (!sampleVerge || verge >= vergeRemaining)) return weights;
             stroke = id;
             surface = roadWords[segment + 5u];
             coverage = 0.0;
+            vergeCoverage = 0.0;
         }
-        if (coverage >= 1.0) continue;
+        if (coverage >= 1.0 && (!sampleVerge || vergeCoverage >= 1.0)) continue;
         vec2 a = vec2(uintBitsToFloat(roadWords[segment]), uintBitsToFloat(roadWords[segment + 1u]));
         vec2 b = vec2(uintBitsToFloat(roadWords[segment + 2u]), uintBitsToFloat(roadWords[segment + 3u]));
         vec2 span = b - a;
@@ -75,13 +92,26 @@ vec3 terrainRoadWeights(vec2 position) {
         float distanceToCenter = length(offset - t * span);
         float coreFraction = 0.72;
         if (surface == 1u) {
-            if (distanceToCenter >= 1.22 * radius) continue;
+            if (distanceToCenter >= 1.22 * radius + padding) continue;
             radius = dirtRoadRadius(radius, a + t * span);
             // Leave a wider shoulder for the local terrain and vegetation to show through.
             coreFraction = 0.46;
         }
         coverage = max(coverage, 1.0 - smoothstep(radius * coreFraction, radius, distanceToCenter));
+        if (sampleVerge) {
+            // Roadside grass uses distance in metres from the physical edge, not paint opacity.
+            float edgeDistance = distanceToCenter - radius;
+            // Erasing a stroke also fades its verge, including beyond the erased surface.
+            float start = surface == 0u ? -0.28 * radius : 0.0;
+            vergeCoverage = max(vergeCoverage, 1.0 - smoothstep(start, padding, edgeDistance));
+        }
     }
-    compositeRoad(weights, remaining, surface, coverage);
+    compositeRoad(weights, remaining, verge, vergeRemaining, surface, coverage, vergeCoverage,
+                  ochreVergeStrength);
     return weights;
+}
+
+vec3 terrainRoadWeights(vec2 position) {
+    float unusedVerge;
+    return terrainRoadWeights(position, false, 0.0, unusedVerge);
 }

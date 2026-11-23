@@ -24,7 +24,7 @@ layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
     uint textureFlags;
-    float metallic;
+    float ochreDirtRatio;
     float roughness;
     float opacity;
     vec4 waterFlow;
@@ -236,25 +236,24 @@ void scatterRoadChips(inout TerrainSample soil, vec2 ground, float footprint) {
     soil.occlusion *= 1.0 - 0.16 * contact * (1.0 - chip) * detail;
 }
 
-float dirtRoadMaterialWeight(float brushCoverage, vec2 ground, float footprint, float grass) {
-    // Keep the underlying terrain's original texture coordinates and landform mix.
+float dirtRoadMaterialWeight(float brushCoverage, vec2 ground, float footprint, float grass, float dirtRatio) {
+    if (dirtRatio <= 0.0) return 0.0;
     float patches = valueNoise(ground * 0.31 + vec2(11.7, -23.1));
     float detail = valueNoise(ground * 1.65 + vec2(-9.3, 16.1));
     float detailVisibility = 1.0 - smoothstep(0.10, 0.50, footprint);
     float wear = smoothstep(0.25, 0.78, mix(patches, detail, 0.42 * detailVisibility));
     float core = smoothstep(0.42, 0.94, brushCoverage);
-    float shoulder = mix(0.23, 0.86, wear);
-    float compacted = mix(0.76, 0.97, wear);
     float meadow = smoothstep(0.14, 0.64, grass);
+    float variation = 0.14 * (wear - 0.5);
     if (meadow > 0.0) {
-        // The broad mix is about half soil. The green islands align with the tufts.
+        // The greener patches follow the tufts and fade to the base mix at a distance.
         float tuftDetail = 1.0 - smoothstep(0.16, 0.55, footprint);
-        float clumps = mix(0.5, roadGrassClusters(ground), tuftDetail);
-        float meadowCore = clamp(0.50 + 0.14 * (wear - 0.5) - 0.62 * (clumps - 0.5), 0.17, 0.83);
-        float meadowShoulder = meadowCore * mix(0.25, 0.80, wear);
-        compacted = mix(compacted, meadowCore, meadow);
-        shoulder = mix(shoulder, meadowShoulder, meadow);
+        variation -= 0.62 * (roadGrassClusters(ground) - 0.5) * meadow * tuftDetail;
     }
+    // Scale the variation toward zero at the slider endpoints, so both endpoints are exact.
+    float variationScale = 2.0 * min(dirtRatio, 1.0 - dirtRatio);
+    float compacted = dirtRatio + variation * variationScale;
+    float shoulder = compacted * mix(0.25, 0.80, wear);
     return brushCoverage * mix(shoulder, compacted, core);
 }
 
@@ -561,7 +560,10 @@ void main() {
                     (5.2 * rock * bedsVisible);
     vec3 bump = normalOffset + slabBump + bedsBump + distantGrassBump;
     vec3 roads = terrainRoadWeights(groundPosition);
-    if (roads.x > 0.0) roads.x = dirtRoadMaterialWeight(roads.x, groundPosition, footprint, grass);
+    if (roads.x > 0.0) {
+        float dirtRatio = clamp(material.ochreDirtRatio, 0.0, 1.0);
+        roads.x = dirtRoadMaterialWeight(roads.x, groundPosition, footprint, grass, dirtRatio);
+    }
     float roadCoverage = clamp(dot(roads, vec3(1.0)), 0.0, 1.0);
     vec3 paintedAlbedo = vec3(0.0);
     if (roadCoverage > 0.0) {

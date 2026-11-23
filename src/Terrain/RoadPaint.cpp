@@ -19,11 +19,13 @@ constexpr float kMaximumSegmentLength = 128.0f;
 constexpr float kMinimumCellSize = 32.0f;
 constexpr int kMaximumCellsPerAxis = 256;
 constexpr std::uint32_t kHeaderSize = 5;
-// Keep in sync with the width profile in terrain_road_weights.glsl.
+// Keep the spatial index bounds in sync with terrain_road_weights.glsl.
 constexpr float kMaximumDirtRadiusScale = 1.22f;
+constexpr float kRoadGrassVergeWidth = 2.6f;
 
 float indexRadius(RoadSurface surface, float radius) {
-    return surface == RoadSurface::Mud ? radius * kMaximumDirtRadiusScale : radius;
+    const float paintRadius = surface == RoadSurface::Mud ? radius * kMaximumDirtRadiusScale : radius;
+    return paintRadius + kRoadGrassVergeWidth;
 }
 
 bool validBrush(RoadSurface surface, float radius) {
@@ -112,7 +114,7 @@ void RoadPaint::clear() {
 
 std::vector<std::uint32_t> RoadPaint::buildGpuIndex() const {
     if (strokes_.empty()) return std::vector<std::uint32_t>(kHeaderSize, 0);
-    glm::vec2 minimum(kMaximumCoordinate + kMaximumRadius * kMaximumDirtRadiusScale);
+    glm::vec2 minimum(kMaximumCoordinate + indexRadius(RoadSurface::Mud, kMaximumRadius));
     glm::vec2 maximum(-minimum);
     for (const auto& stroke : strokes_) {
         const glm::vec2 radius(indexRadius(stroke.surface, stroke.radius));
