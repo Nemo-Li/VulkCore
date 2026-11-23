@@ -163,7 +163,8 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector)
         std::string key;
         tokens >> key;
         const bool model = key == "model_resource_path" || key == "player_model_resource";
-        const bool reference = model || key == "terrain_resource" || key == "water_resource";
+        const bool reference = model || key == "terrain_resource" || key == "water_resource" ||
+            key == "realtime_effect";
         const bool material = key == "material";
         const bool textures = key == "material_textures";
         const bool particle = key == "particle_system_object" || key == "particle_system";
@@ -173,6 +174,12 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector)
             const std::size_t count = textures ? 2 : 1;
             if (fields.size() != first + count) {
                 throw std::runtime_error("Invalid path fields in scene record: " + key);
+            }
+            if (key == "particle_system_object") {
+                const auto& texture = fields.front();
+                std::istringstream suffix(line.substr(texture.start + texture.length));
+                std::string mode;
+                if (suffix >> mode; mode == "flipbook") continue;
             }
             for (std::size_t index = first + count; index-- > first;) {
                 auto& field = fields[index];

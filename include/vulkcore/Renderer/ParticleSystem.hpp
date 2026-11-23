@@ -24,17 +24,6 @@ struct ParticleVertex {
     static std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions();
 };
 
-struct ParticleFlipbook {
-    std::uint32_t columns = 0;
-    std::uint32_t rows = 0;
-    std::uint32_t frames = 0;
-    std::uint32_t cellPixels = 0;
-    std::uint32_t gutterPixels = 0;
-    float width = 1.0f;
-
-    bool valid() const;
-};
-
 struct ParticleSystemSettings {
     enum class Shape : std::uint8_t {
         Point = 0,
@@ -70,7 +59,6 @@ struct ParticleSystemSettings {
     Shape shape = Shape::Cone;
     BlendMode blendMode = BlendMode::Additive;
     std::filesystem::path texturePath;
-    ParticleFlipbook flipbook;
     glm::vec4 startColor{1.0f, 0.38f, 0.06f, 0.95f};
     glm::vec4 endColor{1.0f, 0.04f, 0.005f, 0.0f};
 };

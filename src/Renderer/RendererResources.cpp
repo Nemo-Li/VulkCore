@@ -591,27 +591,6 @@ void Renderer::updateParticleBuffer() {
     );
 }
 
-bool Renderer::playEffectSprite(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition) {
-    const auto it = particleSystems_.find(nodeId);
-    if (it == particleSystems_.end() || !it->second.settings().flipbook.frames ||
-        !it->second.settings().enabled || !particleTextures_.contains(nodeId)) return false;
-    if (worldPosition) {
-        auto* node = findSceneNodeById(meshData_, nodeId);
-        if (!node || !std::isfinite(worldPosition->x) || !std::isfinite(worldPosition->y) ||
-            !std::isfinite(worldPosition->z)) return false;
-        node->transformTranslation = (*worldPosition - modelCenter_) * modelScale_;
-    }
-    it->second.restart();
-    return true;
-}
-
-bool Renderer::stopEffectSprite(std::uint32_t nodeId) {
-    const auto it = particleSystems_.find(nodeId);
-    if (it == particleSystems_.end() || !it->second.settings().flipbook.frames) return false;
-    it->second.stop();
-    return true;
-}
-
 void Renderer::updateParticleSystems(
     float deltaSeconds,
     const glm::vec3& cameraRight,
@@ -642,19 +621,13 @@ void Renderer::updateParticleSystems(
                     availableVertices
                 );
                 copiedVertexCount -= copiedVertexCount % ParticleSystem::kVerticesPerParticle;
-                const bool flipbook = system.settings().flipbook.frames != 0;
-                if (copiedVertexCount > 0 && isSceneNodeRenderEnabled(node.nodeId) &&
-                    (!flipbook || particleTextures_.contains(node.nodeId))) {
+                if (copiedVertexCount > 0 && isSceneNodeRenderEnabled(node.nodeId)) {
                     ParticleDrawRange range;
                     range.nodeId = node.nodeId;
                     range.firstVertex = static_cast<std::uint32_t>(particleVertices_.size());
                     range.vertexCount = static_cast<std::uint32_t>(copiedVertexCount);
                     range.blendMode = system.settings().blendMode;
-                    range.flipbook = flipbook;
-                    const glm::mat4 objectTransform = flipbook
-                        ? glm::translate(glm::mat4(1.0f), node.transformTranslation) *
-                            glm::scale(glm::mat4(1.0f), glm::vec3(node.transformScaleFactor * modelScale_))
-                        : particleObjectTransform(node);
+                    const glm::mat4 objectTransform = particleObjectTransform(node);
                     particleDrawRanges_.push_back(range);
                     particleVertices_.reserve(
                         particleVertices_.size() + copiedVertexCount
@@ -1608,9 +1581,10 @@ void Renderer::updateSceneTextureDescriptors() {
 
 void Renderer::updateCameraBasis() {
     constexpr float kMinimumBasisLength = 0.0001f;
-    const float kMinimumCameraDistance = playerController_.active() || roadEditorActive()
-        ? std::max(0.00001f, modelScale_ * 0.02f)
-        : 0.05f;
+    const float kMinimumCameraDistance = effectCamera_
+        ? std::min(0.05f, modelScale_ * 0.0001f)
+        : (playerController_.active() || roadEditorActive()
+            ? std::max(0.00001f, modelScale_ * 0.02f) : 0.05f);
     glm::vec3 targetDelta = cameraTarget_ - cameraPosition_;
     if (glm::length(targetDelta) < kMinimumCameraDistance) {
         cameraPosition_ = cameraTarget_ + glm::vec3(0.0f, 0.0f, 4.0f);
@@ -1622,14 +1596,17 @@ void Renderer::updateCameraBasis() {
 
     if (!cameraBasisInitialized_) {
         const glm::vec3 worldUp = roadEditorActive() ? glm::vec3(0.0f, 1.0f, 0.0f) :
-            (authoredView_.enabled ? authoredView_.up :
-                (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp));
+            (effectCamera_ ? effectCamera_->up :
+                (authoredView_.enabled ? authoredView_.up :
+                    (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp)));
         // At the exact pole the position alone does not define camera roll,
         // so retain the historical front-view orientation as the initial one.
         glm::vec3 initialUp = worldUp -
             cameraForward_ * glm::dot(worldUp, cameraForward_);
         if (glm::length(initialUp) < kMinimumBasisLength) {
-            initialUp = glm::vec3(0.0f, 1.0f, 0.0f);
+            const glm::vec3 fallback = std::abs(cameraForward_.y) < 0.9f
+                ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(0.0f, 0.0f, 1.0f);
+            initialUp = fallback - cameraForward_ * glm::dot(fallback, cameraForward_);
         }
         cameraUp_ = glm::normalize(initialUp);
         cameraBasisInitialized_ = true;
@@ -1717,6 +1694,24 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         ubo.projection[1][1] *= -1.0f;
     }
 
+    if (effectCamera_ && !roadEditorActive()) {
+        glm::vec4 area{0.0f, 0.0f, 1.0f, 1.0f};
+#ifndef VULKCORE_OHOS
+        if (toolUiVisible_ && fixedFrameOutput_.empty()) {
+            const auto* viewport = ImGui::GetMainViewport();
+            const auto& rect = sceneEditorViewport_;
+            if (rect.z > rect.x && rect.w > rect.y && viewport->Size.x > 0 && viewport->Size.y > 0) {
+                const glm::vec4 origin(viewport->Pos.x, viewport->Pos.y, viewport->Pos.x, viewport->Pos.y);
+                const glm::vec4 size(viewport->Size.x, viewport->Size.y, viewport->Size.x, viewport->Size.y);
+                area = glm::clamp((rect - origin) / size, 0.0f, 1.0f);
+            }
+        }
+#endif
+        const float distance = glm::distance(cameraPosition_, cameraTarget_);
+        ubo.projection = fittedSceneProjection(effectCamera_->fov, effectCamera_->aspect, aspect, area,
+            std::min(nearPlane, distance * 0.01f), std::max(100.0f, distance * 8.0f));
+    }
+
 #ifndef VULKCORE_OHOS
     if (roadEditorActive() && roadTopDown_) {
         const float halfHeight = roadEditorCamera_->distance * modelScale_ * 0.42f;
@@ -1768,6 +1763,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         fillFloatingMist(ubo, *terrainScene_, distanceFogSettings_.floatingMistOpacity, weatherTime, clipFromWorld);
     }
     updateSunShadowUniforms(ubo);
+    prepareRealtimeEffects(ubo);
     uniformBuffers_[currentFrame_]->upload(&ubo, sizeof(ubo));
     return clipFromWorld;
 }

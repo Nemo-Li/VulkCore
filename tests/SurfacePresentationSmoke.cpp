@@ -90,7 +90,31 @@ int main() {
                 }
             }
         }
-        std::cout << "Surface orientation, full-screen cover and aspect checks passed\n";
+        // The Effects preview fits inside the visible editor area even with asymmetric panels.
+        constexpr float previewAspect = 1.5f;
+        constexpr float framebufferAspect = 16.0f / 9.0f;
+        const glm::vec4 area(0.17f, 0.08f, 0.71f, 0.79f);
+        const auto fitted = VulkCore::fittedSceneProjection(43.0f, previewAspect, framebufferAspect,
+            area, 0.01f, 100.0f);
+        const auto screenPoint = [&](glm::vec3 point) {
+            const auto clip = fitted * glm::vec4(point, 1.0f);
+            return glm::vec2(clip) / (2.0f * clip.w) + 0.5f;
+        };
+        const glm::vec2 center((area.x + area.z) * 0.5f, (area.y + area.w) * 0.5f);
+        require(glm::length(screenPoint({0.0f, 0.0f, -1.0f}) - center) < 0.00001f,
+            "Preview aim did not project to the center between the panels");
+        const float halfHeight = std::tan(glm::radians(43.0f) * 0.5f);
+        const auto bottomRight = screenPoint({halfHeight * previewAspect, -halfHeight, -1.0f});
+        require(std::abs(bottomRight.x - area.z) < 0.00001f &&
+            std::abs((bottomRight.x - center.x) * framebufferAspect /
+                (bottomRight.y - center.y) - previewAspect) < 0.00001f,
+            "Preview oversized the available width or changed its aspect ratio");
+        const auto full = VulkCore::fittedSceneProjection(43.0f, previewAspect, framebufferAspect,
+            {0.0f, 0.0f, 1.0f, 1.0f}, 0.01f, 100.0f);
+        require(full[2][0] == 0.0f && full[2][1] == 0.0f &&
+            std::abs(-full[1][1] - 1.0f / halfHeight) < 0.00001f,
+            "Full-screen preview lost its center or original vertical FOV");
+        std::cout << "Surface orientation, cover, and effect framing checks passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

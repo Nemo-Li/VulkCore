@@ -211,6 +211,7 @@ enum class SceneObjectType : std::uint8_t {
     ImportedMesh = 0,
     ParticleSystem,
     Player,
+    RealtimeEffect,
 };
 
 // The node hierarchy is kept separately from the flattened render mesh. This

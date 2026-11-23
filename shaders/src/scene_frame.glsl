@@ -32,6 +32,9 @@ layout(set = 0, binding = VULKCORE_SCENE_FRAME_BINDING) uniform UniformBufferObj
     vec4 sunShadowParams; // xy 视空间分界，z 单级分辨率，w 启用标记。
     vec4 sunShadowBias;
     vec4 grassBladeWidthRange; // xy 草叶底边宽度的最小值和最大值，采用地形单位。
+    vec4 effectLightCount;
+    vec4 effectLightPosition[8];
+    vec4 effectLightColor[8];
 } ubo;
 
 #endif

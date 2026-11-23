@@ -425,13 +425,7 @@ void saveParticleSystemSettings(
          << settings.startColor.b << ' ' << settings.startColor.a << ' '
          << settings.endColor.r << ' ' << settings.endColor.g << ' '
          << settings.endColor.b << ' ' << settings.endColor.a << ' '
-         << std::quoted(settings.texturePath.string());
-    const auto& book = settings.flipbook;
-    if (book.frames) {
-        file << " flipbook " << book.columns << ' ' << book.rows << ' '
-             << book.frames << ' ' << book.cellPixels << ' ' << book.gutterPixels << ' ' << book.width;
-    }
-    file << '\n';
+         << std::quoted(settings.texturePath.string()) << '\n';
 }
 
 std::string shaderConfigToken(const std::string& token) {

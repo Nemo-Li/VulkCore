@@ -28,7 +28,6 @@
 
 #include "vulkcore/Platform/Window.hpp"
 
-struct ImFont;
 
 namespace VulkCore {
 
@@ -38,6 +37,8 @@ class SwapChain;
 class VulkanContext;
 class TerrainScene;
 class HdrComposition;
+class RealtimeEffect;
+enum class EditorFileType;
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
 class EffectEditorView;
 #endif
@@ -177,7 +178,8 @@ private:
     void acceptSceneModelDrop();
     void processSceneModelDrop();
     void drawResourcePreview();
-    void importEffectSprite(const std::filesystem::path& atlasPath);
+    void importRealtimeEffect(const std::filesystem::path& path);
+    void frameRealtimeEffect(const ModelNode& node);
     void loadResourcePreview();
     void createResourcePreviewBuffers();
     void destroyResourcePreviewBuffers();
@@ -187,7 +189,7 @@ private:
     void drawGameInspector();
     void changeEditorMaterialTexture(std::uint32_t index, const std::filesystem::path& path);
     void drawGameOutliner();
-    void openEditorFilePicker(const char* title, bool scene, const std::filesystem::path& directory,
+    void openEditorFilePicker(const char* title, EditorFileType type, const std::filesystem::path& directory,
                               std::function<void(const std::filesystem::path&)> accept);
     void drawEditorFilePicker();
     void drawEditorTexture(const char* label, const std::filesystem::path& path,
@@ -240,8 +242,9 @@ private:
     std::filesystem::path createSceneFile();
     void discoverSceneResources();
     bool saveSceneResource(const std::filesystem::path& path);
-    bool playEffectSprite(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition = std::nullopt);
-    bool stopEffectSprite(std::uint32_t nodeId);
+    // Positions use the same scene-world units as ordinary particle objects.
+    bool playRealtimeEffect(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition = std::nullopt);
+    bool stopRealtimeEffect(std::uint32_t nodeId);
     bool loadSceneResource(const std::filesystem::path& path);
     void createBoundingBoxPipeline();
     void createParticlePipelines();
@@ -251,11 +254,28 @@ private:
     void configureHdrComposition();
     void updateTransition(float seconds);
     void updateCameraOrbit(bool viewportHovered);
+    glm::vec3 realtimeEffectSceneUp() const;
+    void restoreSceneCamera();
     void createBoundingBoxBuffers();
     void updateBoundingBoxVertices();
     void updateBoundingBoxBuffer();
     void createParticleBuffer();
     void updateParticleBuffer();
+    void addRealtimeEffect(std::uint32_t id, const std::filesystem::path& path);
+    void loadRealtimeEffect(std::uint32_t id, const std::filesystem::path& path, bool autoPlay, bool loop);
+    bool realtimeNeedsOpaqueSnapshot() const;
+    bool hasActiveRealtimePost(bool afterBloom) const;
+    void updateRealtimeEffects(float dt);
+    void prepareRealtimeEffects(UniformBufferObject& scene);
+    void drawRealtimeEffects(VkCommandBuffer commands, bool hdr);
+    unsigned drawRealtimePost(VkCommandBuffer commands, unsigned source, bool afterBloom);
+    bool hasRealtimePostEffects() const;
+    HdrSettings realtimeHdrSettings(bool includeInactive) const;
+    void invalidateRealtimeEffectPipelines();
+    bool drawRealtimeEffectControls(ModelNode& node);
+    void saveRealtimeEffects(std::ostream& file,
+        const std::function<std::string(const std::filesystem::path&)>& reference) const;
+    std::unordered_map<std::uint32_t, std::shared_ptr<RealtimeEffect>> realtimeEffects_;
     void createParticleTextures();
     void loadParticleTexture(std::uint32_t nodeId);
     void createParticleDescriptorSets(std::uint32_t nodeId);
@@ -490,7 +510,6 @@ private:
         std::uint32_t vertexCount = 0;
         ParticleSystemSettings::BlendMode blendMode =
             ParticleSystemSettings::BlendMode::Additive;
-        bool flipbook = false;
     };
     std::vector<ParticleDrawRange> particleDrawRanges_;
     std::vector<std::unique_ptr<Buffer>> boundingBoxVertexBuffers_;
@@ -571,7 +590,7 @@ private:
     std::uint32_t editorPlayerEffect_ = 0;
     struct EditorFilePicker {
         std::string title;
-        bool scene = false;
+        EditorFileType type{};
         std::filesystem::path directory;
         std::array<char, 2048> path{};
         std::function<void(const std::filesystem::path&)> accept;
@@ -586,7 +605,6 @@ private:
         std::string status;
         std::vector<std::string> candidates;
     } editorShader_;
-    ImFont* editorShaderFont_ = nullptr;
     bool editorShaderRequested_ = false;
     bool editorShaderApplyRequested_ = false;
     glm::vec3 cameraPosition_{0.0f, 0.0f, 4.0f};
@@ -595,6 +613,18 @@ private:
     glm::vec3 cameraUp_{0.0f, 1.0f, 0.0f};
     bool cameraBasisInitialized_ = false;
     glm::vec3 cameraTarget_{0.0f};
+    struct EffectCamera {
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        float fov = 43.0f;
+        float aspect = 16.0f / 9.0f;
+    };
+    std::optional<EffectCamera> effectCamera_;
+    struct SceneCamera {
+        glm::vec3 position;
+        glm::vec3 target;
+        std::optional<EffectCamera> framing;
+    };
+    std::optional<SceneCamera> previousSceneCamera_;
     glm::vec3 ambientLightColor_{0.18f, 0.21f, 0.24f};
     float ambientLightIntensity_ = 1.0f;
     glm::vec3 sunLightDirection_{0.45f, 0.55f, 0.75f};

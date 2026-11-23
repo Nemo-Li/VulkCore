@@ -43,6 +43,9 @@ struct UniformBufferObject {
     glm::vec4 sunShadowParams{0.0f}; // two view-depth splits, atlas tile size, enabled
     glm::vec4 sunShadowBias{0.0f}; // comparison bias in normalized light depth for each cascade
     glm::vec4 grassBladeWidthRange{0.0f}; // xy minimum and maximum base width in terrain units
+    glm::vec4 effectLightCount{0.0f};
+    std::array<glm::vec4, 8> effectLightPosition{}; // normalized position, cutoff radius
+    std::array<glm::vec4, 8> effectLightColor{}; // linear radiance, decay
 };
 
 } // namespace VulkCore

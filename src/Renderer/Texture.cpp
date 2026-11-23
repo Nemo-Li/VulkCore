@@ -88,8 +88,11 @@ Texture::Texture(
     uploadRgbaPixels(rgba.data(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
 }
 
-Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData)
-    : context_(context) {
+Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData,
+                 TextureColorSpace colorSpace, VkSamplerAddressMode addressMode)
+    : context_(context),
+      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
+      addressModeU_(addressMode), addressModeV_(addressMode) {
     if (encodedData.empty() || encodedData.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("embedded texture data is empty or too large");
     }

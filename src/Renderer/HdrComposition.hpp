@@ -26,7 +26,7 @@ public:
     HdrComposition(VulkanContext& context, const SwapChain& swapChain,
                    const HdrSettings& settings,
                    const std::vector<std::unique_ptr<Buffer>>& sceneUniforms,
-                   const ShaderLookup& shader);
+                   const ShaderLookup& shader, bool realtimePost = false);
     ~HdrComposition();
 
     HdrComposition(const HdrComposition&) = delete;
@@ -34,8 +34,14 @@ public:
 
     VkRenderPass geometryPass() const { return geometryPass_; }
     void beginGeometry(VkCommandBuffer commands, std::size_t frame, glm::vec3 background) const;
+    using PostDraw = std::function<unsigned(unsigned)>;
     void beginPresentation(VkCommandBuffer commands, std::size_t frame,
-                           VkFramebuffer framebuffer, const HdrSettings& settings) const;
+                           VkFramebuffer framebuffer, const HdrSettings& settings,
+                           unsigned source = 0, const PostDraw& afterBloom = {}) const;
+    VkRenderPass effectPostPass() const { return effectPostPass_; }
+    bool hasBloom() const { return extract_ != VK_NULL_HANDLE; }
+    VkDescriptorImageInfo effectPostSource(std::size_t frame, unsigned source) const;
+    unsigned beginEffectPost(VkCommandBuffer commands, std::size_t frame, unsigned source) const;
 
 private:
     struct Image {
@@ -56,12 +62,11 @@ private:
         std::vector<Target> up;
         Target edges;
         Target weights;
-        VkDescriptorSet extract = VK_NULL_HANDLE;
+        std::array<Target, 2> effectTargets{};
+        std::array<VkDescriptorSet, 3> extract{}, edgeSet{}, composite{}, mergeBloom{};
         std::vector<VkDescriptorSet> downSets;
         std::vector<VkDescriptorSet> upSets;
-        VkDescriptorSet edgeSet = VK_NULL_HANDLE;
         VkDescriptorSet weightSet = VK_NULL_HANDLE;
-        VkDescriptorSet composite = VK_NULL_HANDLE;
     };
 
     void createImage(Image& image, VkExtent2D extent, VkFormat format, bool depth);
@@ -85,6 +90,7 @@ private:
     bool encodeSrgb_ = false;
     VkRenderPass geometryPass_ = VK_NULL_HANDLE;
     VkRenderPass filterPass_ = VK_NULL_HANDLE;
+    VkRenderPass effectPostPass_ = VK_NULL_HANDLE;
     VkRenderPass aaPass_ = VK_NULL_HANDLE;
     VkRenderPass presentationPass_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
@@ -95,6 +101,7 @@ private:
     std::unique_ptr<Texture> area_;
     std::unique_ptr<Texture> search_;
     VkPipeline extract_ = VK_NULL_HANDLE;
+    VkPipeline mergeBloom_ = VK_NULL_HANDLE;
     VkPipeline down_ = VK_NULL_HANDLE;
     VkPipeline up_ = VK_NULL_HANDLE;
     VkPipeline edges_ = VK_NULL_HANDLE;

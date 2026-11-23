@@ -32,6 +32,11 @@ int main() {
         write(model.parent_path() / "buffer.bin", "glTF sidecar");
         write(model.parent_path() / "tex/albedo.png", "texture");
         write(source / "assets/textures/spark.png", "spark");
+        write(source / "assets/fonts/SourceHanSansCN-Regular.otf", "bundled font");
+        const auto atlas = root / "retired/atlas.png";
+        write(atlas, "retired atlas");
+        const auto effect = root / "external VFX/fire.vfx3d";
+        write(effect, "vfx3d package");
         write(source / "assets/terrain/MainField.tscb", "terrain");
         write(source / "src/main.cpp", "// runtime");
         write(source / "include/engine.hpp", "// interface");
@@ -57,6 +62,8 @@ int main() {
             (source / "assets/textures/spark.png").generic_string() + "\" - - - - - -\n"
             "material_textures 1 \"missing-normal.png\" \"\"\n"
             "particle_system_object 99 1 \"assets/textures/spark.png\"\n"
+            "particle_system_object 98 1 \"" + atlas.generic_string() + "\" flipbook 2 2 4 192 4 2\n"
+            "realtime_effect 100 \"" + effect.generic_string() + "\" 1 0\n"
             "camera_position 1 2 3\n";
         write(scene, original);
         VulkCore::OhosExportOptions options;
@@ -84,6 +91,13 @@ int main() {
         require(exported.find("camera_position 1 2 3") != std::string::npos, "Scene settings were changed");
         require(exported.find("material_textures 1 \"\" \"\"") != std::string::npos, "Missing optional texture did not retain editor fallback");
         require(fs::exists(payload / "assets/external/0/external model/buffer.bin"), "Model sidecar was lost");
+        require(exported.find("realtime_effect 100 \"../assets/external/1/fire.vfx3d\" 1 0") != std::string::npos,
+            "Realtime effect path or settings were lost");
+        require(read(payload / "assets/external/1/fire.vfx3d") == "vfx3d package", "Realtime effect package was lost");
+        require(exported.find("particle_system_object 99") != std::string::npos &&
+            exported.find("particle_system_object 98") == std::string::npos &&
+            !fs::exists(payload / "assets/external/2/atlas.png"), "Export retained a retired atlas effect");
+        require(read(payload / "assets/fonts/SourceHanSansCN-Regular.otf") == "bundled font", "ImGui font was lost");
         require(read(payload / "startup.txt") == "scenes/tornado.scene\n", "Special scene filename was lost");
         require(read(options.outputDirectory / "AppScope/resources/base/element/string.json").find("Game \\\"Mobile\\\"") != std::string::npos, "App name JSON was not escaped");
         {

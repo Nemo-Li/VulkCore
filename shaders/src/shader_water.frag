@@ -9,6 +9,7 @@ layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
 #include "scene_fog.glsl"
+#include "effect_lighting.glsl"
 #include "sun_shadow.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
@@ -191,7 +192,9 @@ void main() {
     // 场景快照已包含雾。雾只混入水面自身的颜色、反射底色，并按透射率衰减高光。
     vec4 fog = sceneFogAt(fragWorldPosition);
     float sunlightVisibility = sunVisibility(fragWorldPosition, sunReceiverNormal(fragWorldPosition));
-    vec3 litWater = applySceneFog(waterColor * (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility), fog);
+    vec3 lighting = ambientLight + diffuseLight * diffuseFactor * sunlightVisibility +
+        effectPointLighting(fragWorldPosition, normal);
+    vec3 litWater = applySceneFog(waterColor * lighting, fog);
     vec3 refractedColor = mix(litWater, sceneRefraction, 0.42);
     vec3 reflectedColor = mix(applySceneFog(skyReflection, fog), sceneReflection, 0.72);
     vec3 color = mix(refractedColor, reflectedColor, 0.22 + fresnel * 0.68);

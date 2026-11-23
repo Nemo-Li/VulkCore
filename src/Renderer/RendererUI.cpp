@@ -16,10 +16,16 @@ void Renderer::initializeImGui() {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
-#ifndef VULKCORE_OHOS
-    io.FontDefault = io.Fonts->AddFontDefault();
-    editorShaderFont_ = io.Fonts->AddFontDefaultVector();
-#endif
+    io.FontDefault = io.Fonts->AddFontDefaultVector();
+    const auto cjkFont = std::filesystem::path(VULKCORE_ASSET_DIR) / "fonts" / "SourceHanSansCN-Regular.otf";
+    ImFontConfig cjkConfig;
+    cjkConfig.MergeMode = true;
+    cjkConfig.ExtraSizeScale = 1.18f; // Match the apparent size of the Latin glyphs at 13 px.
+    cjkConfig.Flags |= ImFontFlags_NoLoadError;
+    // The 1.92 Vulkan backend uploads glyphs on demand, so no fixed glyph ranges are needed.
+    if (!io.Fonts->AddFontFromFileTTF(pathUtf8(cjkFont).c_str(), 0.0f, &cjkConfig)) {
+        std::cerr << "warning: Could not load the ImGui Chinese font: " << cjkFont << '\n';
+    }
 
     if (!initializeWindowImGui(context_->window())) {
         ImGui::DestroyContext();
@@ -74,22 +80,6 @@ void Renderer::drawParticleSystemControls(std::uint32_t nodeId, bool& shouldSave
     }
     ParticleSystem& particleSystem = systemIt->second;
     ParticleSystemSettings& settings = particleSystem.settings();
-#ifndef VULKCORE_OHOS
-    if (settings.flipbook.frames && node) {
-        ImGui::SeparatorText("Effect Sprite");
-        ImGui::TextDisabled("%u frames / %.2f s", settings.flipbook.frames, settings.duration);
-        ImGui::TextWrapped("%s", settings.texturePath.string().c_str());
-        shouldSaveSettings |= ImGui::DragFloat3("Position", &node->transformTranslation.x, 0.005f);
-        shouldSaveSettings |= ImGui::DragFloat("Width (m)", &settings.flipbook.width, 0.05f, 0.05f, 500.0f,
-            "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        shouldSaveSettings |= ImGui::Checkbox("Play on awake", &settings.playOnAwake);
-        shouldSaveSettings |= ImGui::Checkbox("Loop", &settings.looping);
-        if (ImGui::Button("Replay")) playEffectSprite(nodeId);
-        ImGui::SameLine();
-        if (ImGui::Button("Stop")) stopEffectSprite(nodeId);
-        return;
-    }
-#endif
     bool settingsChanged = false;
     if (particleTexturePathNodeId_ != nodeId) {
         particleTexturePathNodeId_ = nodeId;
@@ -279,7 +269,7 @@ void Renderer::drawParticleSystemControls(std::uint32_t nodeId, bool& shouldSave
 void Renderer::updateTransition(float seconds) {
     if (!transitionSettings_.enabled || !fixedFrameOutput_.empty()) return;
     transitionPlayer_.update(seconds, transitionSettings_);
-    if (!authoredView_.enabled || transitionSettings_.activeFov <= 0.0f) return;
+    if (effectCamera_ || !authoredView_.enabled || transitionSettings_.activeFov <= 0.0f) return;
 
     const float amount = std::min(seconds, 0.1f) * 1.5f;
     transitionCameraFov_ = std::lerp(transitionCameraFov_,
@@ -299,11 +289,23 @@ void Renderer::updateTransition(float seconds) {
 }
 
 void Renderer::updateCameraOrbit(bool viewportHovered) {
-    if (roadEditorActive() || !authoredView_.orbitEnabled || playerController_.active() || !fixedFrameOutput_.empty()) {
+    if (roadEditorActive() || (!effectCamera_ && (!authoredView_.orbitEnabled || playerController_.active())) ||
+        !fixedFrameOutput_.empty()) {
         cameraOrbitDragging_ = false;
         return;
     }
 
+    if (effectCamera_ && mode_ == Mode::Scene && viewportHovered && !sceneEditMode_ &&
+        !ImGui::IsAnyItemActive() && ImGui::GetIO().MouseWheel != 0.0f) {
+        const auto offset = cameraPosition_ - cameraTarget_;
+        const float radius = glm::length(offset);
+        if (radius > 0.0f) {
+            const float zoom = std::clamp(std::exp(-0.12f * ImGui::GetIO().MouseWheel), 0.5f, 2.0f);
+            const float distance = std::clamp(radius * zoom, 0.1f * modelScale_, 10000.0f * modelScale_);
+            cameraPosition_ = cameraTarget_ + offset * (distance / radius);
+            if (!playerController_.active() && !transitionSettings_.enabled) editorDirty_ = true;
+        }
+    }
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         cameraOrbitDragging_ = viewportHovered && !ImGui::IsAnyItemActive();
         return;
@@ -318,11 +320,10 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
 
     const glm::vec3 offset = cameraPosition_ - cameraTarget_;
     const float radius = glm::length(offset);
-    if (radius < 0.05f) {
-        return;
-    }
+    if (radius < (effectCamera_ ? 0.0001f * modelScale_ : 0.05f)) return;
 
-    const glm::vec3 up = authoredView_.enabled ? authoredView_.up : kDefaultSceneUp;
+    const glm::vec3 up = effectCamera_ ? effectCamera_->up :
+        (authoredView_.enabled ? authoredView_.up : kDefaultSceneUp);
     const float height = glm::dot(offset, up);
     glm::vec3 horizontal = offset - up * height;
     if (glm::length(horizontal) < 0.0001f) {
@@ -332,7 +333,7 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
     }
 
     constexpr float kRadiansPerPixel = 0.005f;
-    const glm::vec2 pitchLimits = glm::radians(authoredView_.orbitPitchLimits);
+    const glm::vec2 pitchLimits = glm::radians(effectCamera_ ? glm::vec2(-89.0f, 89.0f) : authoredView_.orbitPitchLimits);
     const float pitch = std::clamp(
         std::asin(std::clamp(height / radius, -1.0f, 1.0f)) + delta.y * kRadiansPerPixel,
         pitchLimits.x,
@@ -342,6 +343,7 @@ void Renderer::updateCameraOrbit(bool viewportHovered) {
     const glm::vec3 direction(yaw * glm::vec4(glm::normalize(horizontal), 0.0f));
     cameraPosition_ = cameraTarget_ + radius * (direction * std::cos(pitch) + up * std::sin(pitch));
     cameraBasisInitialized_ = false;
+    if (effectCamera_ && !playerController_.active() && !transitionSettings_.enabled) editorDirty_ = true;
 }
 
 bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize) {

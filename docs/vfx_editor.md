@@ -16,12 +16,17 @@ npm run dev
 
 ## 在 VulkCore 场景中播放
 
-1. 在视口摆好要使用的视角，点击 `导出场景精灵`。
-2. 解压 `.vulkcore-vfx.zip`，将 `atlas.png` 与 `effect.vfx` 放在同一文件夹。
-3. 在 `Scene` 标签点击 `Import Effect Sprite...`，选择 `atlas.png`。特效节点出现在相机当前观察的位置。
-4. 在 Inspector 调整位置、世界宽度、自动播放和循环。使用 `Replay` 预览，点击 `Save` 保存场景。场景引用图集文件，随场景分发时保留 `atlas.png`。
+1. 在 `Effects` 点击 `导出 Vulkan 特效`，得到一个 `.vfx3d` 文件。
+2. 在 `Scene` 点击 `Import Realtime Effect...` 并选择该文件。场景会按照导出时 Effects 视口的视角和画面占比取景，并把预览中心对准 Scene 视口中央。未记录预览相机的早期 `.vfx3d` 使用 Effects 的默认视角。
+3. 在 Inspector 调整位置、旋转、缩放、自动播放和循环。已导入的特效可用 `Frame Effect` 重新取景，也可用 `Return to Scene Camera` 返回先前视角。拖动视口可环绕观察，在普通预览模式下滚轮可缩放相机。使用 `Replay` 和 `Stop` 验证播放。点击 `Save` 可保存对象设置和自由相机的构图；使用玩家或过场相机时，特效取景只在编辑时生效。发布时将 `.vfx3d` 和引用它的 `.scene` 一起携带。
 
-游戏代码可以在场景加载后调用 `Renderer::playEffectSprite(nodeId, worldPosition)` 或 `Renderer::stopEffectSprite(nodeId)`。省略 `worldPosition` 时使用场景里保存的位置。精灵带透明度，在 Vulkan 场景里作为有深度测试的朝向相机的平面播放，视角和动画由烘焙结果决定。每个精灵最多 256 帧，短效果按 30 fps 采样。精灵只播放烘焙画面。实时点光源、场景深度软交界和屏幕扭曲由下文的共享运行时计算。
+运行时可调用 `Renderer::playRealtimeEffect(nodeId, worldPosition)` 和 `Renderer::stopRealtimeEffect(nodeId)`。省略 `worldPosition` 时使用场景保存的位置。每次播放从时间轴起点开始，位置覆写仅作用于这次播放。引擎将编辑器的 Y 向上坐标转换到场景的向上方向。
+
+文件内含源贴图转换出的 PNG、程序和 GLB 网格、粒子初始数据、生命周期曲线、属性关键帧及 SPIR-V。GPU 每帧求值粒子，拖尾随场景相机更新。场景深度用于遮挡与软交界，点光源影响默认材质、地形、草和水。扭曲、色差、闪光和自定义后处理在场景 HDR 颜色上运行。自定义后处理可在 Bloom 前或后执行。
+
+场景的 HDR 配置决定全局 Bloom、曝光、抗锯齿和色彩输出。没有 HDR 配置的场景使用活跃特效包的 Bloom 强度、阈值和半径，由 VulkCore 的滤镜合成。编辑器的全局暗角与色差用于预览，运行时的局部色差可用后处理图层导出。自定义 GLSL 的 Vulkan 转换支持工作台约定的属性和 Uniform，每层最多四张自定义贴图和十四个自定义数值 Uniform。每帧最多处理八盏特效点光源，Bloom 前后各最多八个特效后处理图层。自定义后处理的 `texture(uEffectMask, uv)` 读取当前相机下实时计算的环形遮罩，可使用其 Alpha 通道。
+
+打开含有旧版图集特效的场景时，引擎会跳过这些对象并在 Inspector 的 `Skipped resources` 中列出。要在场景中播放对应效果，可将原始 Effects 项目重新导出为 `.vfx3d`。
 
 ## 使用共享运行时
 

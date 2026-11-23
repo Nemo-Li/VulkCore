@@ -16,6 +16,7 @@ layout(location = 9) in vec3 fragGroundPosition;
 layout(location = 10) flat in vec3 fragGroundNormal;
 
 #include "scene_fog.glsl"
+#include "effect_lighting.glsl"
 #include "meadow_shading.glsl"
 #include "sun_shadow.glsl"
 #include "sun_shadow_coverage.glsl"
@@ -101,6 +102,7 @@ void main() {
         vec3 alignedShadowNormal = dot(shadowNormal, groundNormal) < 0.0 ? -shadowNormal : shadowNormal;
         vec3 receiverNormal = normalize(mix(groundNormal, alignedShadowNormal, detail));
         sunlight *= sunVisibility(shadedPosition, receiverNormal);
+        ambient += effectPointLighting(shadedPosition, groundNormal);
         vec3 color = vec3(0.0);
         if (detail > 0.0) {
             vec3 tint = vec3(0.192, 0.365, 0.075);
@@ -143,7 +145,8 @@ void main() {
         ? mix(0.63, 0.98, smoothstep(0.20, 0.84, flowerFacing))
         : (flowerFacing < 0.32 ? 0.72 : (flowerFacing < 0.67 ? 0.91 : 1.12));
     sunlight *= sunVisibility(fragWorldPosition, shadowNormal);
-    vec3 lighting = ambient * 0.72 + sunlight * (flowerDiffuse + backLight + rim);
+    vec3 lighting = ambient * 0.72 + sunlight * (flowerDiffuse + backLight + rim) +
+        effectPointLighting(fragWorldPosition, normal);
     vec3 finalColor = albedo * lighting + vec3(0.045, 0.034, 0.004) * bladeHeight * backLight;
     SUN_SHADOW_COLOR(vec4(applySceneFog(finalColor * material.baseColor.rgb,
         sceneFogAt(fragWorldPosition)), material.opacity));

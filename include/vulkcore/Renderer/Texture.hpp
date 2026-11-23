@@ -27,7 +27,9 @@ public:
         const std::vector<std::filesystem::path>& layerPaths,
         TextureColorSpace colorSpace
     );
-    Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData);
+    Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData,
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb,
+        VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
     Texture(
         VulkanContext& context,
         const std::vector<std::uint8_t>& rgbaPixels,

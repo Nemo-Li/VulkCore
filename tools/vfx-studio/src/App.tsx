@@ -34,7 +34,7 @@ import {
 } from './core/model';
 import { EditorEngine, type EngineMetrics } from './editor/engine';
 import { PreviewQueue } from './editor/preview';
-import { exportFlipbook } from './editor/flipbook';
+import { exportNativeEffect } from './editor/native-effect';
 import { fileAsset } from './runtime/assets';
 import { exportPackage, freezeDocument, importProject, sha256 } from './editor/package';
 import {
@@ -358,27 +358,27 @@ export default function App({ store }: { store: EditorStore }) {
       }
     }
   }
-  async function exportSceneSprite() {
-    const currentEngine = engineRef.current;
-    if (!currentEngine) return;
+  async function exportSceneEffect() {
+    const preview = engineRef.current;
+    if (!preview) return;
+    const framing = {
+      position: preview.camera.position.toArray(),
+      target: preview.orbit.target.toArray(),
+      fov: preview.camera.getEffectiveFOV(),
+      aspect: preview.camera.aspect,
+    };
     const ticket = ++exportTicket.current;
     const { doc, revision } = store.state;
     const assertCurrent = () => {
       if (ticket !== exportTicket.current) throw new Error('导出已取消');
       if (revision !== store.state.revision) throw new Error('导出期间项目已修改，请重新导出');
     };
-    setExporting('准备导出场景精灵…');
+    setExporting('正在编译 Vulkan 特效…');
     try {
-      const result = await exportFlipbook(
-        doc,
-        currentEngine.camera,
-        currentEngine.camera.position.distanceTo(currentEngine.orbit.target),
-        assertCurrent,
-        (frame, count) => setExporting(`捕获当前视角 · ${frame} / ${count} 帧`),
-      );
+      const result = await exportNativeEffect(doc, framing, assertCurrent);
       assertCurrent();
       downloadBlob(result.blob, result.filename);
-      store.status('已导出场景精灵包，可在场景标签页导入 atlas.png');
+      store.status('已导出实时特效，可在场景标签页导入 .vfx3d 文件');
     } catch (error) {
       if (ticket === exportTicket.current) report(store, error);
     } finally {
@@ -506,10 +506,10 @@ export default function App({ store }: { store: EditorStore }) {
           </button>
           <button
             className="header-button"
-            onClick={() => void exportSceneSprite()}
-            title="将当前预览视角烘焙为 VulkCore 场景精灵"
+            onClick={() => void exportSceneEffect()}
+            title="导出 Vulkan 实时渲染所需的贴图、几何、曲线和着色器"
           >
-            导出场景精灵
+            导出 Vulkan 特效
           </button>
           <button className="primary-button export-button" onClick={() => void exportEffect()}>
             <Download size={14} /> 导出效果

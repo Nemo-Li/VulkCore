@@ -96,6 +96,7 @@ Renderer::~Renderer() {
     destroyResourcePreviewBuffers();
 #endif
     shutdownImGui();
+    realtimeEffects_.clear();
     hdrComposition_.reset();
     swapChain_->cleanupFramebuffers();
     destroySceneRenderResources();

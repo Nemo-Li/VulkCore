@@ -6,7 +6,7 @@
 namespace VulkCore {
 
 std::filesystem::path pickEditorFile(
-    const char* title, bool scene, const std::filesystem::path& directory
+    const char* title, EditorFileType fileType, const std::filesystem::path& directory
 ) {
     @autoreleasepool {
         NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -17,8 +17,12 @@ std::filesystem::path pickEditorFile(
             panel.directoryURL = [NSURL fileURLWithPath:
                 [NSString stringWithUTF8String:directory.c_str()] isDirectory:YES];
         }
-        NSArray<NSString*>* extensions = scene ? @[@"scene"] :
-            @[@"png", @"jpg", @"jpeg", @"tga", @"bmp", @"psd", @"hdr"];
+        NSArray<NSString*>* extensions = nil;
+        switch (fileType) {
+            case EditorFileType::Scene: extensions = @[@"scene"]; break;
+            case EditorFileType::RealtimeEffect: extensions = @[@"vfx3d"]; break;
+            case EditorFileType::Images: extensions = @[@"png", @"jpg", @"jpeg", @"tga", @"bmp", @"psd", @"hdr"]; break;
+        }
         NSMutableArray<UTType*>* types = [NSMutableArray array];
         for (NSString* extension in extensions) {
             if (UTType* type = [UTType typeWithFilenameExtension:extension]) {

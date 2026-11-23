@@ -212,7 +212,7 @@ void Renderer::drawEditorShaderDialog() {
     }
     ImGui::TextWrapped("Source changes apply to all materials using this file. Keep the shader's pipeline interface compatible.");
     const float footer = ImGui::GetFrameHeightWithSpacing() * (dialog.status.empty() ? 2.0f : 5.0f);
-    ImGui::PushFont(editorShaderFont_, 18.0f);
+    ImGui::PushFont(nullptr, 18.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 8.0f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, color(37, 43, 52));
     ImGui::PushStyleColor(ImGuiCol_Text, color(221, 228, 236));

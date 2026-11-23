@@ -397,7 +397,7 @@ void Renderer::recordCommandBuffer(
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
     std::vector<DrawItem> casters;
-    bool needsOpaqueSnapshot = false;
+    bool needsOpaqueSnapshot = realtimeNeedsOpaqueSnapshot();
     terrainDrawCandidates_ = 0;
     terrainDrawCulled_ = 0;
     for (const MeshPart& part : meshData_.parts) {
@@ -645,7 +645,6 @@ void Renderer::recordCommandBuffer(
             const VkDeviceSize particleOffset = 0;
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
             for (const ParticleDrawRange& range : particleDrawRanges_) {
-                if (shadow && range.flipbook) continue;
                 const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
                 if (descriptorIt == particleDescriptorSets_.end()) {
                     continue;
@@ -671,7 +670,6 @@ void Renderer::recordCommandBuffer(
                 particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
                     ? 1u
                     : 0u;
-                if (range.flipbook) particlePushConstants.textureFlags |= 2u;
                 vkCmdPushConstants(
                     commandBuffer,
                     pipelineLayout_,
@@ -726,6 +724,7 @@ void Renderer::recordCommandBuffer(
 
     const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
     const bool hdr = hdrComposition_ != nullptr;
+    const auto hdrSettings = hdr ? realtimeHdrSettings(false) : hdrSettings_;
     if (!hdr || needsOpaqueSnapshot) {
         VkRenderPassBeginInfo sceneRenderPassInfo{};
         sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -734,7 +733,7 @@ void Renderer::recordCommandBuffer(
         sceneRenderPassInfo.renderArea.offset = {0, 0};
         sceneRenderPassInfo.renderArea.extent = extent;
         const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
-        const glm::vec3 background = hdr ? hdrSettings_.clearColor
+        const glm::vec3 background = hdr ? hdrSettings.clearColor
             : (isTornadoPreview ? glm::vec3(0.0015f, 0.0025f, 0.0100f)
                                 : glm::vec3(0.015f, 0.02f, 0.03f));
         std::array<VkClearValue, 2> sceneClearValues{};
@@ -769,17 +768,22 @@ void Renderer::recordCommandBuffer(
             const std::array barriers{color, depth};
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
-                uint32_t(barriers.size()), barriers.data());
+                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, uint32_t(barriers.size()), barriers.data());
         }
-        hdrComposition_->beginGeometry(commandBuffer, currentFrame_, hdrSettings_.clearColor);
+        hdrComposition_->beginGeometry(commandBuffer, currentFrame_, hdrSettings.clearColor);
         bindSceneViewport();
         drawOpaque(true);
         for (const DrawItem& item : transparent) drawPart(item, true);
         drawParticles(true);
+        drawRealtimeEffects(commandBuffer, true);
         vkCmdEndRenderPass(commandBuffer);
+        const auto postSource = drawRealtimePost(commandBuffer, 0, false);
         hdrComposition_->beginPresentation(commandBuffer, currentFrame_,
-            swapChain_->framebuffers()[imageIndex], hdrSettings_);
+            swapChain_->framebuffers()[imageIndex], hdrSettings, postSource,
+            hasActiveRealtimePost(true) ? HdrComposition::PostDraw([&](unsigned source) {
+                return drawRealtimePost(commandBuffer, source, true);
+            }) : HdrComposition::PostDraw{});
     } else {
         recordLegacySceneTransfer(commandBuffer, imageIndex);
         VkRenderPassBeginInfo renderPassInfo{};
@@ -833,6 +837,7 @@ void Renderer::recordCommandBuffer(
         boundSet = VK_NULL_HANDLE;
         for (const DrawItem& item : transparent) drawPart(item, false);
         drawParticles(false);
+        drawRealtimeEffects(commandBuffer, false);
     }
 
     if (!hdr && mode_ == Mode::ModelViewer && selectedModelNode_ && selectedModelNode_->hasBounds) {
@@ -981,6 +986,12 @@ bool Renderer::drawFrame() {
         0.0f,
         0.1f
     );
+#ifndef VULKCORE_OHOS
+    if ((playerController_.active() || transitionSettings_.enabled) &&
+        (!toolUiVisible_ || roadEditorActive())) {
+        restoreSceneCamera();
+    }
+#endif
     updatePlayerController(particleDeltaSeconds, viewportHovered);
 #ifndef VULKCORE_OHOS
     updateRoadEditorCamera(particleDeltaSeconds, viewportHovered);
@@ -1003,6 +1014,7 @@ bool Renderer::drawFrame() {
 #endif
     lastFrameElapsedSeconds_ = elapsedSeconds;
     updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
+    updateRealtimeEffects(particleDeltaSeconds);
     if (mode_ == Mode::ModelViewer) updateBoundingBoxVertices();
 
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
@@ -1107,6 +1119,7 @@ void Renderer::recreateSwapChain() {
 #ifndef VULKCORE_OHOS
     destroyResourcePreviewTargets();
 #endif
+    invalidateRealtimeEffectPipelines();
     destroySceneRenderResources();
     hdrComposition_.reset();
     swapChain_->recreate(renderPass_);

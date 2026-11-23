@@ -29,4 +29,19 @@ inline glm::mat4 sceneProjection(float aspectRatio, float nearPlane, float farPl
     return projection;
 }
 
+// Place the complete preview frustum in the usable viewport, using one pixel scale on both axes.
+// The swapchain viewport remains full-screen so depth sampling and screen-space passes agree.
+inline glm::mat4 fittedSceneProjection(float verticalFov, float sourceAspect, float framebufferAspect,
+                                       glm::vec4 area, float nearPlane, float farPlane) {
+    const float width = area.z - area.x;
+    const float height = area.w - area.y;
+    const float fittedHeight = std::min(height, width * framebufferAspect / sourceAspect);
+    auto projection = glm::perspectiveRH_ZO(glm::radians(verticalFov), framebufferAspect, nearPlane, farPlane);
+    projection[0][0] *= fittedHeight;
+    projection[1][1] *= -fittedHeight;
+    projection[2][0] = 1.0f - (area.x + area.z);
+    projection[2][1] = 1.0f - (area.y + area.w);
+    return projection;
+}
+
 } // namespace VulkCore

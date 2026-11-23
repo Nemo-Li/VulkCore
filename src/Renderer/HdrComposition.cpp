@@ -15,7 +15,8 @@ void check(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) throw std::runtime_error(operation);
 }
 
-VkRenderPass createPass(VkDevice device, VkFormat color, VkFormat depth, bool present = false) {
+VkRenderPass createPass(VkDevice device, VkFormat color, VkFormat depth,
+                        bool present = false, bool reusable = false) {
     std::array<VkAttachmentDescription, 2> attachments{};
     attachments[0].format = color;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -49,11 +50,17 @@ VkRenderPass createPass(VkDevice device, VkFormat color, VkFormat depth, bool pr
                                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                                     VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (reusable) {
+        // The ping-pong target may have been sampled by the preceding post pass.
+        dependencies[0].srcStageMask |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     if (!present && depth != VK_FORMAT_UNDEFINED) {
         // The composite vertex shader probes the completed color and depth at the solar disk.
@@ -96,7 +103,7 @@ bool HdrComposition::supported(const VulkanContext& context) {
 HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChain,
                                const HdrSettings& settings,
                                const std::vector<std::unique_ptr<Buffer>>& sceneUniforms,
-                               const ShaderLookup& shader)
+                               const ShaderLookup& shader, bool realtimePost)
     : context_(context), extent_(swapChain.extent()),
       encodeSrgb_(!surfaceEncodesSrgb(swapChain.imageFormat())) {
     try {
@@ -109,7 +116,12 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
             bloomSizes.push_back(size);
             if (size.width == 1 && size.height == 1) break;
         }
-        createLayouts(kMaxFramesInFlight * (1 + 2 * bloomSizes.size() + (settings.smaa ? 2 : 0)));
+        createLayouts(kMaxFramesInFlight * (1 + 2 * bloomSizes.size() +
+            (settings.smaa ? 2 : 0) + (realtimePost ? 9 : 0)));
+        if (realtimePost) {
+            effectPostPass_ = createPass(device, kHdr, VK_FORMAT_UNDEFINED, false, true);
+            if (!bloomSizes.empty()) mergeBloom_ = createPipeline(effectPostPass_, shader, "shader_vfx_bloom_mix.frag");
+        }
         composite_ = createPipeline(presentationPass_, shader, "shader_hdr_composite.frag",
                                     "shader_hdr_composite.vert");
         if (!bloomSizes.empty()) {
@@ -136,7 +148,6 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
             VkImageView weights = source;
             if (!bloomSizes.empty()) {
                 createTarget(frame.luminance, extent_, filterPass_, kHdr);
-                frame.extract = descriptors(source);
                 frame.down.resize(bloomSizes.size());
                 frame.up.resize(bloomSizes.size() - 1);
                 VkImageView previous = frame.luminance.color.view;
@@ -156,12 +167,23 @@ HdrComposition::HdrComposition(VulkanContext& context, const SwapChain& swapChai
             if (settings.smaa) {
                 createTarget(frame.edges, extent_, aaPass_, kWeights);
                 createTarget(frame.weights, extent_, aaPass_, kWeights);
-                frame.edgeSet = descriptors(source);
                 frame.weightSet = descriptors(frame.edges.color.view, area_->imageView(), search_->imageView(), true);
                 weights = frame.weights.color.view;
             }
-            frame.composite = descriptors(source, bloom, weights, false, frame.geometry.depth.view,
-                                          sceneUniforms.at(i)->handle());
+            if (realtimePost) {
+                for (auto& target : frame.effectTargets) createTarget(target, extent_, effectPostPass_, kHdr);
+            }
+            const auto sourceCount = realtimePost ? 3u : 1u;
+            for (unsigned j = 0; j < sourceCount; ++j) {
+                const auto view = j == 0 ? source : frame.effectTargets[j - 1].color.view;
+                if (!bloomSizes.empty()) {
+                    frame.extract[j] = descriptors(view);
+                    if (realtimePost) frame.mergeBloom[j] = descriptors(view, bloom);
+                }
+                if (settings.smaa) frame.edgeSet[j] = descriptors(view);
+                frame.composite[j] = descriptors(view, bloom, weights, false, frame.geometry.depth.view,
+                    sceneUniforms.at(i)->handle());
+            }
         }
     } catch (...) {
         cleanup();
@@ -401,11 +423,37 @@ void HdrComposition::beginGeometry(VkCommandBuffer commands, std::size_t frame, 
     vkCmdBeginRenderPass(commands, &begin, VK_SUBPASS_CONTENTS_INLINE);
 }
 
+VkDescriptorImageInfo HdrComposition::effectPostSource(std::size_t frameIndex, unsigned source) const {
+    const auto& frame = frames_[frameIndex];
+    const auto view = source == 0 ? frame.geometry.color.view : frame.effectTargets[source - 1].color.view;
+    return {linearSampler_, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+}
+
+unsigned HdrComposition::beginEffectPost(VkCommandBuffer commands, std::size_t frameIndex, unsigned source) const {
+    const unsigned destination = source == 1 ? 2 : 1;
+    const auto& target = frames_[frameIndex].effectTargets[destination - 1];
+    VkClearValue clear{};
+    VkRenderPassBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin.renderPass = effectPostPass_;
+    begin.framebuffer = target.framebuffer;
+    begin.renderArea.extent = extent_;
+    begin.clearValueCount = 1;
+    begin.pClearValues = &clear;
+    vkCmdBeginRenderPass(commands, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    const VkViewport viewport{0.0f, 0.0f, float(extent_.width), float(extent_.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, extent_};
+    vkCmdSetViewport(commands, 0, 1, &viewport);
+    vkCmdSetScissor(commands, 0, 1, &scissor);
+    return destination;
+}
+
 void HdrComposition::beginPresentation(VkCommandBuffer commands, std::size_t frameIndex,
-                                      VkFramebuffer framebuffer, const HdrSettings& settings) const {
+                                      VkFramebuffer framebuffer, const HdrSettings& settings,
+                                      unsigned source, const PostDraw& afterBloom) const {
     const Frame& frame = frames_[frameIndex];
     if (!frame.down.empty()) {
-        run(commands, frame.luminance, filterPass_, extract_, frame.extract,
+        run(commands, frame.luminance, filterPass_, extract_, frame.extract[source],
             {settings.bloomThreshold, settings.bloomSmoothing, 0.0f, 0.0f});
         for (std::size_t level = 0; level < frame.down.size(); ++level) {
             run(commands, frame.down[level], filterPass_, down_, frame.downSets[level]);
@@ -415,8 +463,19 @@ void HdrComposition::beginPresentation(VkCommandBuffer commands, std::size_t fra
                 {settings.bloomRadius, 0.0f, 0.0f, 0.0f});
         }
     }
+    float bloomIntensity = frame.down.empty() ? 0.0f : settings.bloomIntensity;
+    if (afterBloom) {
+        if (bloomIntensity > 0.0f) {
+            const unsigned destination = beginEffectPost(commands, frameIndex, source);
+            draw(commands, extent_, mergeBloom_, frame.mergeBloom[source], {bloomIntensity, 0.0f, 0.0f, 0.0f});
+            vkCmdEndRenderPass(commands);
+            source = destination;
+            bloomIntensity = 0.0f;
+        }
+        source = afterBloom(source);
+    }
     if (settings.smaa) {
-        run(commands, frame.edges, aaPass_, edges_, frame.edgeSet);
+        run(commands, frame.edges, aaPass_, edges_, frame.edgeSet[source]);
         run(commands, frame.weights, aaPass_, weights_, frame.weightSet);
     }
     VkRenderPassBeginInfo begin{};
@@ -425,8 +484,8 @@ void HdrComposition::beginPresentation(VkCommandBuffer commands, std::size_t fra
     begin.framebuffer = framebuffer;
     begin.renderArea.extent = extent_;
     vkCmdBeginRenderPass(commands, &begin, VK_SUBPASS_CONTENTS_INLINE);
-    draw(commands, extent_, composite_, frame.composite,
-         {frame.down.empty() ? 0.0f : settings.bloomIntensity,
+    draw(commands, extent_, composite_, frame.composite[source],
+         {bloomIntensity,
           settings.smaa ? 1.0f : 0.0f, encodeSrgb_ ? 1.0f : 0.0f, 0.0f});
 }
 
@@ -445,16 +504,17 @@ void HdrComposition::cleanup() {
     vkDestroyDescriptorPool(device, pool_, nullptr);
     for (Frame& frame : frames_) {
         destroyTarget(frame.geometry);
+        for (auto& target : frame.effectTargets) destroyTarget(target);
         destroyTarget(frame.luminance);
         for (Target& target : frame.down) destroyTarget(target);
         for (Target& target : frame.up) destroyTarget(target);
         destroyTarget(frame.edges);
         destroyTarget(frame.weights);
     }
-    for (VkPipeline pipeline : {extract_, down_, up_, edges_, weights_, composite_}) {
+    for (VkPipeline pipeline : {extract_, down_, up_, edges_, weights_, composite_, mergeBloom_}) {
         vkDestroyPipeline(device, pipeline, nullptr);
     }
-    for (VkRenderPass pass : {geometryPass_, filterPass_, aaPass_, presentationPass_}) {
+    for (VkRenderPass pass : {geometryPass_, filterPass_, aaPass_, presentationPass_, effectPostPass_}) {
         vkDestroyRenderPass(device, pass, nullptr);
     }
     vkDestroySampler(device, linearSampler_, nullptr);
@@ -464,15 +524,18 @@ void HdrComposition::cleanup() {
 }
 
 void Renderer::configureHdrComposition() {
+    invalidateRealtimeEffectPipelines();
     hdrComposition_.reset();
-    if (!hdrSettings_.enabled) return;
+    const bool realtimePost = hasRealtimePostEffects();
+    const auto settings = realtimeHdrSettings(true);
+    if (!settings.enabled && !realtimePost) return;
     if (!HdrComposition::supported(*context_)) {
         std::cerr << "warning: FP16 HDR blending is unavailable, using the legacy pipeline\n";
         return;
     }
     hdrComposition_ = std::make_unique<HdrComposition>(
-        *context_, *swapChain_, hdrSettings_, uniformBuffers_,
-        [this](const char* name) { return shaderModule(name); }
+        *context_, *swapChain_, settings, uniformBuffers_,
+        [this](const char* name) { return shaderModule(name); }, realtimePost
     );
     if (hdrSkyboxPipeline_ == VK_NULL_HANDLE) {
         const VkRenderPass pass = hdrComposition_->geometryPass();

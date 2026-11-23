@@ -9,6 +9,7 @@ layout(location = 2) in vec4 fragVertexColor;
 layout(location = 3) in vec3 fragWorldPosition;
 
 #include "scene_fog.glsl"
+#include "effect_lighting.glsl"
 #include "sun_shadow.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
@@ -96,7 +97,8 @@ void main() {
     }
     // 金属度在这里调节漫反射和镜面权重。waterSurface 在此材质中复用为自发光 RGB 和强度。
     float sunlightVisibility = sunVisibility(fragWorldPosition, shadowNormal);
-    vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility) *
+    vec3 pointLight = effectPointLighting(fragWorldPosition, normal);
+    vec3 litColor = baseColor.rgb * (ambientLight + diffuseLight * diffuseFactor * sunlightVisibility + pointLight) *
         (1.0 - metallic * 0.35);
     litColor += specularLight * specularFactor * mix(0.12, 0.5, metallic) * specularMapFactor * sunlightVisibility;
     litColor += max(material.waterSurface.rgb, vec3(0.0)) * max(material.waterSurface.a, 0.0);

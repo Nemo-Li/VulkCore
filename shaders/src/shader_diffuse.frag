@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "sun_shadow.glsl"
+#include "effect_lighting.glsl"
 
 // 漫反射材质。用材质、顶点和贴图调制基础色，再乘以环境光和单一方向光。
 
@@ -25,6 +26,8 @@ void main() {
     float diffuse = max(dot(normalize(fragNormal), light), 0.0);
     vec3 ambient = max(ubo.ambientLight.rgb, vec3(0.0)) * max(ubo.ambientLight.a, 0.0);
     vec3 direct = max(ubo.sunLightColor.rgb, vec3(0.0)) * max(ubo.sunLightDirection.w, 0.0);
-    outColor = vec4(base.rgb * (ambient + direct * diffuse * sunVisibility(fragWorldPosition, sunReceiverNormal(fragWorldPosition))),
+    vec3 lit = ambient + direct * diffuse * sunVisibility(fragWorldPosition, sunReceiverNormal(fragWorldPosition));
+    lit += effectPointLighting(fragWorldPosition, normalize(fragNormal));
+    outColor = vec4(base.rgb * lit,
         base.a * material.opacity);
 }

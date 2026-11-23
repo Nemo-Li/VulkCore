@@ -61,6 +61,7 @@ constexpr glm::vec3 kDefaultSceneUp{0.0f, 0.0f, 1.0f};
 
 constexpr float kMinimumModelScaleFactor = 0.1f;
 constexpr float kMaximumModelScaleFactor = 3.0f;
+constexpr float kMaximumRealtimeEffectScale = 100.0f;
 // Reserve a stable scene-object ID for the optional procedural Sun. Keeping
 // it independent from imported and particle node allocation makes scene
 // files portable across model switches.
@@ -164,6 +165,11 @@ bool isModelAssetPath(const std::filesystem::path& path);
 bool isSceneResourcePath(const std::filesystem::path& path);
 bool isTextureAssetPath(const std::filesystem::path& path);
 std::filesystem::path normalizedPath(const std::filesystem::path& path);
+
+inline std::string pathUtf8(const std::filesystem::path& path) {
+    const auto bytes = path.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
 bool pathsEqual(const std::filesystem::path& left, const std::filesystem::path& right);
 std::filesystem::path locateAssetsDirectory();
 bool isWaterShaderConfiguration(const ShaderConfiguration& configuration);

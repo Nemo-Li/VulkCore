@@ -253,6 +253,8 @@ target_include_directories(vulkcore_imgui
         "${imgui_SOURCE_DIR}/backends"
 )
 
+target_compile_definitions(vulkcore_imgui PUBLIC IMGUI_USE_WCHAR32)
+
 target_link_libraries(vulkcore_imgui
     PUBLIC
         Vulkan::Vulkan
@@ -296,6 +298,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/RendererPipelines.cpp
     src/Renderer/RendererPrivate.cpp
     src/Renderer/RendererResources.cpp
+    src/Renderer/RendererRealtimeEffects.cpp
     src/Renderer/RendererRoadPaint.cpp
     src/Renderer/RendererScene.cpp
     src/Renderer/RendererSceneGraph.cpp
@@ -339,7 +342,6 @@ else()
     add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES}
         src/Platform/DesktopWindow.cpp
         src/Renderer/RendererEditorShaders.cpp
-        src/Renderer/RendererEffectSprites.cpp
         src/Renderer/RendererResourceBrowser.cpp
         src/Renderer/RendererResourcePreview.cpp)
     target_compile_definitions(vulkcore_runtime PRIVATE

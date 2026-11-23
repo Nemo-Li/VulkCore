@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "HdrComposition.hpp"
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
@@ -630,14 +631,15 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         window_,
         deltaSeconds,
         *physicsWorld_,
-        sceneEditMode_ || io.WantTextInput,
-        !viewportHovered || roadEditorActive()
+        sceneEditMode_ || effectCamera_ || io.WantTextInput,
+        !viewportHovered || effectCamera_ || roadEditorActive()
     );
     updatePlayerAttackEffect();
     if (!roadEditorActive()) updatePlayerCamera();
 }
 
 void Renderer::updatePlayerCamera() {
+    if (effectCamera_) return;
     if (!terrainScene_ || !playerController_.active()) {
         cameraTarget_ = glm::vec3(0.0f);
         return;
@@ -698,11 +700,14 @@ void Renderer::clearSceneData() {
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
     particleSystems_.clear();
+    realtimeEffects_.clear();
     particleDrawRanges_.clear();
     particleVertices_.clear();
     hdrSettings_ = {};
     distanceFogSettings_ = {};
     authoredView_ = {};
+    effectCamera_.reset();
+    previousSceneCamera_.reset();
     cameraOrbitDragging_ = false;
     transitionSettings_ = {};
     transitionPlayer_ = {};
@@ -982,7 +987,7 @@ bool Renderer::createNewEmptyScene() {
         std::filesystem::remove(path, error);
         return false;
     }
-    sceneStatus_ = "Created empty scene " + currentScenePath_.filename().string() + ".";
+    sceneStatus_ = "Created empty scene " + pathUtf8(currentScenePath_.filename()) + ".";
     return true;
 }
 
@@ -1117,7 +1122,7 @@ bool Renderer::saveSceneResource(const std::filesystem::path& path) {
     const std::string pathString = currentScenePath_.string();
     const std::size_t copyCount = std::min(pathString.size(), scenePathBuffer_.size() - 1);
     std::copy_n(pathString.data(), copyCount, scenePathBuffer_.data());
-    sceneStatus_ = "Saved scene " + currentScenePath_.filename().string() + ".";
+    sceneStatus_ = "Saved scene " + pathUtf8(currentScenePath_.filename()) + ".";
     return true;
 }
 
@@ -1575,19 +1580,9 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     for (const auto& [nodeId, system] : particleSystems_) {
         const auto& settings = system.settings();
         if (!settings.texturePath.empty() && !particleTextures_.contains(nodeId)) {
-            warnResource(settings.flipbook.frames ? "Effect sprite" : "Particle texture",
-                settings.texturePath, "texture could not be loaded");
+            warnResource("Particle texture", settings.texturePath, "texture could not be loaded");
         }
     }
-    std::erase_if(meshData_.additionalNodes, [&](const ModelNode& node) {
-        if (node.objectType != SceneObjectType::ParticleSystem || particleTextures_.contains(node.nodeId)) {
-            return false;
-        }
-        const auto system = particleSystems_.find(node.nodeId);
-        if (system == particleSystems_.end() || !system->second.settings().flipbook.frames) return false;
-        particleSystems_.erase(system);
-        return true;
-    });
     rebuildMaterialResources();
     const auto checkTexture = [&](const char* label, const std::filesystem::path& texturePath,
                                   const EmbeddedTextureData& embedded) {
@@ -1610,7 +1605,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     selectedResourceType_ = ResourceSelectionType::Model;
     selectedResourceMaterialIndex_ = -1;
     updateBoundingBoxVertices();
-    sceneStatus_ = "Loaded scene " + currentScenePath_.filename().string() + ".";
+    sceneStatus_ = "Loaded scene " + pathUtf8(currentScenePath_.filename()) + ".";
     return true;
 }
 
@@ -1723,9 +1718,17 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
     HdrSettings hdr;
     DistanceFogSettings fog;
     AuthoredView authored;
+    std::optional<EffectCamera> effectCamera;
+    glm::vec3 effectCameraTarget{0.0f};
     TransitionSettings transition;
     std::vector<PendingNodeMaterial> pendingNodeMaterials;
     std::vector<PendingParticleSystem> pendingParticleSystems;
+    struct PendingRealtimeEffect {
+        std::uint32_t id{};
+        std::string path;
+        bool autoPlay{}, loop{};
+    };
+    std::vector<PendingRealtimeEffect> pendingRealtimeEffects;
     bool valid = true;
     std::string key;
     while (file >> key) {
@@ -1939,6 +1942,18 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             }
             authored.enabled = true;
             authored.up = glm::normalize(authored.up);
+        } else if (key == "effect_camera") {
+            EffectCamera framing;
+            if (!(file >> effectCameraTarget.x >> effectCameraTarget.y >> effectCameraTarget.z >>
+                  framing.up.x >> framing.up.y >> framing.up.z >> framing.fov >> framing.aspect) ||
+                !std::isfinite(glm::length(effectCameraTarget)) ||
+                !std::isfinite(glm::length(framing.up)) || glm::length(framing.up) < 0.001f ||
+                framing.fov <= 0.0f || framing.fov >= 179.0f || framing.aspect < 0.01f || framing.aspect > 100.0f) {
+                valid = false;
+                break;
+            }
+            framing.up = glm::normalize(framing.up);
+            effectCamera = framing;
         } else if (key == "camera_orbit") {
             auto& limits = authored.orbitPitchLimits;
             if (!(file >> limits.x >> limits.y) || !std::isfinite(limits.x) ||
@@ -2037,6 +2052,14 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
                 valid = false;
                 break;
             }
+        } else if (key == "realtime_effect") {
+            PendingRealtimeEffect effect;
+            std::string effectRecord;
+            std::getline(file, effectRecord);
+            std::istringstream effectStream(effectRecord);
+            if (effectStream >> effect.id >> std::quoted(effect.path) >> effect.autoPlay >> effect.loop) {
+                pendingRealtimeEffects.push_back(std::move(effect));
+            }
         } else if (key == "particle_system_object") {
             int enabled = 0;
             int playOnAwake = 0;
@@ -2074,12 +2097,11 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             }
             std::string mode;
             if (particleStream >> mode; mode == "flipbook") {
-                auto& book = settings.flipbook;
-                if (!(particleStream >> book.columns >> book.rows >> book.frames >> book.cellPixels >>
-                    book.gutterPixels >> book.width) || !book.valid() || settings.texturePath.empty()) {
-                    valid = false;
-                    break;
-                }
+                // Retired atlas records must never turn into ordinary emitters.
+                const auto message = "Skipped retired atlas effect for node " + std::to_string(pending.nodeId);
+                sceneResourceWarnings_.push_back(message);
+                std::cerr << "warning: " << message << '\n';
+                continue;
             }
             settings.enabled = enabled != 0;
             settings.playOnAwake = playOnAwake != 0;
@@ -2216,7 +2238,9 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
     }
 
     ambientLightColor_ = glm::clamp(ambientLightColor, glm::vec3(0.0f), glm::vec3(1.0f));
-    cameraPosition_ = glm::length(cameraPosition) < 0.05f
+    effectCamera_ = !playerController_.active() && !transition.enabled ? effectCamera : std::nullopt;
+    previousSceneCamera_.reset();
+    cameraPosition_ = !effectCamera_ && glm::length(cameraPosition) < 0.05f
         ? glm::vec3(0.0f, 0.0f, 4.0f)
         : cameraPosition;
     hdrSettings_ = hdr;
@@ -2224,6 +2248,7 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
     authoredView_ = authored;
     cameraOrbitDragging_ = false;
     if (authored.enabled) cameraTarget_ = authored.target;
+    if (effectCamera_) cameraTarget_ = effectCameraTarget;
     transitionSettings_ = transition;
     transitionPlayer_ = {};
     transitionPlayer_.loop = transition.autoplay;
@@ -2266,9 +2291,7 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
                 continue;
             }
             ModelNode particleNode;
-            particleNode.name = pending.settings.flipbook.frames ?
-                pending.settings.texturePath.parent_path().filename().string() + " (Effect)" :
-                "Particle System " + std::to_string(pending.nodeId);
+            particleNode.name = "Particle System " + std::to_string(pending.nodeId);
             particleNode.nodeId = pending.nodeId;
             particleNode.objectType = SceneObjectType::ParticleSystem;
             meshData_.additionalNodes.push_back(std::move(particleNode));
@@ -2286,6 +2309,22 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             systemIt->second.restart();
         } else {
             systemIt->second.stop();
+        }
+    }
+    for (const auto& effect : pendingRealtimeEffects) {
+        if (removedSceneNodeIds_.contains(effect.id)) continue;
+        auto path = resolveResourcePath(effect.path);
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) && std::filesystem::path(effect.path).is_relative()) {
+            const auto legacy = normalizedPath(effect.path);
+            if (std::filesystem::is_regular_file(legacy, error)) path = legacy;
+        }
+        try {
+            loadRealtimeEffect(effect.id, path, effect.autoPlay, effect.loop);
+        } catch (const std::exception& error) {
+            const auto message = "Realtime effect: " + path.string() + " (" + error.what() + ")";
+            sceneResourceWarnings_.push_back(message);
+            std::cerr << "warning: " << message << '\n';
         }
     }
     for (PendingMaterial& pending : pendingMaterials) {
@@ -2398,7 +2437,7 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
         node->transformScaleFactor = std::clamp(
             transform.scaleFactor,
             kMinimumModelScaleFactor,
-            kMaximumModelScaleFactor
+            node->objectType == SceneObjectType::RealtimeEffect ? kMaximumRealtimeEffectScale : kMaximumModelScaleFactor
         );
     }
     for (const PendingNodeRender& render : pendingNodeRenderSettings) {
@@ -2620,11 +2659,25 @@ bool Renderer::saveTransformSettings() const {
         file << "material_transition " << t.delay << ' ' << t.duration << ' ' << t.dwell << ' '
              << t.autoplay << ' ' << t.activeFov << ' ' << t.distanceOffset << "\n";
     }
-    const bool saveInitialCamera = transitionSettings_.enabled || view.orbitEnabled;
+    const bool saveEffectFraming = effectCamera_ && !playerController_.active() && !transitionSettings_.enabled;
+    const bool saveInitialCamera = !saveEffectFraming && (transitionSettings_.enabled || view.orbitEnabled);
     glm::vec3 savedCamera = saveInitialCamera ? transitionCameraStart_ : cameraPosition_;
+    glm::vec3 savedTarget = cameraTarget_;
+    if (!saveEffectFraming && !saveInitialCamera && previousSceneCamera_) {
+        savedCamera = previousSceneCamera_->position;
+    }
 #ifndef VULKCORE_OHOS
-    if (!saveInitialCamera && roadEditorCamera_) savedCamera = roadEditorCamera_->originalPosition;
+    if (!saveInitialCamera && roadEditorCamera_) {
+        savedCamera = roadEditorCamera_->originalPosition;
+        savedTarget = roadEditorCamera_->originalTarget;
+    }
 #endif
+    if (saveEffectFraming) {
+        const auto& framing = *effectCamera_;
+        file << "effect_camera " << savedTarget.x << ' ' << savedTarget.y << ' ' << savedTarget.z << ' '
+             << framing.up.x << ' ' << framing.up.y << ' ' << framing.up.z << ' '
+             << framing.fov << ' ' << framing.aspect << '\n';
+    }
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
          << "camera_position " << savedCamera.x << ' '
          << savedCamera.y << ' ' << savedCamera.z << "\n"
@@ -2648,11 +2701,11 @@ bool Renderer::saveTransformSettings() const {
         }
         const auto systemIt = particleSystems_.find(node.nodeId);
         if (systemIt != particleSystems_.end()) {
-            auto settings = systemIt->second.settings();
-            if (settings.flipbook.frames) settings.texturePath = sceneReference(settings.texturePath);
-            saveParticleSystemSettings(file, node.nodeId, settings);
+            saveParticleSystemSettings(file, node.nodeId, systemIt->second.settings());
         }
     }
+
+    saveRealtimeEffects(file, sceneReference);
 
     for (const auto effectId : {kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId}) {
         if (const auto it = particleSystems_.find(effectId); it != particleSystems_.end()) {
@@ -2814,13 +2867,15 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
     }
 
     bool hasParticleResources = false;
+    bool removesRealtimeEffect = false;
     for (const std::uint32_t removedNodeId : removedNodeIds) {
+        removesRealtimeEffect |= realtimeEffects_.contains(removedNodeId);
         hasParticleResources = hasParticleResources ||
             particleSystems_.contains(removedNodeId) ||
             particleTextures_.contains(removedNodeId) ||
             particleDescriptorSets_.contains(removedNodeId);
     }
-    if (hasParticleResources && context_ != nullptr) {
+    if ((hasParticleResources || removesRealtimeEffect) && context_ != nullptr) {
         context_->waitIdle();
     }
 
@@ -2829,6 +2884,7 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
         if (modelGravity_.erase(removedNodeId)) physicsWorld_->removeGravityBox(removedNodeId);
         enemyPatrols_.erase(removedNodeId);
         particleSystems_.erase(removedNodeId);
+        realtimeEffects_.erase(removedNodeId);
         particleTextures_.erase(removedNodeId);
         const auto descriptorIt = particleDescriptorSets_.find(removedNodeId);
         if (descriptorIt != particleDescriptorSets_.end()) {
@@ -2844,6 +2900,11 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
         }
         sceneNodeTransforms_.erase(removedNodeId);
         sceneNodeRenderEnabled_.erase(removedNodeId);
+    }
+    if (removesRealtimeEffect && hdrComposition_ &&
+        ((hdrComposition_->effectPostPass() && !hasRealtimePostEffects()) ||
+         (hdrComposition_->hasBloom() && !realtimeHdrSettings(true).bloomLevels))) {
+        configureHdrComposition();
     }
     if (std::find(
             removedNodeIds.begin(),

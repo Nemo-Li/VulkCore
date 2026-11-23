@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",
+    "@webgpu/glslang": "0.0.15",
     "jszip": "3.10.1",
     "lucide-react": "0.468.0",
     "react": "19.1.0",

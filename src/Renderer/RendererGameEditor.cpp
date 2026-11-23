@@ -35,14 +35,14 @@ void Renderer::queueSceneOpen(const std::filesystem::path& path) {
     toolUiVisible_ = true;
 }
 
-void Renderer::openEditorFilePicker(const char* title, bool scene,
+void Renderer::openEditorFilePicker(const char* title, EditorFileType type,
                                     const std::filesystem::path& directory,
                                     std::function<void(const std::filesystem::path&)> accept) {
 #if defined(__APPLE__) || defined(_WIN32)
-    const auto path = pickEditorFile(title, scene, directory);
+    const auto path = pickEditorFile(title, type, directory);
     if (!path.empty()) accept(path);
 #else
-    editorFilePicker_ = {title, scene, directory, {}, std::move(accept)};
+    editorFilePicker_ = {title, type, directory, {}, std::move(accept)};
 #endif
 }
 
@@ -56,7 +56,7 @@ void Renderer::drawEditorFilePicker() {
     auto folder = picker.directory;
     if (folder.empty()) folder = std::filesystem::current_path();
     ImGui::TextUnformatted(picker.title.c_str());
-    ImGui::TextWrapped("%s", folder.string().c_str());
+    ImGui::TextWrapped("%s", pathUtf8(folder).c_str());
     if (ImGui::Button("Parent folder") && folder.has_parent_path()) {
         picker.directory = folder.parent_path();
     }
@@ -66,8 +66,11 @@ void Renderer::drawEditorFilePicker() {
          !error && entry != end; entry.increment(error)) {
         std::error_code typeError;
         if (entry->is_directory(typeError)) folders.push_back(entry->path());
-        else if (entry->is_regular_file(typeError) && (!picker.scene || isSceneResourcePath(entry->path()))) {
-            files.push_back(entry->path());
+        else if (entry->is_regular_file(typeError)) {
+            const auto& path = entry->path();
+            if (picker.type == EditorFileType::Scene && !isSceneResourcePath(path)) continue;
+            if (picker.type == EditorFileType::RealtimeEffect && path.extension() != ".vfx3d") continue;
+            files.push_back(path);
         }
     }
     std::sort(folders.begin(), folders.end());
@@ -75,11 +78,11 @@ void Renderer::drawEditorFilePicker() {
     std::filesystem::path selected;
     ImGui::BeginChild("Files", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.0f));
     for (const auto& directory : folders) {
-        const auto label = directory.filename().string() + "/";
+        const auto label = pathUtf8(directory.filename()) + "/";
         if (ImGui::Selectable(label.c_str())) picker.directory = directory;
     }
     for (const auto& file : files) {
-        if (ImGui::Selectable(file.filename().string().c_str())) selected = file;
+        if (ImGui::Selectable(pathUtf8(file.filename()).c_str())) selected = file;
     }
     ImGui::EndChild();
     ImGui::InputTextWithHint("##path", "File path", picker.path.data(), picker.path.size());
@@ -163,7 +166,7 @@ bool Renderer::drawGameEditor() {
         editorSceneChangeConfirmed_ = false;
     };
     const auto openScene = [&] {
-        openEditorFilePicker("Open Scene", true, currentScenePath_.empty() ?
+        openEditorFilePicker("Open Scene", EditorFileType::Scene, currentScenePath_.empty() ?
             scenesDirectory_ : currentScenePath_.parent_path(),
             [this](const auto& path) { queueSceneOpen(path); });
     };
@@ -196,10 +199,10 @@ bool Renderer::drawGameEditor() {
         if (ImGui::MenuItem("New Scene", newSceneShortcut)) newScene();
         if (ImGui::MenuItem("Open Scene...")) openScene();
         if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
-        if (ImGui::MenuItem("Import Effect Sprite...")) {
-            openEditorFilePicker("Select the exported atlas.png", false,
+        if (ImGui::MenuItem("Import Realtime Effect...")) {
+            openEditorFilePicker("Select the exported .vfx3d file", EditorFileType::RealtimeEffect,
                 currentScenePath_.empty() ? scenesDirectory_ : currentScenePath_.parent_path(),
-                [this](const auto& path) { importEffectSprite(path); });
+                [this](const auto& path) { importRealtimeEffect(path); });
         }
         ImGui::MenuItem("Edit Mode", "F5", &sceneEditMode_);
         if (sceneEditMode_ && terrainScene_ && ImGui::BeginMenu("Edit Tool")) {
@@ -229,7 +232,7 @@ bool Renderer::drawGameEditor() {
         ImGui::Separator();
         const std::string sceneName = currentScenePath_.empty()
             ? (editorDirty_ ? "Untitled" : "Drop a .scene file to open")
-            : currentScenePath_.filename().string();
+            : pathUtf8(currentScenePath_.filename());
         const std::string title = sceneName + (editorDirty_ ? " *" : "");
         ImGui::TextDisabled("%s", title.c_str());
         ImGui::EndMenuBar();
@@ -341,7 +344,8 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
         {sceneEditorViewport_.z, sceneEditorViewport_.w});
     if (viewportHovered && viewport.Contains(io.MousePos) && io.MouseWheel != 0.0f) {
         const float scale = std::clamp(node.transformScaleFactor * std::exp(0.12f * io.MouseWheel),
-            kMinimumModelScaleFactor, kMaximumModelScaleFactor);
+            kMinimumModelScaleFactor,
+            node.objectType == SceneObjectType::RealtimeEffect ? kMaximumRealtimeEffectScale : kMaximumModelScaleFactor);
         if (scale != node.transformScaleFactor) {
             node.transformScaleFactor = scale;
             editorDirty_ = true;
@@ -377,11 +381,14 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
         }
         return glm::vec3(0.0f);
     }
+    if (node.objectType == SceneObjectType::RealtimeEffect) {
+        node.transformTranslation += movement / modelScale_;
+        editorDirty_ = true;
+        return glm::vec3(0.0f);
+    }
     if (node.objectType == SceneObjectType::ParticleSystem) {
         // Particle objects store translation directly in scene units.
-        const auto system = particleSystems_.find(node.nodeId);
-        const bool flipbook = system != particleSystems_.end() && system->second.settings().flipbook.frames;
-        node.transformTranslation += flipbook ? movement : movement / modelScale_;
+        node.transformTranslation += movement / modelScale_;
         editorDirty_ = true;
         return glm::vec3(0.0f);
     }
@@ -420,15 +427,7 @@ void Renderer::drawGameSelectionOutline(const glm::mat4& clipFromScene) {
             minimum = glm::min(minimum, vertex.position);
             maximum = glm::max(maximum, vertex.position);
         }
-        if (settings.flipbook.frames) {
-            const float radius = 0.5f * settings.flipbook.width;
-            minimum = glm::vec3(-radius);
-            maximum = glm::vec3(radius);
-            transform = glm::translate(glm::mat4(1.0f), node.transformTranslation) *
-                glm::scale(glm::mat4(1.0f), glm::vec3(node.transformScaleFactor * modelScale_));
-        } else {
-            transform = particleObjectTransform(node);
-        }
+        transform = particleObjectTransform(node);
     } else if (!node.hasBounds) {
         return;
     }
@@ -516,7 +515,8 @@ void Renderer::drawGameOutliner() {
     const auto drawRoot = [&](const auto& self, ModelNode& root) -> void {
         if (removedSceneNodeIds_.contains(root.nodeId) || root.name.empty() ||
             (root.children.empty() && root.meshPartIndices.empty() &&
-                root.objectType != SceneObjectType::ParticleSystem)) return;
+                root.objectType != SceneObjectType::ParticleSystem &&
+                root.objectType != SceneObjectType::RealtimeEffect)) return;
         ImGui::PushID(static_cast<int>(root.nodeId));
         const bool sceneRoot = &root == &meshData_.hierarchy && root.name == "Scene";
         const bool grass = root.nodeId == kGrassSceneNodeId;
@@ -594,8 +594,8 @@ void Renderer::drawEditorTexture(const char* label, const std::filesystem::path&
     ImGui::PushID(label);
     ImGui::TextUnformatted(label);
     const auto& displayedPath = path.empty() ? defaultPath : path;
-    ImGui::TextWrapped("%s", displayedPath.empty() ? "Procedural" : displayedPath.filename().string().c_str());
-    if (!displayedPath.empty()) ImGui::SetItemTooltip("%s", displayedPath.string().c_str());
+    ImGui::TextWrapped("%s", displayedPath.empty() ? "Procedural" : pathUtf8(displayedPath.filename()).c_str());
+    if (!displayedPath.empty()) ImGui::SetItemTooltip("%s", pathUtf8(displayedPath).c_str());
     const auto apply = [this, accept = std::move(accept)](const std::filesystem::path& selected) {
         try {
             accept(normalizedPath(selected));
@@ -607,7 +607,7 @@ void Renderer::drawEditorTexture(const char* label, const std::filesystem::path&
             sceneStatus_ = error.what();
         }
     };
-    if (ImGui::Button("Replace...")) openEditorFilePicker(label, false,
+    if (ImGui::Button("Replace...")) openEditorFilePicker(label, EditorFileType::Images,
         displayedPath.empty() ? assetsDirectory_ : displayedPath.parent_path(), apply);
     if (!path.empty()) {
         ImGui::SameLine();
@@ -859,13 +859,14 @@ void Renderer::drawGameInspector() {
         auto& node = *selectedModelNode_;
         ImGui::TextWrapped("%s", node.name.c_str());
         editorDirty_ |= ImGui::Checkbox("Visible", &node.renderEnabled);
+        if (node.objectType == SceneObjectType::RealtimeEffect) {
+            editorDirty_ |= drawRealtimeEffectControls(node);
+            return;
+        }
         if (node.objectType == SceneObjectType::ParticleSystem) {
-            const auto system = particleSystems_.find(node.nodeId);
-            if (system == particleSystems_.end() || !system->second.settings().flipbook.frames) {
-                ImGui::SeparatorText("Graphics Pipeline");
-                drawEditorShader(ShaderStage::Vertex, "shader_particle.vert", "particle");
-                drawEditorShader(ShaderStage::Fragment, "shader_particle.frag", "particle");
-            }
+            ImGui::SeparatorText("Graphics Pipeline");
+            drawEditorShader(ShaderStage::Vertex, "shader_particle.vert", "particle");
+            drawEditorShader(ShaderStage::Fragment, "shader_particle.frag", "particle");
             drawParticleSystemControls(node.nodeId, editorDirty_, &node);
             return;
         }

@@ -117,7 +117,8 @@ Assimp 不要求单独安装：CMake 会优先使用系统中的 Assimp package�
 会在配置阶段从官方仓库下载并构建固定版本 `v6.0.5`。
 
 Dear ImGui 不要求单独安装：CMake 会从官方仓库下载固定版本 `v1.92.9`，并只编译
-核心库、GLFW platform backend 和 Vulkan renderer backend。
+核心库、GLFW platform backend 和 Vulkan renderer backend。ImGui 使用随项目附带的
+思源黑体显示 UTF-8 中文字符，字体和 SIL Open Font License 位于 `assets/fonts/`。
 
 PhysX 不要求单独安装：CMake 会下载固定提交的 PhysX `5.6.1` 源码并构建 CPU 静态库。
 由于 NVIDIA 官方 PhysX 5.x 目前只提供 Windows/Linux 构建预设，项目使用 O3DE 维护的
@@ -286,7 +287,7 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 
 #### 特效编辑器
 
-macOS 编辑器顶部的 `Effects` 标签支持粒子、网格、拖尾、灯光和后处理，可通过时间轴、曲线和自定义 GLSL 制作特效。可导出供共享运行时播放的效果包，或导出可放入 VulkCore 场景的特效精灵。详见 [特效编辑器](docs/vfx_editor.md)。
+macOS 编辑器顶部的 `Effects` 标签支持粒子、网格、拖尾、灯光和后处理，可通过时间轴、曲线和自定义 GLSL 制作特效。可导出供 Three.js 播放的效果包，或导出交给 VulkCore 的 Vulkan 渲染器实时播放的 `.vfx3d` 资源。详见 [特效编辑器](docs/vfx_editor.md)。
 
 #### 地形道路笔刷
 

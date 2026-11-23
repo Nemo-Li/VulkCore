@@ -12,6 +12,7 @@ layout(location = 4) in vec3 fragTerrainPosition;
 layout(location = 5) in vec4 fragTerrainMapping;
 
 #include "scene_fog.glsl"
+#include "effect_lighting.glsl"
 #include "meadow_shading.glsl"
 #include "sun_shadow.glsl"
 #include "terrain_road_weights.glsl"
@@ -596,7 +597,8 @@ void main() {
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse *
                     mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility);
     float visibility = sunVisibility(fragWorldPosition, shadowNormal);
-    vec3 terrainLight = ambient + sunlight * visibility;
+    vec3 pointLight = effectPointLighting(fragWorldPosition, normal);
+    vec3 terrainLight = ambient + sunlight * visibility + pointLight;
     vec3 litTerrain = albedo * terrainLight;
     if (grassFadeRange.y > grassFadeRange.x && grass > 0.58 && grassGroundDistance < 1.75 * grassFadeRange.y) {
         // 草地占主要权重时使用草叶淡出的目标色。保留混合地貌上的过渡。
@@ -607,7 +609,7 @@ void main() {
         vec3 groundLight = meadowGroundLighting(dot(geometryNormal, lightDirection),
             ubo.ambientLight.rgb * ubo.ambientLight.a,
             ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility);
-        litTerrain = mix(litTerrain, groundAlbedo * groundLight, meadowWeight);
+        litTerrain = mix(litTerrain, groundAlbedo * (groundLight + pointLight), meadowWeight);
     }
     // Let the meadow lighting affect only the original ground contribution.
     litTerrain = (1.0 - roadCoverage) * litTerrain + paintedAlbedo * terrainLight;

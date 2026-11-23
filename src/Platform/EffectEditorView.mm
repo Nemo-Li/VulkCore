@@ -51,7 +51,7 @@ bool isStudioPage(NSURL* url) {
                     NSDictionary* headers = @{
                         @"Content-Type": [type stringByAppendingString:@"; charset=utf-8"],
                         @"Content-Security-Policy":
-                            @"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                            @"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
                              "img-src 'self' data: blob:; connect-src 'self' data: blob:; object-src 'none'",
                         @"Cross-Origin-Resource-Policy": @"same-origin"
                     };
