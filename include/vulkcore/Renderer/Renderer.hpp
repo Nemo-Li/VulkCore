@@ -24,6 +24,7 @@
 #include "vulkcore/Renderer/ParticleSystem.hpp"
 #include "vulkcore/Renderer/Texture.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
+#include "vulkcore/Terrain/RoadPaint.hpp"
 
 #include "vulkcore/Platform/Window.hpp"
 
@@ -159,6 +160,9 @@ private:
     void selectViewerModel(std::size_t index);
     void fitViewerModel();
     bool drawGameEditor();
+    void drawRoadBrushControls();
+    void updateRoadEditorCamera(float deltaSeconds, bool viewportHovered);
+    void updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHovered);
     glm::vec3 updateGameEditorSelection(float deltaSeconds, bool viewportHovered);
     void drawGameSelectionOutline(const glm::mat4& clipFromScene);
     bool drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize);
@@ -300,6 +304,9 @@ private:
     void createUniformBuffers();
     void createDescriptorPool();
     void createDescriptorSets();
+    void bindRoadIndex(std::uint32_t frame);
+    void updateRoadIndex();
+    bool roadEditorActive() const;
     void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
@@ -418,6 +425,14 @@ private:
     bool sunShadowsActive_ = false;
     MeshData meshData_;
     std::unique_ptr<TerrainScene> terrainScene_;
+    RoadPaint roadPaint_;
+    std::uint64_t roadIndexRevision_ = 0;
+    std::vector<std::uint32_t> roadIndex_;
+    struct RoadFrameBuffer {
+        std::unique_ptr<Buffer> buffer;
+        std::uint64_t revision = 0;
+    };
+    std::array<RoadFrameBuffer, kMaxFramesInFlight> roadFrameBuffers_;
     GrassCoverage grassCoverage_;
     std::uint64_t grassRevision_ = 0;
     struct GrassFrameBuffer {
@@ -509,6 +524,22 @@ private:
     bool miniMapVisible_ = true;
     bool screenshotFromToolbar_ = false;
 #ifndef VULKCORE_OHOS
+    struct RoadEditorCamera {
+        glm::vec3 originalPosition;
+        glm::vec3 originalTarget;
+        float yaw;
+        float pitch;
+        float distance;
+        bool dragging = false;
+    };
+    std::optional<RoadEditorCamera> roadEditorCamera_;
+    bool roadBrushEnabled_ = true;
+    bool roadTopDown_ = false;
+    bool roadBrushDragging_ = false;
+    bool roadViewportOwnsInput_ = false;
+    bool roadStrokeHasPoint_ = false;
+    RoadSurface roadBrushSurface_ = RoadSurface::Mud;
+    float roadBrushRadius_ = 3.0f;
     glm::vec4 sceneEditorViewport_{0.0f}; // left, top, right, bottom in ImGui coordinates
     ResourceBrowser resourceBrowser_;
     ResourcePreview resourcePreview_;

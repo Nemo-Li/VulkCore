@@ -4,7 +4,7 @@
 namespace VulkCore {
 
 void Renderer::createDescriptorSetLayout() {
-    std::array<VkDescriptorSetLayoutBinding, 1 + kMaterialImageBindingCount> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 2 + kMaterialImageBindingCount> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     bindings[0].descriptorCount = 1;
@@ -60,6 +60,8 @@ void Renderer::createDescriptorSetLayout() {
     bindings[kGrassGroundBinding].binding = kGrassGroundBinding;
     bindings[kSunShadowBinding] = bindings[6];
     bindings[kSunShadowBinding].binding = kSunShadowBinding;
+    bindings[kTerrainRoadBinding] = {kTerrainRoadBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+        VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

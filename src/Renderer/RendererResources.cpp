@@ -534,7 +534,7 @@ void Renderer::createIndexBuffer() {
 
 void Renderer::updateGrassCoverage() {
     if (!terrainScene_) return;
-    const bool followPlayer = playerController_.active();
+    const bool followPlayer = playerController_.active() && !roadEditorActive();
     const glm::vec3 center = followPlayer ? playerController_.position()
         : cameraPosition_ / modelScale_ + modelCenter_;
     const float viewPadding = followPlayer ? PlayerController::kCameraDistance : 0.0f;
@@ -1197,13 +1197,15 @@ void Renderer::createDescriptorPool() {
     const uint32_t particleDescriptorCapacity =
         kMaxFramesInFlight * kMaximumParticleSystems;
     const uint32_t skyboxDescriptorCount = kMaxFramesInFlight;
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     poolSizes[0].descriptorCount =
         materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = (materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount) *
         kMaterialImageBindingCount;
+    poolSizes[2] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        materialDescriptorCount + particleDescriptorCapacity + skyboxDescriptorCount};
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1235,6 +1237,15 @@ void Renderer::createDescriptorSets() {
     }
 
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+        auto& roadFrame = roadFrameBuffers_[i];
+        if (!roadFrame.buffer) {
+            const std::array<std::uint32_t, 5> emptyIndex{};
+            roadFrame.buffer = std::make_unique<Buffer>(*context_, sizeof(emptyIndex),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            roadFrame.buffer->upload(emptyIndex.data(), sizeof(emptyIndex));
+        }
+        bindRoadIndex(i);
         for (uint32_t materialIndex = 0; materialIndex < materialCount; ++materialIndex) {
             const std::size_t descriptorSetIndex =
                 static_cast<std::size_t>(i) * materialCount + materialIndex;
@@ -1559,7 +1570,7 @@ void Renderer::updateSceneTextureDescriptors() {
 
 void Renderer::updateCameraBasis() {
     constexpr float kMinimumBasisLength = 0.0001f;
-    const float kMinimumCameraDistance = playerController_.active()
+    const float kMinimumCameraDistance = playerController_.active() || roadEditorActive()
         ? std::max(0.00001f, modelScale_ * 0.02f)
         : 0.05f;
     glm::vec3 targetDelta = cameraTarget_ - cameraPosition_;
@@ -1572,8 +1583,9 @@ void Renderer::updateCameraBasis() {
     cameraForward_ = glm::normalize(targetDelta);
 
     if (!cameraBasisInitialized_) {
-        const glm::vec3 worldUp = authoredView_.enabled ? authoredView_.up :
-            (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp);
+        const glm::vec3 worldUp = roadEditorActive() ? glm::vec3(0.0f, 1.0f, 0.0f) :
+            (authoredView_.enabled ? authoredView_.up :
+                (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp));
         // At the exact pole the position alone does not define camera roll,
         // so retain the historical front-view orientation as the initial one.
         glm::vec3 initialUp = worldUp -
@@ -1641,7 +1653,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f / static_cast<float>(extent.width),
         1.0f / static_cast<float>(extent.height)
     );
-    const float nearPlane = playerController_.active()
+    const float nearPlane = playerController_.active() || roadEditorActive()
         ? std::max(0.00001f, modelScale_ * 0.02f)
         : 0.01f;
 #ifdef VULKCORE_OHOS
@@ -1666,6 +1678,15 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         );
         ubo.projection[1][1] *= -1.0f;
     }
+
+#ifndef VULKCORE_OHOS
+    if (roadEditorActive() && roadTopDown_) {
+        const float halfHeight = roadEditorCamera_->distance * modelScale_ * 0.42f;
+        const float halfWidth = halfHeight * aspect;
+        ubo.projection = glm::orthoRH_ZO(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlane, 100.0f);
+        ubo.projection[1][1] *= -1.0f;
+    }
+#endif
 
     const glm::vec3 normalizedSunDirection = glm::length(sunLightDirection_) < 0.001f
         ? glm::vec3(0.45f, 0.55f, 0.75f)

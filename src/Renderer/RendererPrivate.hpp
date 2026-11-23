@@ -26,6 +26,7 @@ namespace renderer_detail {
 
 constexpr std::uint32_t kMaterialImageBindingCount = 10;
 constexpr std::uint32_t kSunShadowBinding = 10;
+constexpr std::uint32_t kTerrainRoadBinding = 11;
 constexpr std::uint32_t kShadowBlendFlag = 1u << 30;
 constexpr std::uint32_t kShadowWaterFlag = 1u << 29;
 constexpr std::uint32_t kShadowCutoutFlag = 1u << 28;

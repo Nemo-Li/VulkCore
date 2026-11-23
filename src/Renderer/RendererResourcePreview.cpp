@@ -225,9 +225,10 @@ void Renderer::createResourcePreviewBuffers() {
     const auto materialCount = static_cast<std::uint32_t>(preview.mesh.materials.size());
     const auto setCount = materialCount * kMaxFramesInFlight;
     // Scene material resources may be rebuilt while the preview stays open.
-    const std::array<VkDescriptorPoolSize, 2> sizes{{
+    const std::array<VkDescriptorPoolSize, 3> sizes{{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, setCount},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaterialImageBindingCount * setCount},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount},
     }};
     VkDescriptorPoolCreateInfo pool{};
     pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

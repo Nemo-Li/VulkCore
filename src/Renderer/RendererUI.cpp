@@ -265,7 +265,7 @@ void Renderer::updateTransition(float seconds) {
     transitionCameraFov_ = std::lerp(transitionCameraFov_,
         transitionPlayer_.active ? transitionSettings_.activeFov : authoredView_.fov, amount);
     // A player camera's position is constrained by terrain collision.
-    if (playerController_.active()) return;
+    if (playerController_.active() || roadEditorActive()) return;
 
     transitionCameraOffset_ = std::lerp(transitionCameraOffset_,
         transitionPlayer_.active ? transitionSettings_.distanceOffset : 0.0f, amount);
@@ -279,7 +279,7 @@ void Renderer::updateTransition(float seconds) {
 }
 
 void Renderer::updateCameraOrbit(bool viewportHovered) {
-    if (!authoredView_.orbitEnabled || playerController_.active() || !fixedFrameOutput_.empty()) {
+    if (roadEditorActive() || !authoredView_.orbitEnabled || playerController_.active() || !fixedFrameOutput_.empty()) {
         cameraOrbitDragging_ = false;
         return;
     }

@@ -28,6 +28,11 @@ public:
     // Per-chunk AABBs and mesh BVHs keep broad/mid-phase rejection local.
     void setTerrain(const TerrainMeshData& mesh);
 
+    // Closest hit against the rendered terrain colliders along a unit direction.
+    std::optional<glm::vec3> raycastTerrain(
+        const glm::vec3& origin, const glm::vec3& direction, float maxDistance
+    ) const;
+
     // Distance a sphere can travel along a unit direction before touching terrain.
     float terrainSweepDistance(
         const glm::vec3& origin,

@@ -296,6 +296,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/RendererPipelines.cpp
     src/Renderer/RendererPrivate.cpp
     src/Renderer/RendererResources.cpp
+    src/Renderer/RendererRoadPaint.cpp
     src/Renderer/RendererScene.cpp
     src/Renderer/RendererSceneGraph.cpp
     src/Renderer/RendererSunShadows.cpp
@@ -306,6 +307,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/VulkanContext.cpp
     src/Gameplay/Player.cpp
     src/Terrain/Grass.cpp
+    src/Terrain/RoadPaint.cpp
     src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
     src/Utils/ModelLoader.cpp

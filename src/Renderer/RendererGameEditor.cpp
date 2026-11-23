@@ -166,6 +166,11 @@ bool Renderer::drawGameEditor() {
         if (ImGui::MenuItem("Open Scene...")) openScene();
         if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
         ImGui::MenuItem("Edit Mode", "F5", &sceneEditMode_);
+        if (sceneEditMode_ && terrainScene_ && ImGui::BeginMenu("Edit Tool")) {
+            if (ImGui::MenuItem("Road Brush", nullptr, roadBrushEnabled_)) roadBrushEnabled_ = true;
+            if (ImGui::MenuItem("Select / Transform", nullptr, !roadBrushEnabled_)) roadBrushEnabled_ = false;
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Capture screenshot", "F12")) screenshotFromToolbar_ = true;
             if (ImGui::MenuItem("Hide editor", "F1")) {
@@ -214,6 +219,15 @@ bool Renderer::drawGameEditor() {
         ImGui::BeginDragDropTargetCustom(sceneViewport, ImGui::GetID("##SceneViewport"))) {
         acceptSceneModelDrop();
         ImGui::EndDragDropTarget();
+    }
+    bool roadViewportHovered = false;
+    roadViewportOwnsInput_ = false;
+    if (roadEditorActive() && sceneViewport.GetWidth() > 0.0f) {
+        // Capture the drag before ImGui treats it as a click on the window background.
+        ImGui::SetCursorScreenPos(sceneViewport.Min);
+        ImGui::InvisibleButton("##RoadViewport", sceneViewport.GetSize());
+        roadViewportOwnsInput_ = ImGui::IsItemActive();
+        roadViewportHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
     }
     ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + width - right, panelY));
     if (ImGui::BeginChild("Inspector", ImVec2(right, panelHeight), ImGuiChildFlags_Borders)) drawGameInspector();
@@ -266,12 +280,12 @@ bool Renderer::drawGameEditor() {
     ImGui::End();
     const bool miniMapHovered = drawMiniMap({sceneViewport.Min.x, sceneViewport.Min.y},
         {sceneViewport.GetWidth(), sceneViewport.GetHeight()});
-    return hovered && !miniMapHovered;
+    return (roadEditorActive() ? roadViewportHovered : hovered) && !miniMapHovered;
 }
 
 glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportHovered) {
     const auto& io = ImGui::GetIO();
-    if (!sceneEditMode_ || editorSelection_ != EditorSelection::Node || !selectedModelNode_ ||
+    if (!sceneEditMode_ || roadEditorActive() || editorSelection_ != EditorSelection::Node || !selectedModelNode_ ||
         pendingSceneChange_ != EditorSceneChange::None || pendingSceneNodeRemoval_ ||
         io.KeyMods != 0 || io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() ||
         ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
@@ -437,7 +451,7 @@ bool Renderer::editorDeletePressed() const {
 
 void Renderer::drawGameOutliner() {
     ImGui::SeparatorText("Scene");
-    if (sceneEditMode_) ImGui::TextDisabled("WASD Move / Wheel Scale");
+    if (sceneEditMode_ && !roadEditorActive()) ImGui::TextDisabled("WASD Move / Wheel Scale");
     const auto select = [&](const char* label, EditorSelection selection) {
         if (ImGui::Selectable(label, editorSelection_ == selection)) {
             editorSelection_ = selection;
@@ -682,6 +696,10 @@ void Renderer::drawEnemyPatrol(const ModelNode& modelRoot) {
 }
 
 void Renderer::drawGameInspector() {
+    if (roadEditorActive()) {
+        drawRoadBrushControls();
+        return;
+    }
     ImGui::SeparatorText("Inspector");
     ImGui::PushItemWidth(std::max(65.0f, ImGui::GetContentRegionAvail().x * 0.53f));
     const auto draw = [&] {

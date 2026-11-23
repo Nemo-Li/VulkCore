@@ -14,6 +14,7 @@ layout(location = 5) in vec4 fragTerrainMapping;
 #include "scene_fog.glsl"
 #include "meadow_shading.glsl"
 #include "sun_shadow.glsl"
+#include "terrain_road_weights.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
@@ -189,6 +190,46 @@ TerrainSample sampleStochasticTerrain(int layer, TerrainPatch patches[3],
         // 若采样坐标 q = A·p + b，则梯度由链式法则以 A 的转置拉回原坐标。
         result.gradient += transpose(region.transform) * surface.gradient * region.weight;
         result.occlusion += surface.occlusion * region.weight;
+    }
+    return result;
+}
+
+// Materials are aligned in terrain units, including in the orthographic view.
+vec3 roadAlbedo(vec3 weights, vec2 ground, float footprint) {
+    vec3 result = vec3(0.0);
+    if (weights.x > 0.0) {
+        float ruts = valueNoise(ground * vec2(2.3, 0.55));
+        float grain = valueNoise(ground * 13.0);
+        float wetness = mix(valueNoise(ground * 0.6), ruts, 0.45);
+        vec3 mud = mix(vec3(0.13, 0.071, 0.039), vec3(0.35, 0.22, 0.12), wetness);
+        result += weights.x * mud * (1.0 + (grain - 0.5) * (1.0 - smoothstep(0.05, 0.18, footprint)));
+    }
+    if (weights.y > 0.0) {
+        vec2 pebbles = ground * 10.0;
+        vec2 cell = floor(pebbles);
+        float seed = hash21(cell);
+        vec2 center = vec2(0.35) + 0.30 * vec2(seed, hash21(cell + 17.0));
+        float radius = mix(0.22, 0.40, seed);
+        float pebble = 1.0 - smoothstep(radius - 0.06, radius, length(fract(pebbles) - center));
+        vec3 stone = mix(vec3(0.23, 0.20, 0.16), vec3(0.54, 0.50, 0.42), seed);
+        vec3 gravel = mix(vec3(0.22, 0.17, 0.12), stone, pebble);
+        gravel = mix(gravel, vec3(0.32, 0.28, 0.22), smoothstep(0.06, 0.20, footprint));
+        result += weights.y * gravel * mix(0.85, 1.15, valueNoise(ground * 1.3));
+    }
+    if (weights.z > 0.0) {
+        vec2 blocks = ground / vec2(0.68, 0.43);
+        blocks.x += 0.50 * mod(floor(blocks.y), 2.0);
+        vec2 cell = floor(blocks);
+        vec2 local = fract(blocks);
+        vec2 distanceToEdge = min(local, 1.0 - local);
+        float inset = min(distanceToEdge.x, distanceToEdge.y);
+        float chip = 0.06 * valueNoise(ground * 17.0);
+        float grout = 1.0 - smoothstep(0.025 + chip, 0.08 + chip + footprint, inset);
+        float stoneTint = hash21(cell);
+        vec3 paving = mix(vec3(0.27, 0.28, 0.27), vec3(0.52, 0.53, 0.48), stoneTint);
+        paving *= mix(0.82, 1.13, valueNoise(ground * 8.0));
+        paving = mix(paving, vec3(0.13, 0.121, 0.099), grout);
+        result += weights.z * mix(paving, vec3(0.35, 0.36, 0.33), smoothstep(0.10, 0.42, footprint));
     }
     return result;
 }
@@ -432,6 +473,13 @@ void main() {
     vec3 bedsBump = -vec3(0.8 * beds.y / 150.0, beds.z / 29.0, -0.6 * beds.y / 150.0) *
                     (5.2 * rock * bedsVisible);
     vec3 bump = normalOffset + slabBump + bedsBump + distantGrassBump;
+    vec3 roads = terrainRoadWeights(groundPosition);
+    float roadCoverage = clamp(dot(roads, vec3(1.0)), 0.0, 1.0);
+    if (roadCoverage > 0.0) {
+        albedo = (1.0 - roadCoverage) * albedo + roadAlbedo(roads, groundPosition, footprint);
+        bump *= 1.0 - 0.75 * roadCoverage;
+        ao = mix(ao, 1.0, roadCoverage);
+    }
     // 将累加的扰动投影到切平面，避免沿原法线的分量改变凹凸强度。
     bump -= geometryNormal * dot(geometryNormal, bump);
     vec3 normal = normalize(geometryNormal + bump);
@@ -461,7 +509,7 @@ void main() {
         vec3 groundLight = meadowGroundLighting(dot(geometryNormal, lightDirection),
             ubo.ambientLight.rgb * ubo.ambientLight.a,
             ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility);
-        litTerrain = mix(litTerrain, groundAlbedo * groundLight, meadowWeight);
+        litTerrain = mix(litTerrain, groundAlbedo * groundLight, meadowWeight * (1.0 - roadCoverage));
     }
 
     outColor = vec4(applySceneFog(litTerrain * material.baseColor.rgb,

@@ -284,6 +284,12 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 `vulkcore.ini` 的 `particle_system_object` 记录中。粒子位置使用组件的局部归一化场景坐标，
 默认在 GameObject 原点上方生成一束向上的火花。
 
+#### 地形道路笔刷
+
+打开包含地形的场景后按 `F5` 进入编辑模式，默认启用 `Road Brush`。在右侧面板选择泥路、碎石、石板或橡皮擦，并设置以米为单位的笔刷半径。`View` 可切换透视和正交俯视，两种视角共用同一份道路数据。
+
+在视口内按住左键拖动绘制，按住右键拖动环绕相机，用 `WASD` 平移，滚轮缩放。点击 `Save` 将道路写入当前 `.scene` 文件。需要移动物体时，从 `Edit Tool` 切换到 `Select / Transform`。
+
 #### PhysX 地形与 Player 物理
 
 加载包含 BOTW Terrain 和 Player 的游戏场景时，每个渲染地形 Chunk 会同时烘焙为 PhysX

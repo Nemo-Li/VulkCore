@@ -631,10 +631,10 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         deltaSeconds,
         *physicsWorld_,
         sceneEditMode_ || io.WantTextInput,
-        !viewportHovered
+        !viewportHovered || roadEditorActive()
     );
     updatePlayerAttackEffect();
-    updatePlayerCamera();
+    if (!roadEditorActive()) updatePlayerCamera();
 }
 
 void Renderer::updatePlayerCamera() {
@@ -667,6 +667,16 @@ void Renderer::clearSceneData() {
     editorSelection_ = EditorSelection::None;
     editorPart_.reset();
     currentScenePath_.clear();
+    roadPaint_.clear();
+    roadIndexRevision_ = 0;
+    for (auto& frame : roadFrameBuffers_) frame.revision = 0;
+#ifndef VULKCORE_OHOS
+    roadEditorCamera_.reset();
+    roadBrushEnabled_ = true;
+    roadTopDown_ = false;
+    roadBrushDragging_ = false;
+    roadStrokeHasPoint_ = false;
+#endif
     skyboxEnabled_ = false;
     skyboxTexturePath_.clear();
     grassGroundTexturePath_.clear();
@@ -1138,6 +1148,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     float grassHeightScale = 1.0f;
     GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
+    RoadPaint savedRoadPaint;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
         sceneStatusFailed_ = true;
@@ -1222,6 +1233,12 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             terrainPath = std::move(configuredPath);
+        } else if (key == "terrain_road") {
+            if (!savedRoadPaint.readStroke(sceneFile)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid terrain road stroke.";
+                return false;
+            }
         } else if (key == "water_resource") {
             std::string configuredPath;
             if (!(sceneFile >> std::quoted(configuredPath))) {
@@ -1435,6 +1452,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             appendTerrainToScene(*terrain, terrainPath);
             appendWaterToScene(*terrain);
             terrainScene_ = std::move(terrain);
+            roadPaint_ = std::move(savedRoadPaint);
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
@@ -2448,6 +2466,7 @@ bool Renderer::saveTransformSettings() const {
              << grassGrowth_.maximumTilt << ' ' << grassGrowth_.noiseSize << '\n'
              << "grass_blade_width " << grassGrowth_.minimumBladeWidth << ' '
              << grassGrowth_.maximumBladeWidth << '\n';
+        roadPaint_.writeStrokes(file);
     }
     if (!terrainResourcePath_.empty()) {
         std::error_code relativeError;
@@ -2548,7 +2567,10 @@ bool Renderer::saveTransformSettings() const {
              << t.autoplay << ' ' << t.activeFov << ' ' << t.distanceOffset << "\n";
     }
     const bool saveInitialCamera = transitionSettings_.enabled || view.orbitEnabled;
-    const auto& savedCamera = saveInitialCamera ? transitionCameraStart_ : cameraPosition_;
+    glm::vec3 savedCamera = saveInitialCamera ? transitionCameraStart_ : cameraPosition_;
+#ifndef VULKCORE_OHOS
+    if (!saveInitialCamera && roadEditorCamera_) savedCamera = roadEditorCamera_->originalPosition;
+#endif
     file << "sun_present " << (sunPresent_ ? 1 : 0) << "\n"
          << "camera_position " << savedCamera.x << ' '
          << savedCamera.y << ' ' << savedCamera.z << "\n"

@@ -977,6 +977,9 @@ bool Renderer::drawFrame() {
         0.1f
     );
     updatePlayerController(particleDeltaSeconds, viewportHovered);
+#ifndef VULKCORE_OHOS
+    updateRoadEditorCamera(particleDeltaSeconds, viewportHovered);
+#endif
     updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
     updateCameraBasis();
     glm::vec3 editMovement(0.0f);
@@ -1002,8 +1005,12 @@ bool Renderer::drawFrame() {
     }
     const auto clipFromScene = updateUniformBuffer();
 #ifndef VULKCORE_OHOS
-    if (clipFromScene) drawGameSelectionOutline(*clipFromScene);
+    if (clipFromScene) {
+        if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);
+        else drawGameSelectionOutline(*clipFromScene);
+    }
 #endif
+    updateRoadIndex();
     ImGui::Render();
     updateGrassCoverage();
     updateParticleBuffer();

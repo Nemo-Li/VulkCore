@@ -486,6 +486,16 @@ void PhysicsWorld::setTerrain(const TerrainMeshData& mesh) {
     impl_->updateGroundedState();
 }
 
+std::optional<glm::vec3> PhysicsWorld::raycastTerrain(
+    const glm::vec3& origin, const glm::vec3& direction, float maxDistance
+) const {
+    const physx::PxQueryFilterData filter(physx::PxQueryFlag::eSTATIC);
+    physx::PxRaycastBuffer hit;
+    impl_->scene->raycast(toPhysX(origin), toPhysX(direction), maxDistance,
+        hit, physx::PxHitFlag::ePOSITION, filter);
+    return hit.hasBlock ? std::optional(fromPhysX(hit.block.position)) : std::nullopt;
+}
+
 float PhysicsWorld::terrainSweepDistance(
     const glm::vec3& origin,
     const glm::vec3& direction,
