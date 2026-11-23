@@ -397,9 +397,11 @@ bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& vie
     }
 #endif
     const ImVec2 canvasMinimum = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##MiniMapCanvas", ImVec2(canvasSide, canvasSide));
+    const bool clickToMove = playerController_.clickToMoveEnabled() && !sceneEditMode_;
+    ImGui::InvisibleButton("##MiniMapCanvas", ImVec2(canvasSide, canvasSide),
+        clickToMove ? ImGuiButtonFlags_MouseButtonRight : ImGuiButtonFlags_MouseButtonLeft);
     const bool mapHovered = ImGui::IsItemHovered();
-    const bool mapClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool mapClicked = ImGui::IsItemClicked(clickToMove ? ImGuiMouseButton_Right : ImGuiMouseButton_Left);
 
     const float scale = canvasSide / std::max(worldWidth, worldDepth);
     const ImVec2 mapSize(worldWidth * scale, worldDepth * scale);
@@ -439,6 +441,10 @@ bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& vie
     const float yaw = playerController_.facingYawRadians();
     const ImVec2 facing(std::sin(yaw), std::cos(yaw));
     const ImVec2 right(-facing.y, facing.x);
+    if (playerMoveMarker_) {
+        const auto& target = playerMoveMarker_->position;
+        drawList->AddCircleFilled(worldToMap(target.x, target.z), 3.0f, IM_COL32(111, 250, 245, 220));
+    }
     drawList->AddCircle(marker, 7.0f, IM_COL32(30, 42, 28, 255), 20, 2.0f);
     drawList->AddTriangleFilled(
         ImVec2(marker.x + facing.x * 10.0f, marker.y + facing.y * 10.0f),
@@ -454,10 +460,17 @@ bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& vie
         mouse.y >= mapMinimum.y && mouse.y < mapMaximum.y) {
         const glm::vec2 destination(worldMinimum.x + (mouse.x - mapMinimum.x) / scale,
             worldMinimum.z + (mouse.y - mapMinimum.y) / scale);
-        if (terrainScene_->renderedHeightAtWorld(destination)) {
-            ImGui::SetTooltip("Travel to X %.1f, Z %.1f", destination.x, destination.y);
-            if (mapClicked && playerController_.teleport(*terrainScene_, *physicsWorld_, destination)) {
-                updatePlayerCamera();
+        if (const auto height = terrainScene_->renderedHeightAtWorld(destination)) {
+            if (clickToMove) {
+                if (canIssuePlayerMove()) {
+                    ImGui::SetTooltip("Right-click to move to X %.1f, Z %.1f", destination.x, destination.y);
+                    if (mapClicked) issuePlayerMove({destination.x, *height, destination.y});
+                }
+            } else {
+                ImGui::SetTooltip("Travel to X %.1f, Z %.1f", destination.x, destination.y);
+                if (mapClicked && playerController_.teleport(*terrainScene_, *physicsWorld_, destination)) {
+                    updatePlayerCamera();
+                }
             }
         } else {
             ImGui::SetTooltip("No traversable terrain here");

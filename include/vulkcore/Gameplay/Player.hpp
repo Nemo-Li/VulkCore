@@ -49,7 +49,8 @@ public:
     void reset(
         const TerrainScene& terrain,
         PhysicsWorld& physics,
-        const std::optional<glm::vec3>& spawnPosition = std::nullopt
+        const std::optional<glm::vec3>& spawnPosition = std::nullopt,
+        bool clickToMove = false
     );
     bool teleport(
         const TerrainScene& terrain,
@@ -72,6 +73,9 @@ public:
     );
 
     bool active() const { return active_; }
+    bool clickToMoveEnabled() const { return clickToMove_; }
+    void setMoveDestination(const glm::vec2& destination) { moveDestination_ = destination; }
+    void cancelMove() { moveDestination_.reset(); }
     bool debugModeEnabled() const { return debugModeEnabled_; }
     void setDebugModeEnabled(bool enabled) { debugModeEnabled_ = enabled; }
     const glm::vec3& position() const { return position_; }
@@ -93,6 +97,8 @@ private:
     float currentFootTraction() const;
 
     bool active_ = false;
+    bool clickToMove_ = false;
+    std::optional<glm::vec2> moveDestination_;
     bool debugModeEnabled_ = false;
     bool grounded_ = true;
     bool moving_ = false;

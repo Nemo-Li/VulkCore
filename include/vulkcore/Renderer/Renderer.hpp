@@ -170,6 +170,10 @@ private:
     glm::vec3 updateGameEditorSelection(float deltaSeconds, bool viewportHovered);
     void drawGameSelectionOutline(const glm::mat4& clipFromScene);
     bool drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize);
+    bool canIssuePlayerMove() const;
+    void issuePlayerMove(const glm::vec3& destination);
+    void updatePlayerMoveClick(const glm::mat4& clipFromScene, bool viewportHovered);
+    void appendPlayerMoveMarker(float deltaSeconds);
     void drawResourceBrowser();
     void scanResourceDirectory();
     void processResourceTransfers();
@@ -483,6 +487,15 @@ private:
     std::filesystem::path terrainResourcePath_;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
+    bool playerClickToMove_ = false;
+    struct PlayerMoveMarker {
+        glm::vec3 position;
+        float age = 0.0f;
+    };
+    std::optional<PlayerMoveMarker> playerMoveMarker_;
+    static constexpr std::size_t kMoveMarkerRingSegments = 24;
+    static constexpr std::size_t kMoveMarkerArrowCount = 4;
+    static constexpr std::size_t kMoveMarkerVertexCount = 6 * (kMoveMarkerRingSegments + kMoveMarkerArrowCount);
     std::optional<glm::vec3> playerSpawnPosition_;
     std::filesystem::path playerModelResourcePath_;
     float playerModelAutoScale_ = 1.0f;
@@ -505,7 +518,7 @@ private:
     std::vector<std::unique_ptr<Buffer>> particleVertexBuffers_;
     std::vector<ParticleVertex> particleVertices_;
     struct ParticleDrawRange {
-        std::uint32_t nodeId = 0;
+        std::optional<std::uint32_t> nodeId; // No node for the transient ground marker.
         std::uint32_t firstVertex = 0;
         std::uint32_t vertexCount = 0;
         ParticleSystemSettings::BlendMode blendMode =

@@ -169,6 +169,33 @@ int main() {
         return 12;
     }
 
+    const auto clicked = physics.raycastTerrain({2.0f, 8.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, 12.0f);
+    if (!clicked || std::abs(clicked->y - 0.4f) > 0.01f ||
+        physics.raycastTerrain({2.0f, 8.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, 12.0f)) {
+        std::cerr << "terrain picking did not distinguish ground from sky\n";
+        return 17;
+    }
+    physics.createPlayer({-2.0f, 0.025f, 0.0f}, 1.58f, 0.27f, false);
+    physics.setPlayerFootTraction(glm::vec2(0.0f), 2.0f, 1.0f, glm::vec2(clicked->x, clicked->z));
+    for (int frame = 0; frame < 6; ++frame) physics.simulate(0.1f);
+    if (physics.playerFootPosition().x <= -1.9f) {
+        std::cerr << "player did not move toward the first destination\n";
+        return 18;
+    }
+    const glm::vec2 nextDestination(-3.0f, -1.0f);
+    physics.setPlayerFootTraction(glm::vec2(0.0f), 2.0f, 1.0f, nextDestination);
+    // A low render rate can advance several physics steps per movement request.
+    for (int frame = 0; frame < 48; ++frame) physics.simulate(0.1f);
+    const glm::vec3 arrival = physics.playerFootPosition();
+    const glm::vec3 arrivalVelocity = physics.playerLinearVelocity();
+    if (!physics.playerReachedMoveDestination() ||
+        glm::distance(glm::vec2(arrival.x, arrival.z), nextDestination) > VulkCore::PhysicsWorld::kPlayerArrivalRadius ||
+        glm::length(glm::vec2(arrivalVelocity.x, arrivalVelocity.z)) > 0.05f) {
+        std::cerr << "player did not stop at the latest destination, x=" << arrival.x
+                  << ", z=" << arrival.z << ", vx=" << arrivalVelocity.x << ", vz=" << arrivalVelocity.z << '\n';
+        return 19;
+    }
+
     constexpr std::uint32_t kPropId = 1;
     physics.removePlayer();
     physics.placeGravityBox(kPropId, {-4.0f, 3.0f, 0.0f}, {0.4f, 0.5f, 0.4f});

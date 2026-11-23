@@ -5,6 +5,7 @@ grass_growth 5 32 0.409999996
 grass_blade_width 0.0399999991 0.0799999982
 terrain_resource "../assets/terrain"
 player_present 1
+player_click_to_move 1
 player_spawn_position -205 124 -96
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"

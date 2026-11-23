@@ -85,6 +85,8 @@ struct PhysicsWorld::Impl {
     bool grounded = false;
     glm::vec2 playerMovementDirection{0.0f};
     float playerTargetSpeed = 0.0f;
+    std::optional<glm::vec2> playerMoveDestination;
+    bool playerReachedDestination = false;
     float playerFootContactStrength = 1.0f;
     std::optional<physx::PxVec3> playerDebugVelocity;
 
@@ -199,6 +201,8 @@ struct PhysicsWorld::Impl {
         playerPoseInitialized = false;
         playerMovementDirection = glm::vec2(0.0f);
         playerTargetSpeed = 0.0f;
+        playerMoveDestination.reset();
+        playerReachedDestination = false;
         playerFootContactStrength = 1.0f;
         playerDebugVelocity.reset();
     }
@@ -290,12 +294,28 @@ struct PhysicsWorld::Impl {
             return;
         }
 
-        const bool wantsMovement = playerTargetSpeed > 0.0f &&
-            glm::dot(playerMovementDirection, playerMovementDirection) > 0.0f;
-        const glm::vec2 desiredVelocity = wantsMovement
-            ? playerMovementDirection * playerTargetSpeed
-            : glm::vec2(0.0f);
         const physx::PxVec3 currentVelocity = playerActor->getLinearVelocity();
+        glm::vec2 desiredVelocity = playerMovementDirection * playerTargetSpeed;
+        bool brakingForDestination = false;
+        if (playerMoveDestination) {
+            const glm::vec3 position = rawPlayerFootPosition();
+            const glm::vec2 offset = *playerMoveDestination - glm::vec2(position.x, position.z);
+            const float distance = glm::length(offset);
+            if (distance <= PhysicsWorld::kPlayerArrivalRadius) {
+                // Latch arrival before braking so contact corrections cannot restart the order.
+                playerMoveDestination.reset();
+                playerMovementDirection = glm::vec2(0.0f);
+                playerTargetSpeed = 0.0f;
+                playerReachedDestination = true;
+                desiredVelocity = glm::vec2(0.0f);
+            } else {
+                const float approachSpeed = std::min(playerTargetSpeed,
+                    distance * PhysicsWorld::kPlayerDestinationSlowdownRate);
+                brakingForDestination = glm::length(glm::vec2(currentVelocity.x, currentVelocity.z)) > approachSpeed;
+                desiredVelocity = offset * (approachSpeed / distance);
+            }
+        }
+        const bool wantsMovement = playerTargetSpeed > 0.0f && !brakingForDestination;
         glm::vec2 velocityChange = desiredVelocity - glm::vec2(
             currentVelocity.x,
             currentVelocity.z
@@ -306,7 +326,7 @@ struct PhysicsWorld::Impl {
         }
 
         // Coulomb friction bounds the impulse available from a planted foot.
-        // Releasing the movement keys uses static friction to settle the body;
+        // Stopping uses static friction to settle the body;
         // while running, the sampled animation contact controls how much of
         // the dynamic-friction budget the current stance can use.
         const float friction = wantsMovement
@@ -583,7 +603,8 @@ std::optional<glm::vec3> PhysicsWorld::gravityBoxRenderCenter(std::uint32_t id) 
 void PhysicsWorld::createPlayer(
     const glm::vec3& footPosition,
     float height,
-    float radius
+    float radius,
+    bool useStrongFriction
 ) {
     impl_->removePlayer();
     if (!std::isfinite(height) || !std::isfinite(radius) ||
@@ -601,6 +622,9 @@ void PhysicsWorld::createPlayer(
 
     const float halfCylinderHeight = std::max(0.0f, height * 0.5f - radius);
     const physx::PxCapsuleGeometry playerGeometry(radius, halfCylinderHeight);
+    // With position-based orders, cached friction anchors can pull the capsule
+    // back after arrival, even though the current order is complete.
+    impl_->playerFootMaterial->setFlag(physx::PxMaterialFlag::eDISABLE_STRONG_FRICTION, !useStrongFriction);
     physx::PxShape* playerShape = impl_->physics->createShape(
         playerGeometry,
         *impl_->playerFootMaterial,
@@ -651,7 +675,8 @@ bool PhysicsWorld::hasPlayer() const {
 void PhysicsWorld::setPlayerFootTraction(
     const glm::vec2& direction,
     float targetSpeed,
-    float contactStrength
+    float contactStrength,
+    std::optional<glm::vec2> destination
 ) {
     if (impl_->playerDebugVelocity && impl_->playerActor != nullptr) {
         // Clear debug horizontal momentum before returning to normal locomotion.
@@ -659,15 +684,22 @@ void PhysicsWorld::setPlayerFootTraction(
         impl_->playerActor->setLinearVelocity(physx::PxVec3(0.0f, verticalSpeed, 0.0f), true);
     }
     impl_->playerDebugVelocity.reset();
+    impl_->playerMoveDestination.reset();
+    impl_->playerReachedDestination = false;
+    if (destination && std::isfinite(destination->x) && std::isfinite(destination->y)) {
+        impl_->playerMoveDestination = destination;
+    }
+    const bool hasDirection = std::isfinite(direction.x) && std::isfinite(direction.y) &&
+        glm::length(direction) > std::numeric_limits<float>::epsilon();
     if (!std::isfinite(targetSpeed) || targetSpeed <= 0.0f ||
-        !std::isfinite(direction.x) || !std::isfinite(direction.y) ||
-        glm::length(direction) <= std::numeric_limits<float>::epsilon()) {
+        (!hasDirection && !impl_->playerMoveDestination)) {
+        impl_->playerMoveDestination.reset();
         impl_->playerMovementDirection = glm::vec2(0.0f);
         impl_->playerTargetSpeed = 0.0f;
         impl_->playerFootContactStrength = 1.0f;
         return;
     }
-    impl_->playerMovementDirection = glm::normalize(direction);
+    impl_->playerMovementDirection = hasDirection ? glm::normalize(direction) : glm::vec2(0.0f);
     impl_->playerTargetSpeed = targetSpeed;
     impl_->playerFootContactStrength = std::isfinite(contactStrength)
         ? std::clamp(contactStrength, 0.0f, 1.0f)
@@ -757,6 +789,10 @@ glm::vec3 PhysicsWorld::playerLinearVelocity() const {
 
 bool PhysicsWorld::playerGrounded() const {
     return impl_->grounded;
+}
+
+bool PhysicsWorld::playerReachedMoveDestination() const {
+    return impl_->playerReachedDestination;
 }
 
 } // namespace VulkCore

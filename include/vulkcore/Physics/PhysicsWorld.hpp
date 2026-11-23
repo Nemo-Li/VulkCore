@@ -50,15 +50,19 @@ public:
 
     // Player positions use the bottom center of the upright capsule, matching
     // the renderer's existing player mesh coordinate convention.
-    void createPlayer(const glm::vec3& footPosition, float height, float radius);
+    void createPlayer(const glm::vec3& footPosition, float height, float radius, bool useStrongFriction = true);
     void removePlayer();
     bool hasPlayer() const;
 
+    static constexpr float kPlayerArrivalRadius = 0.12f;
+    static constexpr float kPlayerDestinationSlowdownRate = 4.0f;
     // Replaces debug movement with a friction-limited foot impulse request.
+    // An optional X/Z destination is tracked at each fixed physics step.
     void setPlayerFootTraction(
         const glm::vec2& direction,
         float targetSpeed,
-        float contactStrength
+        float contactStrength,
+        std::optional<glm::vec2> destination = std::nullopt
     );
     // Applies the requested horizontal velocity on the ground and in the air.
     // A zero ascent speed leaves vertical motion to gravity and collisions.
@@ -71,6 +75,7 @@ public:
     glm::vec3 playerRenderFootPosition() const;
     glm::vec3 playerLinearVelocity() const;
     bool playerGrounded() const;
+    bool playerReachedMoveDestination() const;
 
 private:
     struct Impl;

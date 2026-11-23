@@ -233,6 +233,8 @@ void Renderer::initializeEmptyScene() {
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
     playerController_.clear();
+    playerClickToMove_ = false;
+    playerMoveMarker_.reset();
     playerSpawnPosition_.reset();
     playerModelResourcePath_.clear();
     playerModelAutoScale_ = 1.0f;
@@ -626,6 +628,10 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
     // Touch look is routed to the player separately from ImGui's pointer.
     viewportHovered = true;
 #endif
+    if (sceneEditMode_ || effectCamera_) {
+        playerController_.cancelMove();
+        playerMoveMarker_.reset();
+    }
     // A mouse drag can make an ImGui item active without requiring text input.
     playerController_.update(
         window_,
@@ -637,6 +643,49 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
     updatePlayerAttackEffect();
     if (!roadEditorActive()) updatePlayerCamera();
 }
+
+bool Renderer::canIssuePlayerMove() const {
+    return playerController_.active() && playerController_.clickToMoveEnabled() && terrainScene_ &&
+        !sceneEditMode_ && !effectCamera_ && fixedFrameOutput_.empty() &&
+        pendingSceneChange_ == EditorSceneChange::None;
+}
+
+void Renderer::issuePlayerMove(const glm::vec3& destination) {
+    playerController_.setMoveDestination({destination.x, destination.z});
+    playerMoveMarker_ = PlayerMoveMarker{destination};
+}
+
+#ifndef VULKCORE_OHOS
+void Renderer::updatePlayerMoveClick(const glm::mat4& clipFromScene, bool viewportHovered) {
+    if (!canIssuePlayerMove() || !viewportHovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+        ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        return;
+    }
+    const auto& mouse = ImGui::GetIO().MousePos;
+    const auto& area = sceneEditorViewport_;
+    if (toolUiVisible_ && (mouse.x < area.x || mouse.x >= area.z || mouse.y < area.y || mouse.y >= area.w)) {
+        return;
+    }
+
+    // The scene renders across the framebuffer. The editor viewport gates input,
+    // but does not change the coordinate space used by the projection.
+    const auto* viewport = ImGui::GetMainViewport();
+    const glm::dvec2 size(viewport->Size.x, viewport->Size.y);
+    if (size.x <= 0.0 || size.y <= 0.0) return;
+    const glm::dvec2 uv = glm::dvec2(mouse.x - viewport->Pos.x, mouse.y - viewport->Pos.y) / size;
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return;
+    const glm::dvec2 ndc = uv * 2.0 - 1.0;
+    const glm::dmat4 sceneFromClip = glm::inverse(glm::dmat4(clipFromScene));
+    const glm::dvec4 near = sceneFromClip * glm::dvec4(ndc, 0.0, 1.0);
+    const glm::dvec4 ahead = sceneFromClip * glm::dvec4(ndc, 0.99, 1.0);
+    const glm::dvec3 origin = glm::dvec3(near) / near.w;
+    const glm::vec3 direction(glm::normalize(glm::dvec3(ahead) / ahead.w - origin));
+    if (const auto hit = physicsWorld_->raycastTerrain(glm::vec3(origin), direction, 100.0f / modelScale_)) {
+        issuePlayerMove(*hit);
+    }
+}
+#endif
 
 void Renderer::updatePlayerCamera() {
     if (effectCamera_) return;
@@ -1154,6 +1203,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     float grassHeightScale = 1.0f;
     GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
+    bool sceneClickToMove = false;
     RoadPaint savedRoadPaint;
     float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
@@ -1278,6 +1328,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 return false;
             }
             sceneHasPlayer = present != 0;
+        } else if (key == "player_click_to_move") {
+            int enabled = 0;
+            if (!(sceneFile >> enabled) || (enabled != 0 && enabled != 1)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player movement setting.";
+                return false;
+            }
+            sceneClickToMove = enabled != 0;
         } else if (key == "player_spawn_position") {
             glm::vec3 configuredPosition(0.0f);
             if (!(sceneFile >> configuredPosition.x >> configuredPosition.y >> configuredPosition.z) ||
@@ -1408,6 +1466,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
 
     clearSceneData();
     playerSpawnPosition_ = playerSpawnPosition;
+    playerClickToMove_ = sceneClickToMove;
     std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max();
     const auto markMissingMaterialSlots = [&] {
         // Saved material overrides use positional indices. The slots owned by
@@ -1453,11 +1512,12 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
             if (sceneHasPlayer) {
-                playerController_.reset(
-                    *terrainScene_,
-                    *physicsWorld_,
-                    playerSpawnPosition_
-                );
+#ifdef VULKCORE_OHOS
+                constexpr bool useClickToMove = false;
+#else
+                const bool useClickToMove = playerClickToMove_;
+#endif
+                playerController_.reset(*terrainScene_, *physicsWorld_, playerSpawnPosition_, useClickToMove);
                 if (playerModelPath.empty()) {
                     appendPlayerToScene();
                 } else if (playerModelMissing) {
@@ -2573,6 +2633,7 @@ bool Renderer::saveTransformSettings() const {
         }
         file << "terrain_resource " << std::quoted(terrainReference.generic_string()) << "\n"
              << "player_present " << (playerController_.active() ? 1 : 0) << "\n";
+        if (playerClickToMove_) file << "player_click_to_move 1\n";
         if (playerSpawnPosition_.has_value()) {
             file << "player_spawn_position " << playerSpawnPosition_->x << ' '
                  << playerSpawnPosition_->y << ' ' << playerSpawnPosition_->z << "\n";

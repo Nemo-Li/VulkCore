@@ -567,9 +567,9 @@ void Renderer::updateGrassCoverage() {
 }
 
 void Renderer::createParticleBuffer() {
-    const VkDeviceSize bufferSize = sizeof(ParticleVertex) *
+    const VkDeviceSize bufferSize = sizeof(ParticleVertex) * (
         ParticleSystem::kMaximumSupportedParticles * ParticleSystem::kVerticesPerParticle *
-        kMaximumParticleSystems;
+        kMaximumParticleSystems + kMoveMarkerVertexCount);
     particleVertexBuffers_.resize(kMaxFramesInFlight);
     for (auto& particleVertexBuffer : particleVertexBuffers_) {
         particleVertexBuffer = std::make_unique<Buffer>(
@@ -601,7 +601,7 @@ void Renderer::updateParticleSystems(
     const std::size_t maximumVertices =
         static_cast<std::size_t>(ParticleSystem::kMaximumSupportedParticles) *
         ParticleSystem::kVerticesPerParticle * kMaximumParticleSystems;
-    particleVertices_.reserve(maximumVertices);
+    particleVertices_.reserve(maximumVertices + kMoveMarkerVertexCount);
 
     const auto updateNode = [this, deltaSeconds, &cameraRight, &cameraUp](
                                 const auto& self,
@@ -681,6 +681,75 @@ void Renderer::updateParticleSystems(
                 sourceVertices.begin() + static_cast<std::ptrdiff_t>(copiedVertexCount)
             );
         }
+    }
+    appendPlayerMoveMarker(deltaSeconds);
+}
+
+void Renderer::appendPlayerMoveMarker(float deltaSeconds) {
+    if (!playerMoveMarker_ || !terrainScene_) return;
+    constexpr float duration = 0.55f;
+    auto& marker = *playerMoveMarker_;
+    const float progress = marker.age / duration;
+    marker.age += deltaSeconds;
+    if (progress >= 1.0f) {
+        playerMoveMarker_.reset();
+        return;
+    }
+
+    const float fade = 1.0f - glm::smoothstep(0.15f, 1.0f, progress);
+    const float radius = glm::mix(0.33f, 0.88f, progress);
+    const float halfThickness = glm::mix(0.065f, 0.022f, progress);
+    const glm::vec2 center(marker.position.x, marker.position.z);
+    const auto vertex = [&](glm::vec2 offset, float lift, const glm::vec4& color) -> std::optional<ParticleVertex> {
+        const glm::vec2 xz = center + offset;
+        const auto height = terrainScene_->renderedHeightAtWorld(xz);
+        if (!height) return std::nullopt;
+        const glm::vec3 position(xz.x, *height + lift, xz.y);
+        // Constant UV at the sprite center gives full triangle coverage.
+        return ParticleVertex{(position - modelCenter_) * modelScale_, glm::vec2(0.5f), color};
+    };
+    const auto triangle = [&](const auto& a, const auto& b, const auto& c) {
+        if (a && b && c) particleVertices_.insert(particleVertices_.end(), {*a, *b, *c});
+    };
+
+    const auto first = static_cast<std::uint32_t>(particleVertices_.size());
+    const glm::vec4 ringColor(0.15f, 0.95f, 0.86f, 0.9f * fade);
+    const auto ringEdge = [&](std::size_t segment, float edgeRadius) {
+        const float angle = glm::two_pi<float>() * static_cast<float>(segment) / kMoveMarkerRingSegments;
+        return vertex(glm::vec2(std::cos(angle), std::sin(angle)) * edgeRadius, 0.12f, ringColor);
+    };
+    auto inner = ringEdge(0, radius - halfThickness);
+    auto outer = ringEdge(0, radius + halfThickness);
+    for (std::size_t i = 1; i <= kMoveMarkerRingSegments; ++i) {
+        const auto nextInner = ringEdge(i, radius - halfThickness);
+        const auto nextOuter = ringEdge(i, radius + halfThickness);
+        triangle(inner, outer, nextOuter);
+        triangle(inner, nextOuter, nextInner);
+        inner = nextInner;
+        outer = nextOuter;
+    }
+
+    const float arrowRadius = glm::mix(0.95f, 0.42f, glm::smoothstep(0.0f, 0.78f, progress));
+    // Let the arrowheads descend toward the ring. Their initial height keeps
+    // the click legible over the dense meadow canopy.
+    const float arrowLift = glm::mix(1.18f, 0.94f, progress);
+    const glm::vec4 arrowOutline(0.02f, 0.16f, 0.14f, fade);
+    const glm::vec4 arrowColor(0.43f, 1.0f, 0.92f, fade);
+    for (std::size_t i = 0; i < kMoveMarkerArrowCount; ++i) {
+        const float angle = glm::two_pi<float>() * static_cast<float>(i) / kMoveMarkerArrowCount;
+        const glm::vec2 outward(std::cos(angle), std::sin(angle));
+        const glm::vec2 tangent(-outward.y, outward.x);
+        const glm::vec2 base = outward * arrowRadius;
+        triangle(vertex(base - outward * 0.33f, arrowLift, arrowOutline),
+            vertex(base + tangent * 0.22f, arrowLift, arrowOutline),
+            vertex(base - tangent * 0.22f, arrowLift, arrowOutline));
+        triangle(vertex(base - outward * 0.23f, arrowLift, arrowColor),
+            vertex(base - outward * 0.04f + tangent * 0.13f, arrowLift, arrowColor),
+            vertex(base - outward * 0.04f - tangent * 0.13f, arrowLift, arrowColor));
+    }
+    const auto count = static_cast<std::uint32_t>(particleVertices_.size()) - first;
+    if (count > 0) {
+        particleDrawRanges_.push_back({std::nullopt, first, count, ParticleSystemSettings::BlendMode::Alpha});
     }
 }
 

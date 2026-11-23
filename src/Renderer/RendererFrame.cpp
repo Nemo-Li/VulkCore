@@ -645,17 +645,20 @@ void Renderer::recordCommandBuffer(
             const VkDeviceSize particleOffset = 0;
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &particleBuffer, &particleOffset);
             for (const ParticleDrawRange& range : particleDrawRanges_) {
-                const auto descriptorIt = particleDescriptorSets_.find(range.nodeId);
-                if (descriptorIt == particleDescriptorSets_.end()) {
-                    continue;
+                VkDescriptorSet particleDescriptorSet;
+                if (range.nodeId) {
+                    const auto descriptorIt = particleDescriptorSets_.find(*range.nodeId);
+                    if (descriptorIt == particleDescriptorSets_.end()) continue;
+                    particleDescriptorSet = descriptorIt->second[currentFrame_];
+                } else {
+                    if (shadow) continue;
+                    particleDescriptorSet = descriptorSets_[currentFrame_ * materialCount];
                 }
                 const VkPipeline particlePipeline = shadow ? sunShadowParticlePipeline_
                     : (range.blendMode == ParticleSystemSettings::BlendMode::Additive
                         ? (hdr ? hdrParticleAdditivePipeline_ : particleAdditivePipeline_)
                         : (hdr ? hdrParticleAlphaPipeline_ : particleAlphaPipeline_));
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
-                const VkDescriptorSet& particleDescriptorSet =
-                    descriptorIt->second[currentFrame_];
                 vkCmdBindDescriptorSets(
                     commandBuffer,
                     VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -667,9 +670,7 @@ void Renderer::recordCommandBuffer(
                     &uniformOffset
                 );
                 MaterialPushConstants particlePushConstants{};
-                particlePushConstants.textureFlags = particleTextures_.contains(range.nodeId)
-                    ? 1u
-                    : 0u;
+                particlePushConstants.textureFlags = range.nodeId && particleTextures_.contains(*range.nodeId) ? 1u : 0u;
                 vkCmdPushConstants(
                     commandBuffer,
                     pipelineLayout_,
@@ -1013,7 +1014,6 @@ bool Renderer::drawFrame() {
     }
 #endif
     lastFrameElapsedSeconds_ = elapsedSeconds;
-    updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
     updateRealtimeEffects(particleDeltaSeconds);
     if (mode_ == Mode::ModelViewer) updateBoundingBoxVertices();
 
@@ -1024,9 +1024,13 @@ bool Renderer::drawFrame() {
 #ifndef VULKCORE_OHOS
     if (clipFromScene) {
         if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);
-        else drawGameSelectionOutline(*clipFromScene);
+        else {
+            updatePlayerMoveClick(*clipFromScene, viewportHovered);
+            drawGameSelectionOutline(*clipFromScene);
+        }
     }
 #endif
+    updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
     updateRoadIndex();
     ImGui::Render();
     updateGrassCoverage();
