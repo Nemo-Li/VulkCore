@@ -67,13 +67,14 @@ bool insideRoadViewport(const glm::vec4& viewport, ImVec2 point) {
 
 void Renderer::drawRoadBrushControls() {
     ImGui::SeparatorText("Road Brush");
-    constexpr const char* surfaces[] = {"Erase", "Mud", "Gravel", "Stone paving"};
+    constexpr const char* surfaces[] = {"Erase", "Ochre dirt", "Gravel", "Stone paving"};
     int surface = static_cast<int>(roadBrushSurface_);
     if (ImGui::Combo("Surface", &surface, surfaces, IM_ARRAYSIZE(surfaces))) {
         roadBrushSurface_ = static_cast<RoadSurface>(surface);
     }
     ImGui::SliderFloat("Radius", &roadBrushRadius_, RoadPaint::kMinimumRadius,
         RoadPaint::kMaximumRadius, "%.1f m", ImGuiSliderFlags_AlwaysClamp);
+    if (roadBrushSurface_ == RoadSurface::Mud) ImGui::TextDisabled("Width varies along the stroke");
     constexpr const char* views[] = {"Perspective", "Top-down"};
     int view = roadTopDown_ ? 1 : 0;
     if (ImGui::Combo("View", &view, views, IM_ARRAYSIZE(views))) roadTopDown_ = view == 1;
@@ -207,10 +208,11 @@ void Renderer::updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHove
     draw->PushClipRect({sceneEditorViewport_.x, sceneEditorViewport_.y},
         {sceneEditorViewport_.z, sceneEditorViewport_.w}, true);
     constexpr int segments = 48;
+    const float previewRadius = RoadPaint::radiusAt(roadBrushSurface_, roadBrushRadius_, point);
     std::optional<ImVec2> start;
     for (int i = 0; i <= segments; ++i) {
         const float angle = glm::two_pi<float>() * i / segments;
-        const glm::vec2 edge = point + glm::vec2(std::cos(angle), std::sin(angle)) * roadBrushRadius_;
+        const glm::vec2 edge = point + glm::vec2(std::cos(angle), std::sin(angle)) * previewRadius;
         const auto height = terrainScene_->renderedHeightAtWorld(edge);
         if (!height) {
             start.reset();

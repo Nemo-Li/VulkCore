@@ -16,6 +16,8 @@ public:
     static constexpr float kMinimumRadius = 0.5f;
     static constexpr float kMaximumRadius = 32.0f;
 
+    static float radiusAt(RoadSurface surface, float radius, glm::vec2 center);
+
     bool paint(RoadSurface surface, float radius, glm::vec2 point, bool continueStroke);
     bool readStroke(std::istream& input);
     void writeStrokes(std::ostream& output) const;

@@ -19,7 +19,6 @@ layout(location = 10) flat in vec3 fragGroundNormal;
 #include "meadow_shading.glsl"
 #include "sun_shadow.glsl"
 #include "sun_shadow_coverage.glsl"
-#include "terrain_road_weights.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
 
@@ -68,8 +67,7 @@ void main() {
     // 根位置的哈希为整株提供固定阈值，随相机移动只改变可见株数。
     // 与顶点下沉配合，保持保留下来的草叶完整，并避免逐像素网点和半透明排序。
     float dither = bladeDither(fragRoot);
-    float roadCoverage = dot(terrainRoadWeights(fragRoot), vec3(1.0));
-    if (fragLodVisibility * (1.0 - clamp(roadCoverage, 0.0, 1.0)) <= dither) {
+    if (fragLodVisibility <= dither) {
         discard;
     }
 

@@ -170,6 +170,26 @@ def render_landform(name, tile):
     return color, micro_relief * 0.65 + relief * 0.10 + seams * 0.041, 5.0, 0.37
 
 
+def render_road(tile):
+    """Bake dry ochre soil and fine grit into a periodic albedo/relief pair."""
+    warp = (0.15 * (tile.noise(4, 5) - 0.5), 0.14 * (tile.noise(5, 4) - 0.5))
+    clay = tile.noise(5, 6, warp)
+    brush = tile.noise(17, 22, warp)
+    grain = tile.noise(59, 71, warp)
+    grit = tile.noise(123, 137)
+    # Warped, low-contrast compression marks break up the finer dry grains.
+    streak = tile.noise(12, 5, warp)
+    compressed = 1 - smooth(0.31, 0.64, 0.71 * streak + 0.29 * brush)
+    pigment = 0.34 * clay + 0.26 * brush + 0.24 * grain + 0.16 * grit
+    color = palette(pigment, "795c38", "917346", "a48756", "c0a46e", "d6bd8a")
+    color = blend(color, palette(grain, "82643e", "a18458", "bea373"), compressed * 0.34)
+    small, relief, tone = tile.stones(63, 67, 0.15, 1.22)
+    color = blend(color, palette(tone, "80694b", "a89575", "c6af86"), small * 0.19)
+    height = clay * 0.031 + brush * 0.063 + grain * 0.034 + grit * 0.021
+    height += relief * 0.023 - compressed * 0.039
+    return color, height, 6.1, 0.29
+
+
 def world_controls(size):
     """Bake terrain-wide moisture, iron, sediment and light variation into linear RGBA."""
     field = Tile(size, 42109)
@@ -208,9 +228,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] /
                         "assets/terrain/textures")
+    parser.add_argument("--road-only", action="store_true", help="Regenerate just the ochre road maps")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     size = 512
+    color, height, normal_strength, ao_strength = render_road(Tile(size, 18379))
+    image_from(color).save(args.output / "terrain_road_dirt.png", optimize=True)
+    image_from(surface_map(height, normal_strength, ao_strength)).save(
+        args.output / "terrain_road_dirt_surface.png", optimize=True
+    )
+    if args.road_only:
+        return
     atlas = Image.new("RGB", (4 * size, 2 * size))
     for index, name in enumerate(LAYER_NAMES):
         color, height, normal_strength, ao_strength = render_landform(name, Tile(size, 8041 + index))

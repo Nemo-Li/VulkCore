@@ -19,6 +19,12 @@ constexpr float kMaximumSegmentLength = 128.0f;
 constexpr float kMinimumCellSize = 32.0f;
 constexpr int kMaximumCellsPerAxis = 256;
 constexpr std::uint32_t kHeaderSize = 5;
+// Keep in sync with the width profile in terrain_road_weights.glsl.
+constexpr float kMaximumDirtRadiusScale = 1.22f;
+
+float indexRadius(RoadSurface surface, float radius) {
+    return surface == RoadSurface::Mud ? radius * kMaximumDirtRadiusScale : radius;
+}
 
 bool validBrush(RoadSurface surface, float radius) {
     return surface <= RoadSurface::Stone && radius >= RoadPaint::kMinimumRadius &&
@@ -32,6 +38,15 @@ bool validPoint(glm::vec2 point) {
 std::uint32_t floatBits(float value) { return std::bit_cast<std::uint32_t>(value); }
 
 } // namespace
+
+float RoadPaint::radiusAt(RoadSurface surface, float radius, glm::vec2 center) {
+    if (surface != RoadSurface::Mud) return radius;
+    const glm::vec2 p = center / std::max(1.0f, 0.65f * radius);
+    const float scale = 1.0f + 0.12f * std::sin(glm::dot(p, glm::vec2(0.44f, 0.29f)))
+        + 0.07f * std::sin(glm::dot(p, glm::vec2(-0.79f, 0.91f)) + 1.4f)
+        + 0.03f * std::sin(glm::dot(p, glm::vec2(0.19f, -0.16f)) + 2.8f);
+    return radius * scale;
+}
 
 bool RoadPaint::paint(RoadSurface surface, float radius, glm::vec2 point, bool continueStroke) {
     if (!validBrush(surface, radius) || !validPoint(point) || full()) return false;
@@ -97,11 +112,13 @@ void RoadPaint::clear() {
 
 std::vector<std::uint32_t> RoadPaint::buildGpuIndex() const {
     if (strokes_.empty()) return std::vector<std::uint32_t>(kHeaderSize, 0);
-    glm::vec2 minimum(kMaximumCoordinate + kMaximumRadius), maximum(-minimum);
+    glm::vec2 minimum(kMaximumCoordinate + kMaximumRadius * kMaximumDirtRadiusScale);
+    glm::vec2 maximum(-minimum);
     for (const auto& stroke : strokes_) {
+        const glm::vec2 radius(indexRadius(stroke.surface, stroke.radius));
         for (const auto& point : stroke.points) {
-            minimum = glm::min(minimum, point - glm::vec2(stroke.radius));
-            maximum = glm::max(maximum, point + glm::vec2(stroke.radius));
+            minimum = glm::min(minimum, point - radius);
+            maximum = glm::max(maximum, point + radius);
         }
     }
     const glm::vec2 extent = maximum - minimum;
@@ -123,7 +140,7 @@ std::vector<std::uint32_t> RoadPaint::buildGpuIndex() const {
 
     for (std::uint32_t id = 0; id < strokes_.size(); ++id) {
         const auto& stroke = strokes_[id];
-        const glm::vec2 radius(stroke.radius);
+        const glm::vec2 radius(indexRadius(stroke.surface, stroke.radius));
         const std::size_t segmentCount = std::max<std::size_t>(1, stroke.points.size() - 1);
         for (std::size_t i = 0; i < segmentCount; ++i) {
             const glm::vec2 a = stroke.points[i];

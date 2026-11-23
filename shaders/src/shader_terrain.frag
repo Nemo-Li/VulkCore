@@ -40,6 +40,8 @@ const uint kMacroTexture = 32u;
 const int kGrassLayer = 0;
 const int kDirtLayer = 1;
 const int kRockLayer = 2;
+// Optional ninth array slice, outside the terrain biome weights.
+const int kDirtRoadLayer = 8;
 // 三个投影分别丢弃 X、Y、Z 分量。基向量把二维纹理梯度放回对应的三维平面。
 const mat2x3 kProjectionBases[3] = mat2x3[3](
     mat2x3(vec3(0, 0, 1), vec3(0, 1, 0)),
@@ -194,16 +196,100 @@ TerrainSample sampleStochasticTerrain(int layer, TerrainPatch patches[3],
     return result;
 }
 
-// Materials are aligned in terrain units, including in the orthographic view.
-vec3 roadAlbedo(vec3 weights, vec2 ground, float footprint) {
-    vec3 result = vec3(0.0);
-    if (weights.x > 0.0) {
-        float ruts = valueNoise(ground * vec2(2.3, 0.55));
-        float grain = valueNoise(ground * 13.0);
-        float wetness = mix(valueNoise(ground * 0.6), ruts, 0.45);
-        vec3 mud = mix(vec3(0.13, 0.071, 0.039), vec3(0.35, 0.22, 0.12), wetness);
-        result += weights.x * mud * (1.0 + (grain - 0.5) * (1.0 - smoothstep(0.05, 0.18, footprint)));
+// The soil tile carries fine grit. Larger chips use a separate world-space
+// distribution, so the same stones never appear at each texture repeat.
+void scatterRoadChips(inout TerrainSample soil, vec2 ground, float footprint) {
+    float detail = 1.0 - smoothstep(0.032, 0.14, footprint);
+    if (detail <= 0.0) return;
+    const float cellSize = 0.68;
+    vec2 grid = ground / cellSize;
+    vec2 cell = floor(grid);
+    float seed = hash21(cell + vec2(3.1, -8.4));
+    float cluster = valueNoise(cell * 0.19 + vec2(9.3, 2.7));
+    if (seed > mix(0.015, 0.14, cluster)) return;
+
+    vec2 scatter = vec2(hash21(cell + 24.7), hash21(cell - 19.2));
+    // Keep even the widest contact shadow within its cell, including at oblique views.
+    vec2 center = mix(vec2(0.32), vec2(0.68), scatter);
+    float size = hash21(cell + vec2(-7.4, 18.1));
+    float radius = mix(0.030, 0.126, size * size);
+    float angle = hash21(cell + 49.6) * 6.2831853;
+    mat2 rotation = mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+    vec2 stretch = vec2(1.0, mix(1.1, 1.65, scatter.y));
+    vec2 p = (rotation * (fract(grid) - center)) * stretch;
+    // Asymmetric angular facets, with a bevel and contact darkening around each chip.
+    vec2 diagonal = vec2(0.72, 0.85);
+    vec2 crossFace = vec2(0.81, -0.64);
+    vec4 faces = vec4(abs(p.x), abs(p.y), abs(dot(p, diagonal)), abs(dot(p, crossFace)));
+    float boundary = max(max(faces.x, faces.y), max(faces.z, faces.w));
+    float antialias = min(radius * 0.25, max(0.004, 0.45 * footprint / cellSize));
+    float chip = 1.0 - smoothstep(max(0.0, radius - antialias), radius + antialias, boundary);
+    float contact = 1.0 - smoothstep(radius, radius * 1.42, boundary);
+    float tint = hash21(cell + vec2(8.3, -30.1));
+    vec3 chipColor = mix(vec3(0.33, 0.268, 0.179), vec3(0.58, 0.47, 0.31), tint);
+    soil.albedo = mix(soil.albedo * (1.0 - 0.24 * contact * detail), chipColor, chip * detail);
+    vec2 face = boundary == faces.x ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
+    if (boundary == faces.z) face = sign(dot(p, diagonal)) * diagonal;
+    if (boundary == faces.w) face = sign(dot(p, crossFace)) * crossFace;
+    float bevel = smoothstep(0.18, 0.75, boundary / radius);
+    soil.gradient = mix(soil.gradient, transpose(rotation) * (face * stretch) * (0.43 * bevel), chip * detail);
+    soil.occlusion *= 1.0 - 0.16 * contact * (1.0 - chip) * detail;
+}
+
+float dirtRoadMaterialWeight(float brushCoverage, vec2 ground, float footprint, float grass) {
+    // Keep the underlying terrain's original texture coordinates and landform mix.
+    float patches = valueNoise(ground * 0.31 + vec2(11.7, -23.1));
+    float detail = valueNoise(ground * 1.65 + vec2(-9.3, 16.1));
+    float detailVisibility = 1.0 - smoothstep(0.10, 0.50, footprint);
+    float wear = smoothstep(0.25, 0.78, mix(patches, detail, 0.42 * detailVisibility));
+    float core = smoothstep(0.42, 0.94, brushCoverage);
+    float shoulder = mix(0.23, 0.86, wear);
+    float compacted = mix(0.76, 0.97, wear);
+    float meadow = smoothstep(0.14, 0.64, grass);
+    if (meadow > 0.0) {
+        // The broad mix is about half soil. The green islands align with the tufts.
+        float tuftDetail = 1.0 - smoothstep(0.16, 0.55, footprint);
+        float clumps = mix(0.5, roadGrassClusters(ground), tuftDetail);
+        float meadowCore = clamp(0.50 + 0.14 * (wear - 0.5) - 0.62 * (clumps - 0.5), 0.17, 0.83);
+        float meadowShoulder = meadowCore * mix(0.25, 0.80, wear);
+        compacted = mix(compacted, meadowCore, meadow);
+        shoulder = mix(shoulder, meadowShoulder, meadow);
     }
+    return brushCoverage * mix(shoulder, compacted, core);
+}
+
+TerrainSample sampleDirtRoad(Projection ground, float footprint, bool hasAlbedo, bool hasSurface) {
+    vec2 position = ground.uv;
+    float sediment = valueNoise(position * 0.071 + vec2(3.7, 13.1));
+    float dust = valueNoise(position * 0.32 + vec2(-8.2, 4.6));
+    float tone = mix(sediment, dust, 0.27);
+    vec3 macroColor = mix(vec3(0.28, 0.181, 0.076), vec3(0.51, 0.359, 0.165), tone);
+    TerrainSample soil = TerrainSample(macroColor, vec2(0.0), 1.0);
+    float detail = 1.0 - smoothstep(0.28, 1.40, footprint);
+    if (detail > 0.0) {
+        bool hasRoadTile = hasAlbedo && textureSize(albedoLayers, 0).z > kDirtRoadLayer;
+        int layer = hasRoadTile ? kDirtRoadLayer : kDirtLayer;
+        bool sampleSurface = hasSurface && textureSize(surfaceLayers, 0).z > layer && footprint < 0.20;
+        // A tile spans 3.4 m. Random transforms in a continuous triangular
+        // blend break up repetitions without introducing new seams.
+        const float scale = 1.0 / 3.4;
+        Projection uv = Projection(ground.uv * scale, ground.dx * scale, ground.dy * scale);
+        TerrainPatch patches[3];
+        makeTerrainPatches(1, uv, 0.23 * vec2(sediment - 0.5, dust - 0.5), patches);
+        TerrainSample tile = sampleStochasticTerrain(layer, patches, hasAlbedo, sampleSurface, 1.0);
+        vec3 average = hasRoadTile ? vec3(0.379, 0.249, 0.098) : kLandformAverages[kDirtLayer];
+        vec3 variation = clamp(tile.albedo / average, 0.56, 1.47);
+        soil.albedo = macroColor * mix(vec3(1.0), variation, 0.78 * detail);
+        float relief = 1.0 - smoothstep(0.045, 0.20, footprint);
+        soil.gradient = tile.gradient * (2.9 * relief);
+        if (sampleSurface) soil.occlusion = mix(1.0, tile.occlusion, relief);
+    }
+    scatterRoadChips(soil, position, footprint);
+    return soil;
+}
+
+vec3 otherRoadAlbedo(vec3 weights, vec2 ground, float footprint) {
+    vec3 result = vec3(0.0);
     if (weights.y > 0.0) {
         vec2 pebbles = ground * 10.0;
         vec2 cell = floor(pebbles);
@@ -273,6 +359,7 @@ void main() {
 
     // 宏观区域仍按 XZ 定位，局部地貌噪声加入高度，避免陡崖不同高度共享采样而拉出竖纹。
     vec2 groundPosition = terrainPosition.xz;
+    Projection roadProjection = projectUv(groundPosition);
     float region = valueNoise(groundPosition / 180.0);
     vec4 controls = vec4(region, valueNoise(groundPosition / 760.0 + 2.7), region, 0.5);
     if (hasMacro) {
@@ -474,11 +561,19 @@ void main() {
                     (5.2 * rock * bedsVisible);
     vec3 bump = normalOffset + slabBump + bedsBump + distantGrassBump;
     vec3 roads = terrainRoadWeights(groundPosition);
+    if (roads.x > 0.0) roads.x = dirtRoadMaterialWeight(roads.x, groundPosition, footprint, grass);
     float roadCoverage = clamp(dot(roads, vec3(1.0)), 0.0, 1.0);
+    vec3 paintedAlbedo = vec3(0.0);
     if (roadCoverage > 0.0) {
-        albedo = (1.0 - roadCoverage) * albedo + roadAlbedo(roads, groundPosition, footprint);
+        paintedAlbedo = otherRoadAlbedo(roads, groundPosition, footprint);
         bump *= 1.0 - 0.75 * roadCoverage;
         ao = mix(ao, 1.0, roadCoverage);
+        if (roads.x > 0.0) {
+            TerrainSample soil = sampleDirtRoad(roadProjection, footprint, hasAlbedo, hasSurfaceLayers);
+            paintedAlbedo += roads.x * soil.albedo;
+            bump += roads.x * (kProjectionBases[1] * soil.gradient);
+            ao -= roads.x * (1.0 - soil.occlusion);
+        }
     }
     // 将累加的扰动投影到切平面，避免沿原法线的分量改变凹凸强度。
     bump -= geometryNormal * dot(geometryNormal, bump);
@@ -499,7 +594,8 @@ void main() {
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse *
                     mix(0.85, 1.04, controls.a) * mix(0.50, 1.0, rockVisibility);
     float visibility = sunVisibility(fragWorldPosition, shadowNormal);
-    vec3 litTerrain = albedo * (ambient + sunlight * visibility);
+    vec3 terrainLight = ambient + sunlight * visibility;
+    vec3 litTerrain = albedo * terrainLight;
     if (grassFadeRange.y > grassFadeRange.x && grass > 0.58 && grassGroundDistance < 1.75 * grassFadeRange.y) {
         // 草地占主要权重时使用草叶淡出的目标色。保留混合地貌上的过渡。
         float meadowWeight = smoothstep(0.58, 0.82, grass) *
@@ -509,8 +605,10 @@ void main() {
         vec3 groundLight = meadowGroundLighting(dot(geometryNormal, lightDirection),
             ubo.ambientLight.rgb * ubo.ambientLight.a,
             ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility);
-        litTerrain = mix(litTerrain, groundAlbedo * groundLight, meadowWeight * (1.0 - roadCoverage));
+        litTerrain = mix(litTerrain, groundAlbedo * groundLight, meadowWeight);
     }
+    // Let the meadow lighting affect only the original ground contribution.
+    litTerrain = (1.0 - roadCoverage) * litTerrain + paintedAlbedo * terrainLight;
 
     outColor = vec4(applySceneFog(litTerrain * material.baseColor.rgb,
         sceneFogAt(fragWorldPosition, true)), material.opacity);

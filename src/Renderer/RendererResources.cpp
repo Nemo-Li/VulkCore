@@ -958,12 +958,23 @@ void Renderer::createMaterialTextures() {
                     (std::string("terrain_") + landform + suffix + ".png"));
             }
             // Older terrain packs only have base color and the atlas.
-            if (!suffix[0] || std::filesystem::is_regular_file(paths.front())) {
+            if (suffix[0] && !std::filesystem::is_regular_file(paths.front())) {
+                return std::unique_ptr<Texture>{};
+            }
+            const auto roadPath = terrainTextureDirectory / (std::string("terrain_road_dirt") + suffix + ".png");
+            if (std::filesystem::is_regular_file(roadPath)) {
+                paths.push_back(roadPath);
                 try {
                     return std::make_unique<Texture>(*context_, paths, colorSpace);
                 } catch (const std::exception& error) {
-                    std::cerr << "warning: failed to load terrain layers: " << error.what() << '\n';
+                    std::cerr << "warning: failed to load road layer: " << error.what() << '\n';
+                    paths.pop_back();
                 }
+            }
+            try {
+                return std::make_unique<Texture>(*context_, paths, colorSpace);
+            } catch (const std::exception& error) {
+                std::cerr << "warning: failed to load terrain layers: " << error.what() << '\n';
             }
             return std::unique_ptr<Texture>{};
         };
