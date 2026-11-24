@@ -1527,14 +1527,21 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         std::unordered_map<std::string, ModelResourceCacheEntry> models;
     };
     std::atomic<int> preparationProgress{4};
-    const auto prepare = [terrainPath, waterPath, models = std::move(modelsToPrepare), &preparationProgress] {
+    const auto* cancelled = incremental ? &sceneLoadCancelled_ : nullptr;
+    const auto prepare = [terrainPath, waterPath, models = std::move(modelsToPrepare),
+                          &preparationProgress, cancelled] {
+        const auto stopping = [cancelled] {
+            return cancelled && cancelled->load(std::memory_order_relaxed);
+        };
         PreparedAssets prepared;
         if (!terrainPath.empty()) {
             try {
-                prepared.terrain = TerrainScene::load(terrainPath / "MainField.tscb", terrainPath, waterPath);
+                prepared.terrain = TerrainScene::load(terrainPath / "MainField.tscb", terrainPath, waterPath, cancelled);
+                if (stopping()) return prepared;
                 preparationProgress.store(20, std::memory_order_relaxed);
-                prepared.terrainMesh = prepared.terrain->buildMesh({});
-                prepared.waterMesh = prepared.terrain->buildWaterMesh();
+                prepared.terrainMesh = prepared.terrain->buildMesh({}, cancelled);
+                if (stopping()) return prepared;
+                prepared.waterMesh = prepared.terrain->buildWaterMesh({}, cancelled);
             } catch (const std::exception& terrainError) {
                 prepared.terrain.reset();
                 prepared.terrainError = terrainError.what();
@@ -1542,6 +1549,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         }
         preparationProgress.store(36, std::memory_order_relaxed);
         for (std::size_t i = 0; i < models.size(); ++i) {
+            if (stopping()) return prepared;
             auto& model = prepared.models[models[i].string()];
             try {
                 auto mesh = std::make_shared<MeshData>(loadModelMesh(models[i]));
@@ -1556,7 +1564,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                                       std::memory_order_relaxed);
         }
         preparationProgress.store(52, std::memory_order_relaxed);
-        if (prepared.terrain) {
+        if (prepared.terrain && !stopping()) {
             try {
                 prepared.grass = decodeTerrainGrass(terrainPath);
             } catch (const std::exception& grassError) {

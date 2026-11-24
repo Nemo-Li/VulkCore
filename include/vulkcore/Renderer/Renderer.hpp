@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -654,6 +655,7 @@ private:
     std::filesystem::path pendingSceneOpen_;
     std::unique_ptr<SceneLoadTask> sceneLoad_;
     std::filesystem::path loadingScenePath_;
+    std::atomic<bool> sceneLoadCancelled_{false};
     bool sceneLoadApplying_ = false;
     bool editorDirty_ = false;
     bool editorSceneChangeConfirmed_ = false;

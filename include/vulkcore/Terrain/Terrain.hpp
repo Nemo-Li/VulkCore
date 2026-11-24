@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -183,7 +184,8 @@ public:
     static std::unique_ptr<TerrainScene> load(
         const std::filesystem::path& tscbPath,
         const std::filesystem::path& terrainRoot,
-        const std::filesystem::path& waterRoot = {}
+        const std::filesystem::path& waterRoot = {},
+        const std::atomic<bool>* cancelled = nullptr
     );
 
     const TerrainSceneHeader& header() const { return header_; }
@@ -201,8 +203,10 @@ public:
     std::optional<float> renderedHeightAtWorld(const glm::vec2& worldPosition) const;
     glm::vec3 centerPosition() const;
 
-    TerrainMeshData buildMesh(const TerrainMeshOptions& options = {}) const;
-    TerrainMeshData buildWaterMesh(const WaterMeshOptions& options = {}) const;
+    TerrainMeshData buildMesh(const TerrainMeshOptions& options = {},
+        const std::atomic<bool>* cancelled = nullptr) const;
+    TerrainMeshData buildWaterMesh(const WaterMeshOptions& options = {},
+        const std::atomic<bool>* cancelled = nullptr) const;
 
 private:
     TerrainScene() = default;

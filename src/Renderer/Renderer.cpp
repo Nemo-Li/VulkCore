@@ -83,6 +83,7 @@ Renderer::Renderer(
 }
 
 Renderer::~Renderer() {
+    sceneLoadCancelled_.store(true, std::memory_order_relaxed);
     sceneLoad_.reset();
     if (!context_) {
         return;

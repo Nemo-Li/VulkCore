@@ -344,7 +344,11 @@ struct ParsedTile {
     std::vector<std::uint16_t> heights;
 };
 
-void smoothTerrainHeights(std::vector<ParsedTile>& tiles) {
+bool loadCancelled(const std::atomic<bool>* cancelled) {
+    return cancelled && cancelled->load(std::memory_order_relaxed);
+}
+
+void smoothTerrainHeights(std::vector<ParsedTile>& tiles, const std::atomic<bool>* cancelled) {
     constexpr std::size_t resolution = kTerrainHeightmapResolution;
     constexpr std::size_t last = resolution - 1;
     constexpr std::size_t missing = std::numeric_limits<std::size_t>::max();
@@ -435,6 +439,7 @@ void smoothTerrainHeights(std::vector<ParsedTile>& tiles) {
         for (int axis = 0; axis < 2; ++axis) {
             const std::size_t step = axis == 0 ? 1 : resolution;
             for (std::size_t tile = 0; tile < tiles.size(); ++tile) {
+                if (loadCancelled(cancelled)) return;
                 const auto& source = samples[tile];
                 const std::size_t previousTile = neighbours[tile][axis * 2];
                 const std::size_t nextTile = neighbours[tile][axis * 2 + 1];
@@ -496,11 +501,12 @@ TerrainVertexKey terrainVertexKey(const Vertex& vertex) {
     };
 }
 
-void stitchTerrainMesh(TerrainMeshData& mesh) {
+void stitchTerrainMesh(TerrainMeshData& mesh, const std::atomic<bool>* cancelled) {
     std::unordered_map<TerrainVertexKey, std::vector<std::uint32_t>, TerrainVertexKeyHash>
         vertexGroups;
     vertexGroups.reserve(mesh.vertices.size());
     for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+        if ((index & 4095u) == 0 && loadCancelled(cancelled)) return;
         vertexGroups[terrainVertexKey(mesh.vertices[index])].push_back(
             static_cast<std::uint32_t>(index)
         );
@@ -971,8 +977,10 @@ void TerrainChunk::appendMesh(
 std::unique_ptr<TerrainScene> TerrainScene::load(
     const std::filesystem::path& tscbPath,
     const std::filesystem::path& terrainRoot,
-    const std::filesystem::path& waterRoot
+    const std::filesystem::path& waterRoot,
+    const std::atomic<bool>* cancelled
 ) {
+    if (loadCancelled(cancelled)) return nullptr;
     const std::vector<char> data = readBinaryFile(tscbPath);
     requireRange(data, 0, kTscbHeaderSize, "header");
     if (std::string(data.data(), data.data() + 4) != "TSCB") {
@@ -1043,6 +1051,7 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
     const std::filesystem::path grassRoot = terrainRoot / "terrain_grass";
     const bool hasGrassDirectory = std::filesystem::is_directory(grassRoot);
     for (std::uint32_t index = 0; index < scene->header_.areaCount; ++index) {
+        if (loadCancelled(cancelled)) return nullptr;
         const std::size_t lookupOffset =
             areaLookupOffset + static_cast<std::size_t>(index) * sizeof(std::uint32_t);
         const std::size_t entryOffset = lookupOffset + readU32BE(data, lookupOffset);
@@ -1216,7 +1225,8 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
 
     // Filter the resident heightfield before creating bounds, queries, render
     // geometry and the physics mesh, so player/grass heights stay consistent.
-    smoothTerrainHeights(selectedTiles);
+    smoothTerrainHeights(selectedTiles, cancelled);
+    if (loadCancelled(cancelled)) return nullptr;
 
     using ChunkKey = std::tuple<std::uint32_t, int, int>;
     std::map<ChunkKey, std::size_t> chunkIndices;
@@ -1453,11 +1463,13 @@ glm::vec3 TerrainScene::centerPosition() const {
     return glm::vec3(terrainCenter.x, height.value_or(boundsMinimum_.y), terrainCenter.y);
 }
 
-TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const {
+TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options,
+                                        const std::atomic<bool>* cancelled) const {
     TerrainMeshData mesh;
     std::vector<std::size_t> chunkVertexOffsets;
     chunkVertexOffsets.reserve(chunks_.size() + 1);
     for (const TerrainChunk& chunk : chunks_) {
+        if (loadCancelled(cancelled)) return {};
         chunkVertexOffsets.push_back(mesh.vertices.size());
         chunk.appendMesh(
             options.sampleStride,
@@ -1467,7 +1479,8 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
         );
     }
     chunkVertexOffsets.push_back(mesh.vertices.size());
-    stitchTerrainMesh(mesh);
+    stitchTerrainMesh(mesh, cancelled);
+    if (loadCancelled(cancelled)) return {};
 
     // All chunks address the same macro texture in terrain space.
     const glm::vec2 minimum(boundsMinimum_.x, boundsMinimum_.z);
@@ -1490,7 +1503,8 @@ TerrainMeshData TerrainScene::buildMesh(const TerrainMeshOptions& options) const
     return mesh;
 }
 
-TerrainMeshData TerrainScene::buildWaterMesh(const WaterMeshOptions& options) const {
+TerrainMeshData TerrainScene::buildWaterMesh(const WaterMeshOptions& options,
+                                             const std::atomic<bool>* cancelled) const {
     TerrainMeshData mesh;
     const std::uint32_t sampleStride = std::clamp(
         options.sampleStride,
@@ -1540,6 +1554,7 @@ TerrainMeshData TerrainScene::buildWaterMesh(const WaterMeshOptions& options) co
     };
 
     for (const WaterTileData& tile : waterTiles_) {
+        if (loadCancelled(cancelled)) return {};
         const std::uint32_t rowSize = static_cast<std::uint32_t>(
             sampleCoordinates.size()
         );
@@ -1643,7 +1658,8 @@ TerrainMeshData TerrainScene::buildWaterMesh(const WaterMeshOptions& options) co
     }
 
     if (!mesh.indices.empty()) {
-        stitchTerrainMesh(mesh);
+        stitchTerrainMesh(mesh, cancelled);
+        if (loadCancelled(cancelled)) return {};
     }
     return mesh;
 }

@@ -102,6 +102,7 @@ void Application::run() {
         renderer->queueEditorDrop(std::move(files), x, y);
     });
     mainLoop();
+    glfwHideWindow(window_);
     glfwSetDropCallback(window_, nullptr);
 }
 
