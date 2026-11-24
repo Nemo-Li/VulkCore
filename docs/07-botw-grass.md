@@ -50,7 +50,7 @@ terrain_grass/5400000000.grass.extm/5400000001.grass.extm
 
 `shader_grass.frag` 从草叶或草片贴图读取底色，以线性 `GrassSpm` 调制高光。两级都采用双面绘制和深度写入，卡片用 Alpha Cutout 保留草叶轮廓。
 
-地表草色使用 `MaterialAlb` 的第 0 层，每 5 个地形单位平铺一次。`MaterialCmb` 的对应层提供法线 XY 和高光遮罩，通道解释沿用本项目对样本的判断。
+地表由独立的 `.mate` 材质渲染路径处理，参见[地形材质说明](06-botw-terrain-textures.md)。
 
 ## 5. 运行路径
 

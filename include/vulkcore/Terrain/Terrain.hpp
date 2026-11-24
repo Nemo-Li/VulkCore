@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,7 @@ namespace VulkCore {
 inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
 inline constexpr std::uint32_t kTerrainWaterResolution = 64;
 inline constexpr std::uint32_t kTerrainGrassResolution = 64;
+inline constexpr std::uint32_t kTerrainMaterialResolution = 256;
 inline constexpr std::uint32_t kTerrainRenderSampleStride = 2;
 
 struct TerrainMaterialInfo {
@@ -42,6 +45,7 @@ struct TerrainTileMetadata {
     std::uint32_t areaFlags = 0;
     std::uint32_t materialIndex = 0;
     TerrainMaterialInfo materialInfo;
+    int materialTile = -1;
     std::filesystem::path sourcePath;
 };
 
@@ -114,6 +118,23 @@ struct TerrainMeshData {
     std::vector<Vertex> vertices;
     std::vector<std::uint32_t> indices;
     std::vector<TerrainChunkMesh> chunks;
+
+    // Use after the height mesh has been consumed by physics. Keeps chunk IDs stable.
+    std::size_t selectMaterialTiles(std::span<const int> textureLayers);
+};
+
+struct TerrainMaterialSample {
+    std::uint8_t firstId;
+    std::uint8_t secondId;
+    std::uint8_t firstWeight;
+    std::uint8_t unknown;
+};
+
+struct TerrainMaterialLayers {
+    std::vector<std::uint8_t> pixels;
+    std::vector<int> layerForTile;
+    std::vector<std::uint8_t> missingIds;
+    std::uint32_t count = 0;
 };
 
 struct WaterMeshOptions {
@@ -196,6 +217,8 @@ public:
     std::size_t tileCount() const;
     std::size_t waterTileCount() const;
     std::size_t grassTileCount() const { return grassTiles_.size(); }
+    std::size_t materialTileCount() const { return materialTiles_.size(); }
+    TerrainMaterialLayers buildMaterialLayers(const std::array<int, 256>& albedoLayers) const;
     std::optional<GrassSample> grassAtWorld(const glm::vec2& worldPosition) const;
     std::optional<float> waterHeightAtWorld(const glm::vec2& worldPosition) const;
 
@@ -214,6 +237,7 @@ private:
     TerrainSceneHeader header_;
     std::vector<TerrainMaterialInfo> materialInfos_;
     std::vector<TerrainChunk> chunks_;
+    std::vector<std::vector<TerrainMaterialSample>> materialTiles_;
     std::vector<WaterTileData> waterTiles_;
     struct GrassTile {
         glm::vec2 minimum;

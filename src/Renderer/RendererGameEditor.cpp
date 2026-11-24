@@ -838,10 +838,10 @@ void Renderer::drawGameInspector() {
                 "%.2f m", ImGuiSliderFlags_AlwaysClamp);
         };
         const auto drawGrassGround = [&] {
-            if (terrainGrass_.groundAlbedo) {
-                ImGui::TextUnformatted("MaterialAlb + MaterialCmb (layer 0)");
+            if (terrainMaterialMaps_) {
+                ImGui::TextUnformatted("MATE material maps");
             } else {
-                ImGui::TextDisabled("Terrain grass resources unavailable");
+                ImGui::TextDisabled("Terrain material maps unavailable");
             }
             if (const auto* terrain = findSceneNodeById(meshData_, kTerrainSceneNodeId)) {
                 drawFirstMaterial(*terrain, "terrain");

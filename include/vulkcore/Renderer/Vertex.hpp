@@ -18,7 +18,8 @@ struct Vertex {
     // fields at zero and therefore continue to use the bind-pose position.
     glm::ivec4 boneIndices{0};
     glm::vec4 boneWeights{0.0f};
-    // Optional terrain-only mapping data. Other meshes leave this at zero.
+    // Terrain vertices store the material map layer in x. Other meshes may use
+    // their existing mapping or leave it at zero.
     glm::vec4 terrainMapping{0.0f};
 
     static VkVertexInputBindingDescription bindingDescription() {

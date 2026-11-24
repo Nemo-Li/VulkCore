@@ -52,7 +52,7 @@ public:
     Texture(VulkanContext& context, const DecodedTexturePixels& image, bool arrayView,
         TextureColorSpace colorSpace = TextureColorSpace::Srgb,
         VkSamplerAddressMode addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT, bool mipmapped = true);
     ~Texture();
 
     Texture(const Texture&) = delete;
@@ -64,8 +64,10 @@ public:
 private:
     Texture(VulkanContext& context, const std::vector<std::uint8_t>& rgbaPixels,
         std::uint32_t width, std::uint32_t height, bool arrayView, TextureColorSpace colorSpace,
-        std::uint32_t layers, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV);
-    void uploadRgbaPixels(const std::uint8_t* pixels, std::uint32_t width, std::uint32_t height);
+        std::uint32_t layers, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV,
+        bool mipmapped = true);
+    void uploadRgbaPixels(const std::uint8_t* pixels, std::uint32_t width, std::uint32_t height,
+        bool mipmapped);
     void createImage(uint32_t width, uint32_t height);
     void createImageView();
     void createSampler();

@@ -203,6 +203,53 @@ void checkStitchedChunkBounds() {
     }
 }
 
+void checkMaterialMaps() {
+    using namespace VulkCore;
+    Fixture fixture;
+    fixture.create(false);
+    const auto root = fixture.root / "terrain";
+    const auto group = root / "5400000000.mate";
+    std::filesystem::create_directories(group);
+    const auto writeMap = [](const std::filesystem::path& path, const std::array<unsigned char, 4>& values) {
+        std::ofstream file(path, std::ios::binary);
+        for (std::size_t i = 0; i < kTerrainMaterialResolution * kTerrainMaterialResolution; ++i) {
+            file.write(reinterpret_cast<const char*>(values.data()), values.size());
+        }
+    };
+    writeMap(group / "5400000000.mate", {73, 3, 64, 17});
+    writeMap(root / "5400000001.mate", {12, 3, 0, 0});
+    {
+        std::ofstream malformed(root / "5400000002.mate", std::ios::binary);
+        malformed.put('\0');
+    }
+    const auto scene = TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    require(scene->tileCount() == 4 && scene->materialTileCount() == 2,
+        "height tiles must load independently of missing and malformed material grids");
+
+    std::array<int, 256> albedos;
+    albedos.fill(-1);
+    albedos[3] = 0;
+    const auto incomplete = scene->buildMaterialLayers(albedos);
+    require(incomplete.count == 1 && incomplete.layerForTile == std::vector<int>{-1, 0} &&
+        incomplete.missingIds == std::vector<std::uint8_t>{73},
+        "missing active IDs must hide their tiles, while zero-weight IDs have no effect");
+    albedos[73] = 1;
+    const auto complete = scene->buildMaterialLayers(albedos);
+    const std::array<std::uint8_t, 4> expected{1, 0, 64, 17};
+    require(complete.count == 2 && complete.missingIds.empty() &&
+        std::equal(expected.begin(), expected.end(), complete.pixels.begin()),
+        "material data must preserve arbitrary IDs, blend weights and the unknown channel");
+
+    auto mesh = scene->buildMesh({8});
+    const auto heightIndexCount = mesh.indices.size();
+    mesh.selectMaterialTiles(incomplete.layerForTile);
+    require(mesh.indices.size() * 4 == heightIndexCount && !mesh.chunks.empty(),
+        "only the complete material tile may be submitted for rendering");
+    require(std::all_of(mesh.indices.begin(), mesh.indices.end(), [&](std::uint32_t index) {
+        return mesh.vertices[index].terrainMapping.x == 0.0f && mesh.vertices[index].position.x >= 625.0f;
+    }), "filtered triangles must keep their remapped material layer");
+}
+
 void checkGrassCoverage() {
     using namespace VulkCore;
     Fixture fixture;
@@ -423,6 +470,7 @@ int main() {
         checkFixture(false);
         checkFixture(true);
         checkStitchedChunkBounds();
+        checkMaterialMaps();
         checkGrassCoverage();
         checkFrustum();
     } catch (const std::exception& error) {

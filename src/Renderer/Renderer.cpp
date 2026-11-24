@@ -109,7 +109,7 @@ Renderer::~Renderer() {
     specularTextures_.clear();
     alphaMaskTextures_.clear();
     terrainAlbedoLayers_.reset();
-    terrainSurfaceLayers_.reset();
+    terrainMaterialMaps_.reset();
     fallbackTerrainLayers_.reset();
     particleTextures_.clear();
     skyboxTexture_.reset();

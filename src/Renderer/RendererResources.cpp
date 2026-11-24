@@ -5,7 +5,9 @@
 #include "vulkcore/Terrain/Terrain.hpp"
 #include "vulkcore/Utils/SbfresLoader.hpp"
 
+#include <charconv>
 #include <future>
+#include <map>
 
 namespace VulkCore {
 namespace {
@@ -849,90 +851,18 @@ SceneLoadTask Renderer::createMaterialTextureSteps(bool incremental) {
     normalTextures_.resize(meshData_.materials.size());
     specularTextures_.resize(meshData_.materials.size());
     alphaMaskTextures_.resize(meshData_.materials.size());
-    terrainAlbedoLayers_.reset();
-    terrainSurfaceLayers_.reset();
-    fallbackTerrainLayers_.reset();
     bool needsWhiteFallbackTexture = false;
     bool needsNormalFallbackTexture = false;
-    const auto terrain = std::find_if(meshData_.materials.begin(), meshData_.materials.end(),
-        [](const MaterialData& material) {
-            return material.texturePath.filename() == "terrain_atlas.png" &&
-                material.shaderConfiguration.shader(ShaderStage::Fragment).starts_with("shader_terrain");
-        });
-    if (terrain != meshData_.materials.end()) {
-        const auto directory = terrain->texturePath.parent_path();
-        // Keep array indices stable. Grass uses the separately bound BFRES pair.
-        static constexpr std::array landforms{"dirt", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"};
-        const auto decodeLandforms = [directory](std::string_view suffix) -> std::optional<DecodedTexturePixels> {
-            std::vector<std::filesystem::path> paths;
-            for (const char* landform : landforms) {
-                paths.push_back(directory / (std::string("terrain_") + landform + std::string(suffix) + ".png"));
-            }
-            // Older terrain packs only have base color and the atlas.
-            if (!suffix.empty() && !std::filesystem::is_regular_file(paths.front())) return std::nullopt;
-            const auto road = directory / (std::string("terrain_road_dirt") + std::string(suffix) + ".png");
-            if (std::filesystem::is_regular_file(road)) {
-                paths.push_back(road);
-                try {
-                    return decodeTextureLayers(paths);
-                } catch (const std::exception& error) {
-                    std::cerr << "warning: failed to decode road layer: " << error.what() << '\n';
-                    paths.pop_back();
-                }
-            }
-            return decodeTextureLayers(paths);
-        };
-        for (int layer = 0; layer < 2; ++layer) {
-            if (layer == 1 && !terrainAlbedoLayers_) break;
-            const auto* suffix = layer == 0 ? "" : "_surface";
-            try {
-                std::optional<DecodedTexturePixels> image;
-                if (incremental) {
-                    auto decode = std::async(std::launch::async, decodeLandforms, suffix);
-                    while (decode.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-                        co_yield layer * 8;
-                    }
-                    image = decode.get();
-                    co_yield layer * 8 + 4;
-                } else {
-                    image = decodeLandforms(suffix);
-                }
-                if (image) {
-                    auto& texture = layer == 0 ? terrainAlbedoLayers_ : terrainSurfaceLayers_;
-                    const auto colorSpace = layer == 0 ? TextureColorSpace::Srgb : TextureColorSpace::Linear;
-                    try {
-                        texture = std::make_unique<Texture>(*context_, *image, true, colorSpace);
-                    } catch (const std::exception& error) {
-                        if (image->layers <= landforms.size()) throw;
-                        std::cerr << "warning: failed to upload road layer: " << error.what() << '\n';
-                        image->rgba.resize(image->rgba.size() / image->layers * landforms.size());
-                        image->layers = static_cast<std::uint32_t>(landforms.size());
-                        texture = std::make_unique<Texture>(*context_, *image, true, colorSpace);
-                    }
-                }
-            } catch (const std::exception& error) {
-                std::cerr << "warning: failed to load terrain layers: " << error.what() << '\n';
-            }
-            if (incremental) co_yield (layer + 1) * 8;
-        }
-    }
 
     const auto materialCount = meshData_.materials.size();
     for (std::size_t index = 0; index < materialCount; ++index) {
         const auto& material = meshData_.materials[index];
-        const bool useTerrainMacro = terrainAlbedoLayers_ && &material == &*terrain;
-        auto basePath = material.texturePath;
-        if (useTerrainMacro) {
-            // The arrays carry the detail textures. Use the base slot for the optional map control image.
-            basePath = material.texturePath.parent_path() / "terrain_macro.png";
-            if (!std::filesystem::is_regular_file(basePath)) basePath.clear();
-        }
         const std::array<const EmbeddedTextureData*, 4> embedded{
-            useTerrainMacro ? nullptr : &material.embeddedTexture, &material.embeddedNormalTexture,
+            &material.embeddedTexture, &material.embeddedNormalTexture,
             &material.embeddedSpecularTexture, &material.embeddedAlphaMask
         };
         const std::array<std::filesystem::path, 4> paths{
-            basePath, material.normalTexturePath, material.specularTexturePath, {}
+            material.texturePath, material.normalTexturePath, material.specularTexturePath, {}
         };
         const std::array slots{&materialTextures_[index], &normalTextures_[index],
                                &specularTextures_[index], &alphaMaskTextures_[index]};
@@ -965,10 +895,7 @@ SceneLoadTask Renderer::createMaterialTextureSteps(bool incremental) {
                     } else {
                         image = decodePixels();
                     }
-                    const bool macro = useTerrainMacro && slot == 0;
-                    const auto colorSpace = macro ? TextureColorSpace::Linear : TextureColorSpace::Srgb;
-                    const auto address = macro ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-                    *slots[slot] = std::make_unique<Texture>(*context_, image, false, colorSpace, address, address);
+                    *slots[slot] = std::make_unique<Texture>(*context_, image, false);
                 }
             } catch (const std::exception& error) {
                 slots[slot]->reset();
@@ -997,7 +924,7 @@ SceneLoadTask Renderer::createMaterialTextureSteps(bool incremental) {
         );
     }
 
-    if (!terrainAlbedoLayers_ || !terrainSurfaceLayers_) {
+    if (!fallbackTerrainLayers_) {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
         fallbackTerrainLayers_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1, true);
     }
@@ -1035,6 +962,146 @@ void Renderer::applySkyboxTexture(const std::filesystem::path& path) {
     rebuildMaterialResources();
 }
 
+namespace {
+
+// A BNTX array supplies pixels by layer. A terrain pack separately assigns
+// those layers to the 8-bit material IDs used by its map samples.
+std::map<unsigned, unsigned> readTerrainAlbedoBindings(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("cannot open material layer table: " + path.string());
+
+    std::map<unsigned, unsigned> bindings;
+    std::string line;
+    std::size_t lineNumber = 0;
+    while (std::getline(input, line)) {
+        ++lineNumber;
+        if (const auto comment = line.find('#'); comment != std::string::npos) line.resize(comment);
+        std::istringstream row(line);
+        row >> std::ws;
+        if (row.eof()) continue;
+
+        unsigned id = 0, layer = 0;
+        std::string extra;
+        if (!(row >> id >> layer) || (row >> extra) || id > 255 || !bindings.emplace(id, layer).second) {
+            throw std::runtime_error(path.string() + ":" + std::to_string(lineNumber) +
+                ": expected a unique material ID (0–255) followed by a zero-based array layer");
+        }
+    }
+    if (!input.eof()) throw std::runtime_error("failed to read material layer table: " + path.string());
+    return bindings;
+}
+
+void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
+    const std::filesystem::path& tablePath, std::array<int, 256>& albedoLayers,
+    DecodedTexturePixels& albedo, TextureColorSpace& colorSpace) {
+    const SbfresTextureArchive archive(archivePath);
+    const auto entries = archive.entries();
+    const auto entry = std::find_if(entries.begin(), entries.end(), [](const SbfresTextureInfo& info) {
+        return info.name == "MaterialAlb";
+    });
+    if (entry == entries.end() || entry->layers == 0) {
+        throw std::runtime_error("missing MaterialAlb layers in " + archivePath.string());
+    }
+    const auto index = static_cast<std::size_t>(entry - entries.begin());
+
+    // Until the source material table is verified, use the layer with the same
+    // number as the material ID and layer 0 for IDs beyond the end of the array.
+    std::array<unsigned, 256> sourceLayers{};
+    const auto directCount = std::min<std::size_t>(entry->layers, sourceLayers.size());
+    for (std::size_t id = 0; id < directCount; ++id) sourceLayers[id] = static_cast<unsigned>(id);
+    if (std::filesystem::exists(tablePath)) {
+        for (const auto& [id, layer] : readTerrainAlbedoBindings(tablePath)) {
+            if (layer >= entry->layers) {
+                throw std::runtime_error("MaterialAlb layer " + std::to_string(layer) + " for material ID " +
+                    std::to_string(id) + " exceeds the array in " + archivePath.string());
+            }
+            sourceLayers[id] = layer;
+        }
+    }
+
+    std::map<unsigned, unsigned> uploadedLayers;
+    for (const auto layer : sourceLayers) uploadedLayers.try_emplace(layer, 0);
+    albedo.width = entry->width;
+    albedo.height = entry->height;
+    for (auto& [layer, arrayIndex] : uploadedLayers) {
+        auto pixels = archive.decodeLayer(index, layer);
+        if (albedo.layers == 0) {
+            const auto layerBytes = pixels.data.size();
+            if (uploadedLayers.size() > albedo.rgba.max_size() / layerBytes) {
+                throw std::runtime_error("decoded MaterialAlb array is too large");
+            }
+            albedo.rgba.reserve(layerBytes * uploadedLayers.size());
+            colorSpace = pixels.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear;
+        }
+        albedo.rgba.insert(albedo.rgba.end(), pixels.data.begin(), pixels.data.end());
+        arrayIndex = albedo.layers++;
+    }
+    for (std::size_t id = 0; id < sourceLayers.size(); ++id) {
+        albedoLayers[id] = static_cast<int>(uploadedLayers.at(sourceLayers[id]));
+    }
+    std::cerr << "Terrain albedo: " << albedo.layers << '/' << entry->layers << " MaterialAlb layers from "
+              << archivePath.string() << '\n';
+}
+
+void decodeTerrainAlbedoPng(const std::filesystem::path& directory, std::array<int, 256>& albedoLayers,
+    DecodedTexturePixels& albedo) {
+    std::map<unsigned, std::filesystem::path> materials;
+    if (std::filesystem::exists(directory)) {
+        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".png") continue;
+            const auto stem = entry.path().stem().string();
+            unsigned id = 0;
+            const auto [end, error] = std::from_chars(stem.data(), stem.data() + stem.size(), id);
+            if (error != std::errc{} || end != stem.data() + stem.size() || id > 255) continue;
+            if (!materials.emplace(id, entry.path()).second) {
+                throw std::runtime_error("multiple albedo textures for material ID " + std::to_string(id));
+            }
+        }
+    }
+
+    for (const auto& [id, path] : materials) {
+        try {
+            const auto image = decodeTexturePixels(path);
+            if (albedo.layers == 0) {
+                albedo.width = image.width;
+                albedo.height = image.height;
+            }
+            if (image.width != albedo.width || image.height != albedo.height) {
+                throw std::runtime_error("albedo dimensions differ from the rest of the library");
+            }
+            albedo.rgba.insert(albedo.rgba.end(), image.rgba.begin(), image.rgba.end());
+            albedoLayers[id] = static_cast<int>(albedo.layers++);
+        } catch (const std::runtime_error& error) {
+            std::cerr << "warning: skipped material texture '" << path.string() << "': " << error.what() << '\n';
+        }
+    }
+}
+
+} // namespace
+
+Renderer::TerrainMaterialImages Renderer::decodeTerrainMaterials(const TerrainScene& terrain,
+    const std::filesystem::path& terrainRoot) {
+    std::array<int, 256> albedoLayers;
+    albedoLayers.fill(-1);
+    TerrainMaterialImages images;
+    images.albedo.layers = 0;
+    if (terrain.materialTileCount() != 0) {
+        const auto source = terrainRoot / "source";
+        const auto archive = source / "Terrain.Tex.sbfres";
+        const auto table = source / "material-albedo-layers.txt";
+        if (std::filesystem::exists(archive) || std::filesystem::exists(table)) {
+            decodeTerrainAlbedoArchive(archive, table, albedoLayers, images.albedo, images.albedoColorSpace);
+        } else {
+            decodeTerrainAlbedoPng(terrainRoot / "materials", albedoLayers, images.albedo);
+        }
+    }
+    auto layers = terrain.buildMaterialLayers(albedoLayers);
+    images.maps = {std::move(layers.pixels), kTerrainMaterialResolution, kTerrainMaterialResolution, layers.count};
+    images.layerForTile = std::move(layers.layerForTile);
+    images.missingIds = std::move(layers.missingIds);
+    return images;
+}
+
 std::optional<Renderer::TerrainGrassImages> Renderer::decodeTerrainGrass(const std::filesystem::path& terrainRoot) {
     const auto source = terrainRoot / "source";
     const auto model = source / "Terrain.sbfres";
@@ -1062,10 +1129,8 @@ std::optional<Renderer::TerrainGrassImages> Renderer::decodeTerrainGrass(const s
         }
         return image;
     };
-    // The supplied pack's layer 0 is the ordinary green meadow.
     TerrainGrassImages images;
-    images.images = {decode("MaterialAlb"), decode("MaterialCmb"), decode("GrassAlb"),
-                     decode("GrassCrossAlb", 2), decode("GrassSpm")};
+    images.images = {decode("GrassAlb"), decode("GrassCrossAlb", 2), decode("GrassSpm")};
     auto coverage = archive.decodeLayer(entryIndex("GrassCoverAlb"), 0);
     std::vector<std::uint8_t> red(coverage.data.size() / 4);
     for (std::size_t i = 0; i < red.size(); ++i) red[i] = coverage.data[i * 4];
@@ -1074,17 +1139,14 @@ std::optional<Renderer::TerrainGrassImages> Renderer::decodeTerrainGrass(const s
 }
 
 SceneLoadTask Renderer::uploadTerrainGrass(TerrainGrassImages images) {
-    constexpr auto repeat = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     TerrainGrassResources resources;
-    const std::array targets{&resources.groundAlbedo, &resources.groundCombined,
-                             &resources.bladeAlbedo, &resources.crossAlbedo, &resources.specular};
+    const std::array targets{&resources.bladeAlbedo, &resources.crossAlbedo, &resources.specular};
     for (std::size_t i = 0; i < targets.size(); ++i) {
         auto& image = images.images[i];
-        const std::uint32_t layers = i == 3 ? 2 : 1;
+        const std::uint32_t layers = i == 1 ? 2 : 1;
         *targets[i] = std::make_unique<Texture>(*context_, image.data, image.width, image.height,
-            layers > 1, image.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear,
-            layers, i < 2 ? repeat : clamp);
+            layers > 1, image.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear, layers, clamp);
         image = {};
         co_yield static_cast<int>(i + 1);
     }
@@ -1259,7 +1321,6 @@ void Renderer::createDescriptorSets() {
             const auto& fragment = meshData_.materials[materialIndex].shaderConfiguration.shader(ShaderStage::Fragment);
             const bool terrainMaterial = fragment == "shader_terrain.frag";
             const bool grassMaterial = fragment == "shader_grass.frag";
-            if (terrainMaterial && terrainGrass_.groundCombined) normalTexture = terrainGrass_.groundCombined.get();
             if (grassMaterial && terrainGrass_.specular) specularTexture = terrainGrass_.specular.get();
 
             const Texture* mask = alphaMaskTextures_[materialIndex].get();
@@ -1285,9 +1346,8 @@ void Renderer::createDescriptorSets() {
                 };
             };
             const std::array terrainImageInfos = {
-                layerInfo(grassMaterial && terrainGrass_.crossAlbedo
-                    ? terrainGrass_.crossAlbedo : terrainAlbedoLayers_),
-                layerInfo(terrainSurfaceLayers_)
+                layerInfo(grassMaterial ? terrainGrass_.crossAlbedo : terrainAlbedoLayers_),
+                layerInfo(terrainMaterial ? terrainMaterialMaps_ : fallbackTerrainLayers_)
             };
 
             VkDescriptorImageInfo depthImageInfo{};
@@ -1295,8 +1355,7 @@ void Renderer::createDescriptorSets() {
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
-            const Texture* grassAlbedo = grassMaterial ? terrainGrass_.bladeAlbedo.get() :
-                (terrainMaterial ? terrainGrass_.groundAlbedo.get() : nullptr);
+            const Texture* grassAlbedo = grassMaterial ? terrainGrass_.bladeAlbedo.get() : nullptr;
             if (!grassAlbedo) grassAlbedo = texture;
             const VkDescriptorImageInfo grassAlbedoInfo{
                 grassAlbedo->sampler(), grassAlbedo->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL

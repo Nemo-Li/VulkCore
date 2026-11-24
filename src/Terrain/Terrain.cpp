@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -877,7 +879,7 @@ void TerrainTile::appendMesh(
                     glm::clamp(metadata_.materialInfo.paletteContrast, 0.2f, 1.63f)
                 )
             };
-            vertex.terrainMapping = glm::vec4(tileWorldSize, tileWorldSize, 0.0f, 0.0f);
+            vertex.terrainMapping = glm::vec4(static_cast<float>(metadata_.materialTile), tileWorldSize, 0.0f, 0.0f);
             vertices.push_back(vertex);
         }
     }
@@ -1077,10 +1079,8 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
             readU32BE(data, entryOffset + 0x20)
         );
 
-        // The extracted project does not include the source .mate files, so
-        // use the TSCB height band and area flag to select a stable tuning
-        // record. The terrain shader derives the visible landform from height
-        // and slope while preserving the source material scale values.
+        // Preserve the height-mesh metadata for existing callers. Surface
+        // shading reads the material sample grid instead.
         const float averageHeight = glm::clamp(
             (metadata.minimumHeight + metadata.maximumHeight) * 0.5f,
             0.0f,
@@ -1231,6 +1231,24 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
     using ChunkKey = std::tuple<std::uint32_t, int, int>;
     std::map<ChunkKey, std::size_t> chunkIndices;
     for (ParsedTile& parsed : selectedTiles) {
+        if (loadCancelled(cancelled)) return nullptr;
+        const auto materialPath = findSurfaceTilePath(terrainRoot / "terrain", parsed.metadata.fileBase, ".mate");
+        if (!materialPath.empty()) {
+            constexpr auto sampleCount = kTerrainMaterialResolution * kTerrainMaterialResolution;
+            static_assert(sizeof(TerrainMaterialSample) == 4);
+            try {
+                const auto bytes = readBinaryFile(materialPath);
+                if (bytes.size() != sampleCount * sizeof(TerrainMaterialSample)) {
+                    throw std::runtime_error("expected a 256x256 grid of four-byte samples");
+                }
+                auto& samples = scene->materialTiles_.emplace_back(sampleCount);
+                std::memcpy(samples.data(), bytes.data(), bytes.size());
+                parsed.metadata.materialTile = static_cast<int>(scene->materialTiles_.size() - 1);
+            } catch (const std::runtime_error& error) {
+                std::cerr << "warning: skipped material map '" << materialPath.string()
+                          << "': " << error.what() << '\n';
+            }
+        }
         const float chunkSpan = parsed.metadata.areaSize * 2.0f;
         const int chunkX = static_cast<int>(std::floor(
             (parsed.metadata.gridPosition.x + scene->header_.tileSize * 0.5f) /
@@ -1276,6 +1294,64 @@ std::unique_ptr<TerrainScene> TerrainScene::load(
         scene->boundsMaximum_ = glm::max(scene->boundsMaximum_, chunk.boundsMaximum());
     }
     return scene;
+}
+
+TerrainMaterialLayers TerrainScene::buildMaterialLayers(const std::array<int, 256>& albedoLayers) const {
+    TerrainMaterialLayers result;
+    result.layerForTile.resize(materialTiles_.size(), -1);
+    std::bitset<256> missing;
+    for (std::size_t tileIndex = 0; tileIndex < materialTiles_.size(); ++tileIndex) {
+        const auto& samples = materialTiles_[tileIndex];
+        bool complete = true;
+        for (const auto& sample : samples) {
+            if (sample.firstWeight != 0 && albedoLayers[sample.firstId] < 0) {
+                missing.set(sample.firstId);
+                complete = false;
+            }
+            if (sample.firstWeight != 255 && albedoLayers[sample.secondId] < 0) {
+                missing.set(sample.secondId);
+                complete = false;
+            }
+        }
+        if (!complete) continue;
+        result.layerForTile[tileIndex] = static_cast<int>(result.count++);
+        for (const auto& sample : samples) {
+            // Ignore IDs with zero influence. Active IDs are compact array layers.
+            result.pixels.push_back(sample.firstWeight == 0 ? 0 : static_cast<std::uint8_t>(albedoLayers[sample.firstId]));
+            result.pixels.push_back(sample.firstWeight == 255 ? 0 : static_cast<std::uint8_t>(albedoLayers[sample.secondId]));
+            result.pixels.push_back(sample.firstWeight);
+            result.pixels.push_back(sample.unknown);
+        }
+    }
+    for (std::size_t id = 0; id < missing.size(); ++id) {
+        if (missing.test(id)) result.missingIds.push_back(static_cast<std::uint8_t>(id));
+    }
+    return result;
+}
+
+std::size_t TerrainMeshData::selectMaterialTiles(std::span<const int> textureLayers) {
+    for (auto& vertex : vertices) {
+        const auto sourceTile = static_cast<int>(vertex.terrainMapping.x);
+        vertex.terrainMapping.x = sourceTile >= 0 && static_cast<std::size_t>(sourceTile) < textureLayers.size()
+            ? static_cast<float>(textureLayers[sourceTile]) : -1.0f;
+    }
+    auto output = indices.begin();
+    std::size_t visibleChunks = 0;
+    for (auto& chunk : chunks) {
+        auto triangle = indices.begin() + chunk.indexOffset;
+        const auto end = triangle + chunk.indexCount;
+        chunk.indexOffset = static_cast<std::size_t>(output - indices.begin());
+        for (; triangle != end; triangle += 3) {
+            // All three vertices of a triangle belong to one tile.
+            if (vertices[*triangle].terrainMapping.x < 0.0f) continue;
+            if (output != triangle) std::copy_n(triangle, 3, output);
+            output += 3;
+        }
+        chunk.indexCount = static_cast<std::size_t>(output - indices.begin()) - chunk.indexOffset;
+        if (chunk.indexCount > 0) ++visibleChunks;
+    }
+    indices.erase(output, indices.end());
+    return visibleChunks;
 }
 
 std::size_t TerrainScene::tileCount() const {

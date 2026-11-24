@@ -500,18 +500,10 @@ void Renderer::recordCommandBuffer(
         MaterialPushConstants materialPushConstants{};
         materialPushConstants.nodeTransform = nodeTransform;
         materialPushConstants.baseColor = material.baseColor;
-        const bool terrainMaterial = part.nodeId >= kTerrainChunkNodeBase &&
-            part.nodeId < kPlayerSceneNodeId;
-        const bool terrainMacro = terrainMaterial && terrainAlbedoLayers_ &&
-            material.texturePath.filename() == "terrain_atlas.png" && materialTextures_[materialIndex];
         materialPushConstants.textureFlags =
             (materialTextures_[materialIndex] != nullptr ? 1u : 0u) |
             (normalTextures_[materialIndex] != nullptr ? 2u : 0u) |
-            (specularTextures_[materialIndex] != nullptr ? 4u : 0u) |
-            (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
-            (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u) |
-            (terrainMacro ? 32u : 0u) |
-            (terrainMaterial && terrainGrass_.groundAlbedo ? kTerrainGrassTextureFlag : 0u);
+            (specularTextures_[materialIndex] != nullptr ? 4u : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled
@@ -558,9 +550,6 @@ void Renderer::recordCommandBuffer(
                 materialPushConstants.waterSurface.y = glm::radians(grassGrowth_.minimumTilt);
                 materialPushConstants.waterSurface.z = glm::radians(grassGrowth_.maximumTilt);
             }
-        } else if (terrainMaterial && fragment == "shader_terrain.frag") {
-            // Terrain and grass shaders use the metallic slot for the ochre mix.
-            materialPushConstants.metallic = ochreDirtRatio_;
         }
         if (shadow) {
             if (isTransparentMaterial(material)) materialPushConstants.textureFlags |= kShadowBlendFlag;

@@ -320,10 +320,12 @@ Player 移动。未设置该字段时继续显示程序化胶囊，也可以在 
 
 当前地形碰撞使用渲染网格精度；物理材质、碰撞层、触发器、接触事件和通用刚体组件仍属于后续扩展。
 
+在 `terrain/` 下提供 `.mate` 材质瓦片。底色可直接从 `source/Terrain.Tex.sbfres` 解码，也可按材质 ID 从 `materials/` 载入原创 PNG。只有材质资源齐全的瓦片参与绘制。映射表格式和限制见[地形材质说明](docs/06-botw-terrain-textures.md)。
+
 #### BOTW 风格草地、LOD 与踩踏
 
 草地实例按相机位置增量更新。近景用四段弯曲叶片网格和 `GrassAlb`，中景用两张相交的 `GrassCrossAlb` 草片。
-两级在 30–40 个地形单位间交接，草片在 83–112 个单位间淡出，留下使用 `MaterialAlb` 与 `MaterialCmb` 的地表。
+两级在 30–40 个地形单位间交接，草片在 83–112 个单位间淡出。
 两级草地使用每个区块三张随机旋转的 `GrassCoverAlb` 遮罩，草叶保留风动和踩踏。
 
 `assets/terrain/source/` 保存配对的地形档案。只有地形根目录 `terrain_grass/` 下有 `.grass.extm` 且草高大于零的位置才生成草，草高和底色取自瓦片。

@@ -225,8 +225,17 @@ private:
     void applyEditorShader();
     std::filesystem::path defaultSkyboxPath() const;
     void applySkyboxTexture(const std::filesystem::path& path);
+    struct TerrainMaterialImages {
+        DecodedTexturePixels albedo;
+        TextureColorSpace albedoColorSpace = TextureColorSpace::Srgb;
+        DecodedTexturePixels maps;
+        std::vector<int> layerForTile;
+        std::vector<std::uint8_t> missingIds;
+    };
+    static TerrainMaterialImages decodeTerrainMaterials(const TerrainScene& terrain,
+        const std::filesystem::path& terrainRoot);
     struct TerrainGrassImages {
-        std::array<EmbeddedTextureData, 5> images;
+        std::array<EmbeddedTextureData, 3> images;
         GrassCoverMask coverMask;
     };
     static std::optional<TerrainGrassImages> decodeTerrainGrass(const std::filesystem::path& terrainRoot);
@@ -237,10 +246,7 @@ private:
     );
     bool saveTransformSettings() const;
     void initializeEmptyScene();
-    void appendTerrainToScene(
-        const TerrainMeshData& terrainMesh,
-        const std::filesystem::path& terrainRoot
-    );
+    void appendTerrainToScene(const TerrainMeshData& terrainMesh);
     void appendWaterToScene(const TerrainMeshData& waterMesh);
     void appendPlayerToScene();
     void appendGrassToScene(const TerrainScene& terrain);
@@ -582,13 +588,11 @@ private:
     std::vector<std::unique_ptr<Texture>> specularTextures_;
     std::vector<std::unique_ptr<Texture>> alphaMaskTextures_;
     std::unique_ptr<Texture> terrainAlbedoLayers_;
-    std::unique_ptr<Texture> terrainSurfaceLayers_;
+    std::unique_ptr<Texture> terrainMaterialMaps_;
     std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
     struct TerrainGrassResources {
-        std::unique_ptr<Texture> groundAlbedo;
-        std::unique_ptr<Texture> groundCombined;
         std::unique_ptr<Texture> bladeAlbedo;
         std::unique_ptr<Texture> crossAlbedo;
         std::unique_ptr<Texture> specular;

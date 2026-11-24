@@ -235,6 +235,8 @@ void Renderer::initializeEmptyScene() {
     terrainScene_.reset();
     grassCoverage_ = {};
     terrainGrass_ = {};
+    terrainAlbedoLayers_.reset();
+    terrainMaterialMaps_.reset();
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
     playerController_.clear();
@@ -264,13 +266,16 @@ void Renderer::initializeEmptyScene() {
     tornadoPreviewTransform_ = glm::mat4(1.0f);
 }
 
-void Renderer::appendTerrainToScene(
-    const TerrainMeshData& terrainMesh,
-    const std::filesystem::path& terrainRoot
-) {
-    if (terrainMesh.vertices.empty() || terrainMesh.indices.empty() ||
-        terrainMesh.chunks.empty()) {
-        throw std::runtime_error("BOTW terrain contains no renderable heightmap data");
+void Renderer::appendTerrainToScene(const TerrainMeshData& terrainMesh) {
+    if (terrainMesh.indices.empty()) {
+        // Reserve the terrain slot so later saved material indices remain stable.
+        MaterialData terrainMaterial;
+        terrainMaterial.name = "Terrain (.mate)";
+        meshData_.materials.push_back(std::move(terrainMaterial));
+        return;
+    }
+    if (terrainMesh.vertices.empty() || terrainMesh.chunks.empty()) {
+        throw std::runtime_error("terrain contains indices without heightmap geometry");
     }
     if (meshData_.vertices.size() > std::numeric_limits<std::uint32_t>::max() -
             terrainMesh.vertices.size() ||
@@ -279,10 +284,9 @@ void Renderer::appendTerrainToScene(
         throw std::runtime_error("BOTW terrain exceeds the renderer's 32-bit mesh limits");
     }
     MaterialData terrainMaterial;
-    terrainMaterial.name = "BOTW Terrain (TSCB landform atlas)";
+    terrainMaterial.name = "Terrain (.mate)";
     terrainMaterial.baseColor = glm::vec4(1.0f);
     terrainMaterial.roughness = 0.95f;
-    terrainMaterial.texturePath = terrainRoot / "textures" / "terrain_atlas.png";
     terrainMaterial.shaderConfiguration.shader(ShaderStage::Vertex) =
         "shader_terrain.vert";
     terrainMaterial.shaderConfiguration.shader(ShaderStage::Fragment) =
@@ -322,10 +326,7 @@ void Renderer::appendTerrainToScene(
 
     for (std::size_t chunkIndex = 0; chunkIndex < terrainMesh.chunks.size(); ++chunkIndex) {
         const TerrainChunkMesh& chunkMesh = terrainMesh.chunks[chunkIndex];
-        if (chunkMesh.indexCount == 0) {
-            --terrainNode.meshCount;
-            continue;
-        }
+        if (chunkMesh.indexCount == 0) continue;
         if (chunkIndex > std::numeric_limits<std::uint32_t>::max() - kTerrainChunkNodeBase) {
             throw std::runtime_error("BOTW terrain chunk node IDs overflow 32-bit storage");
         }
@@ -1521,8 +1522,10 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         std::unique_ptr<TerrainScene> terrain;
         TerrainMeshData terrainMesh;
         TerrainMeshData waterMesh;
+        std::optional<TerrainMaterialImages> terrainMaterials;
         std::optional<TerrainGrassImages> grass;
         std::string terrainError;
+        std::string terrainMaterialError;
         std::string grassError;
         std::unordered_map<std::string, ModelResourceCacheEntry> models;
     };
@@ -1542,6 +1545,13 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 prepared.terrainMesh = prepared.terrain->buildMesh({}, cancelled);
                 if (stopping()) return prepared;
                 prepared.waterMesh = prepared.terrain->buildWaterMesh({}, cancelled);
+                if (!stopping()) {
+                    try {
+                        prepared.terrainMaterials = decodeTerrainMaterials(*prepared.terrain, terrainPath);
+                    } catch (const std::exception& materialError) {
+                        prepared.terrainMaterialError = materialError.what();
+                    }
+                }
             } catch (const std::exception& terrainError) {
                 prepared.terrain.reset();
                 prepared.terrainError = terrainError.what();
@@ -1564,7 +1574,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                                       std::memory_order_relaxed);
         }
         preparationProgress.store(52, std::memory_order_relaxed);
-        if (prepared.terrain && !stopping()) {
+        if (prepared.terrain && prepared.terrain->grassTileCount() != 0 && !stopping()) {
             try {
                 prepared.grass = decodeTerrainGrass(terrainPath);
             } catch (const std::exception& grassError) {
@@ -1586,6 +1596,9 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         assets = prepare();
     }
     if (!assets.terrainError.empty()) warnResource("Terrain", terrainPath, assets.terrainError);
+    if (!assets.terrainMaterialError.empty()) {
+        warnResource("Terrain material library", terrainPath, assets.terrainMaterialError);
+    }
     if (!assets.grassError.empty()) warnResource("Terrain grass resources", terrainPath / "source", assets.grassError);
     for (auto& [modelPath, entry] : assets.models) {
         if (entry.mesh) discoverModelTextureResources(modelPath, entry);
@@ -1594,6 +1607,27 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
 
     if (incremental) sceneLoadApplying_ = true;
     clearSceneData(false);
+    if (assets.terrainMaterials) {
+        const auto& images = *assets.terrainMaterials;
+        if (!images.missingIds.empty()) {
+            std::cerr << "Terrain material library is missing " << images.missingIds.size() << " IDs:";
+            for (const auto id : images.missingIds) std::cerr << ' ' << static_cast<unsigned>(id);
+            std::cerr << '\n';
+        }
+        if (images.maps.layers != 0) {
+            try {
+                auto albedo = std::make_unique<Texture>(*context_, images.albedo, true, images.albedoColorSpace);
+                auto maps = std::make_unique<Texture>(*context_, images.maps, true, TextureColorSpace::Linear,
+                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false);
+                terrainAlbedoLayers_ = std::move(albedo);
+                terrainMaterialMaps_ = std::move(maps);
+            } catch (const std::exception& error) {
+                warnResource("Terrain material textures", terrainPath, error.what());
+            }
+        }
+        std::cerr << "Terrain material maps: " << assets.terrain->materialTileCount() << " valid, "
+                  << (terrainMaterialMaps_ ? images.maps.layers : 0) << " renderable\n";
+    }
     playerSpawnPosition_ = playerSpawnPosition;
     playerClickToMove_ = sceneClickToMove;
     const auto assemble = [&] {
@@ -1632,7 +1666,10 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         if (assets.terrain) {
             try {
                 physicsWorld_->setTerrain(assets.terrainMesh);
-                appendTerrainToScene(assets.terrainMesh, terrainPath);
+                const std::span<const int> maps = terrainMaterialMaps_ && assets.terrainMaterials
+                    ? std::span<const int>(assets.terrainMaterials->layerForTile) : std::span<const int>{};
+                assets.terrainMesh.selectMaterialTiles(maps);
+                appendTerrainToScene(assets.terrainMesh);
                 assets.terrainMesh = {};
                 if (waterSkipped) markMissingMaterialSlots();
                 appendWaterToScene(assets.waterMesh);

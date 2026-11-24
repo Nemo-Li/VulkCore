@@ -80,9 +80,10 @@ Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encode
     : Texture(context, decodeTexturePixels(encodedData), false, colorSpace, addressMode, addressMode) {}
 
 Texture::Texture(VulkanContext& context, const DecodedTexturePixels& image, bool arrayView,
-                 TextureColorSpace colorSpace, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV)
+                 TextureColorSpace colorSpace, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV,
+                 bool mipmapped)
     : Texture(context, image.rgba, image.width, image.height, arrayView, colorSpace, image.layers,
-              addressModeU, addressModeV) {}
+              addressModeU, addressModeV, mipmapped) {}
 
 Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& rgbaPixels,
                  std::uint32_t width, std::uint32_t height, bool arrayView, TextureColorSpace colorSpace,
@@ -98,7 +99,8 @@ Texture::Texture(
     TextureColorSpace colorSpace,
     std::uint32_t layers,
     VkSamplerAddressMode addressModeU,
-    VkSamplerAddressMode addressModeV
+    VkSamplerAddressMode addressModeV,
+    bool mipmapped
 )
     : context_(context), arrayLayers_(layers), arrayView_(arrayView),
       format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
@@ -117,13 +119,14 @@ Texture::Texture(
         throw std::runtime_error("raw texture data has invalid dimensions");
     }
 
-    uploadRgbaPixels(rgbaPixels.data(), width, height);
+    uploadRgbaPixels(rgbaPixels.data(), width, height, mipmapped);
 }
 
 void Texture::uploadRgbaPixels(
     const std::uint8_t* pixels,
     std::uint32_t width,
-    std::uint32_t height
+    std::uint32_t height,
+    bool mipmapped
 ) {
     if (pixels == nullptr || width == 0 || height == 0) {
         throw std::runtime_error("texture pixels and dimensions must be valid");
@@ -137,7 +140,7 @@ void Texture::uploadRgbaPixels(
 
     mipLevels_ = 1;
     for (std::uint32_t dimension = std::max(width, height);
-         dimension > 1;
+         mipmapped && dimension > 1;
          dimension >>= 1) {
         ++mipLevels_;
     }

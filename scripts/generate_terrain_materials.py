@@ -227,7 +227,7 @@ def image_from(array):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] /
-                        "assets/terrain/textures")
+                        "build/legacy-terrain-textures")
     parser.add_argument("--road-only", action="store_true", help="Regenerate just the ochre road maps")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
