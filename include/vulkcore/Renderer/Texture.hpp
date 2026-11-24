@@ -36,7 +36,9 @@ public:
         std::uint32_t width,
         std::uint32_t height,
         bool arrayView = false,
-        TextureColorSpace colorSpace = TextureColorSpace::Srgb
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb,
+        std::uint32_t layers = 1,
+        VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT
     );
     ~Texture();
 

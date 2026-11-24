@@ -2,6 +2,7 @@
 #include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Renderer/SceneProjection.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 namespace VulkCore {
 namespace {
@@ -534,11 +535,8 @@ void Renderer::createIndexBuffer() {
 
 void Renderer::updateGrassCoverage() {
     if (!terrainScene_) return;
-    const bool followPlayer = playerController_.active() && !roadEditorActive();
-    const glm::vec3 center = followPlayer ? playerController_.position()
-        : cameraPosition_ / modelScale_ + modelCenter_;
-    const float viewPadding = followPlayer ? PlayerController::kCameraDistance : 0.0f;
-    if (grassCoverage_.update(*terrainScene_, {center.x, center.z}, viewPadding)) {
+    const glm::vec3 center = cameraPosition_ / modelScale_ + modelCenter_;
+    if (grassCoverage_.update(*terrainScene_, {center.x, center.z})) {
         ++grassRevision_;
     }
 
@@ -849,7 +847,8 @@ void Renderer::createMaterialTextures() {
     if (terrain != meshData_.materials.end()) {
         const std::filesystem::path terrainTextureDirectory = terrain->texturePath.parent_path();
         static constexpr std::array kLandforms = {
-            "grass", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"
+            // Keep array indices stable. Grass uses the separately bound BFRES pair.
+            "dirt", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"
         };
         const auto loadLayers = [&](const char* suffix, TextureColorSpace colorSpace) {
             std::vector<std::filesystem::path> paths;
@@ -1010,16 +1009,49 @@ void Renderer::applySkyboxTexture(const std::filesystem::path& path) {
     rebuildMaterialResources();
 }
 
-void Renderer::applyGrassGroundTexture(const std::filesystem::path& path) {
-    std::unique_ptr<Texture> texture;
-    if (!path.empty()) {
-        texture = std::make_unique<Texture>(*context_, path,
-            VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
-    }
-    context_->waitIdle();
-    grassGroundTexture_ = std::move(texture);
-    grassGroundTexturePath_ = path;
-    rebuildMaterialResources();
+void Renderer::loadTerrainGrassResources() {
+    const auto source = terrainResourcePath_ / "source";
+    const auto model = source / "Terrain.sbfres";
+    const auto textures = source / "Terrain.Tex.sbfres";
+    // Legacy terrain packs still load. Only archive-backed grass is drawn.
+    if (!std::filesystem::exists(model) && !std::filesystem::exists(textures)) return;
+    SbfresTextureArchive archive;
+    // Open the model/texture pair with the existing BFRES loader. The terrain
+    // grid and blade mesh use VulkCore geometry, not the source draw proxies.
+    loadSbfresMesh(model, textures, {}, false, &archive);
+    const auto entryIndex = [&](std::string_view name) {
+        const auto entries = archive.entries();
+        const auto entry = std::find_if(entries.begin(), entries.end(),
+            [name](const SbfresTextureInfo& info) { return info.name == name; });
+        if (entry == entries.end()) throw std::runtime_error("missing BFRES texture " + std::string(name));
+        return static_cast<std::size_t>(entry - entries.begin());
+    };
+    const auto upload = [&](std::string_view name, std::uint32_t layer, std::uint32_t count,
+                            VkSamplerAddressMode addressMode) {
+        const auto index = entryIndex(name);
+        auto image = archive.decodeLayer(index, layer);
+        for (std::uint32_t n = 1; n < count; ++n) {
+            auto next = archive.decodeLayer(index, layer + n);
+            image.data.insert(image.data.end(), next.data.begin(), next.data.end());
+        }
+        return std::make_unique<Texture>(*context_, image.data, image.width, image.height,
+            count > 1, image.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear, count, addressMode);
+    };
+    constexpr auto repeat = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    // The supplied pack's layer 0 is the ordinary green meadow.
+    constexpr std::uint32_t meadowLayer = 0;
+    TerrainGrassResources resources;
+    resources.groundAlbedo = upload("MaterialAlb", meadowLayer, 1, repeat);
+    resources.groundCombined = upload("MaterialCmb", meadowLayer, 1, repeat);
+    resources.bladeAlbedo = upload("GrassAlb", meadowLayer, 1, clamp);
+    resources.crossAlbedo = upload("GrassCrossAlb", 0, 2, clamp);
+    resources.specular = upload("GrassSpm", meadowLayer, 1, clamp);
+    auto coverage = archive.decodeLayer(entryIndex("GrassCoverAlb"), 0);
+    std::vector<std::uint8_t> red(coverage.data.size() / 4);
+    for (std::size_t i = 0; i < red.size(); ++i) red[i] = coverage.data[i * 4];
+    grassCoverage_.setCoverMask(GrassCoverMask(coverage.width, coverage.height, std::move(red)));
+    terrainGrass_ = std::move(resources);
 }
 
 void Renderer::createParticleTextures() {
@@ -1181,6 +1213,12 @@ void Renderer::createDescriptorSets() {
             bufferInfo.offset = 0;
             bufferInfo.range = sizeof(UniformBufferObject);
 
+            const auto& fragment = meshData_.materials[materialIndex].shaderConfiguration.shader(ShaderStage::Fragment);
+            const bool terrainMaterial = fragment == "shader_terrain.frag";
+            const bool grassMaterial = fragment == "shader_grass.frag";
+            if (terrainMaterial && terrainGrass_.groundCombined) normalTexture = terrainGrass_.groundCombined.get();
+            if (grassMaterial && terrainGrass_.specular) specularTexture = terrainGrass_.specular.get();
+
             const Texture* mask = alphaMaskTextures_[materialIndex].get();
             if (mask == nullptr) mask = fallbackTexture_.get();
             const VkDescriptorImageInfo maskInfo{
@@ -1204,7 +1242,9 @@ void Renderer::createDescriptorSets() {
                 };
             };
             const std::array terrainImageInfos = {
-                layerInfo(terrainAlbedoLayers_), layerInfo(terrainSurfaceLayers_)
+                layerInfo(grassMaterial && terrainGrass_.crossAlbedo
+                    ? terrainGrass_.crossAlbedo : terrainAlbedoLayers_),
+                layerInfo(terrainSurfaceLayers_)
             };
 
             VkDescriptorImageInfo depthImageInfo{};
@@ -1212,9 +1252,11 @@ void Renderer::createDescriptorSets() {
             depthImageInfo.imageView = sceneRenderTargets_[i].depthImageView;
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
-            const Texture& grassGround = grassGroundTexture_ ? *grassGroundTexture_ : *texture;
-            const VkDescriptorImageInfo grassGroundInfo{
-                grassGround.sampler(), grassGround.imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            const Texture* grassAlbedo = grassMaterial ? terrainGrass_.bladeAlbedo.get() :
+                (terrainMaterial ? terrainGrass_.groundAlbedo.get() : nullptr);
+            if (!grassAlbedo) grassAlbedo = texture;
+            const VkDescriptorImageInfo grassAlbedoInfo{
+                grassAlbedo->sampler(), grassAlbedo->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             };
             const auto shadowInfo = sunShadowImageInfo(i);
             std::array<VkWriteDescriptorSet, kMaterialImageBindingCount> descriptorWrites{};
@@ -1228,7 +1270,7 @@ void Renderer::createDescriptorSets() {
             };
             descriptorWrites[8] = {
                 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSets_[descriptorSetIndex],
-                kGrassGroundBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &grassGroundInfo, nullptr, nullptr
+                kTerrainGrassAlbedoBinding, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &grassAlbedoInfo, nullptr, nullptr
             };
             descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[0].dstSet = descriptorSets_[descriptorSetIndex];

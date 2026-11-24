@@ -554,7 +554,7 @@ void Renderer::drawGameOutliner() {
                 for (auto& child : node.children) self(self, child);
             };
             drawParts(drawParts, root);
-            if (grass) select("Grass Ground Texture", EditorSelection::GrassGround);
+            if (grass) select("Grass Ground Material", EditorSelection::GrassGround);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -822,8 +822,11 @@ void Renderer::drawGameInspector() {
                 "%.2f m", ImGuiSliderFlags_AlwaysClamp);
         };
         const auto drawGrassGround = [&] {
-            drawEditorTexture("Ground texture", grassGroundTexturePath_, {},
-                [this](const auto& path) { applyGrassGroundTexture(path); });
+            if (terrainGrass_.groundAlbedo) {
+                ImGui::TextUnformatted("MaterialAlb + MaterialCmb (layer 0)");
+            } else {
+                ImGui::TextDisabled("Terrain grass resources unavailable");
+            }
             if (const auto* terrain = findSceneNodeById(meshData_, kTerrainSceneNodeId)) {
                 drawFirstMaterial(*terrain, "terrain");
             }
@@ -842,6 +845,14 @@ void Renderer::drawGameInspector() {
                 "%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
                 playerController_.setMoveSpeedMultiplier(multiplier);
                 editorDirty_ |= playerController_.moveSpeedMultiplier() != previous;
+            }
+            float cameraDistance = playerController_.cameraFollowDistance().value_or(
+                PlayerController::kDefaultCameraFollowDistance);
+            if (ImGui::SliderFloat("Camera Distance", &cameraDistance,
+                PlayerController::kMinCameraFollowDistance, PlayerController::kMaxCameraFollowDistance,
+                "%.2f m", ImGuiSliderFlags_AlwaysClamp)) {
+                playerController_.setCameraFollowDistance(cameraDistance);
+                editorDirty_ = true;
             }
             return;
         }

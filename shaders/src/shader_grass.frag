@@ -5,15 +5,9 @@
 
 layout(location = 0) in vec2 fragBladeUv;
 layout(location = 1) in vec3 fragNormal;
-layout(location = 2) flat in vec4 fragTint;
-layout(location = 3) in vec3 fragWorldPosition;
-layout(location = 4) flat in float fragLodVisibility;
-layout(location = 5) flat in vec2 fragRoot;
-layout(location = 6) flat in float fragLod;
-layout(location = 7) flat in vec2 fragPalette;
-layout(location = 8) in vec2 fragGroundUv;
-layout(location = 9) in vec3 fragGroundPosition;
-layout(location = 10) flat in vec3 fragGroundNormal;
+layout(location = 2) in vec3 fragWorldPosition;
+layout(location = 3) flat in float fragLod;
+layout(location = 4) flat in float fragVariation;
 
 #include "scene_fog.glsl"
 #include "effect_lighting.glsl"
@@ -22,6 +16,9 @@ layout(location = 10) flat in vec3 fragGroundNormal;
 #include "sun_shadow_coverage.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
+layout(set = 0, binding = 4) uniform sampler2D grassSpecular;
+layout(set = 0, binding = 6) uniform sampler2DArray grassCrossAlbedo;
+layout(set = 0, binding = 9) uniform sampler2D grassBladeAlbedo;
 
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
@@ -35,10 +32,6 @@ layout(push_constant) uniform MaterialPushConstants {
 } material;
 
 SUN_SHADOW_OUTPUT
-
-float bladeDither(vec2 root) {
-    return fract(sin(dot(root, vec2(12.9898, 78.233))) * 43758.5453);
-}
 
 vec3 yellowFlower(vec2 uv) {
     // 在交叉卡片的局部 UV 中，用拉伸、旋转的椭圆拼出花瓣、花托和叶子，曲线阈值裁出茎。
@@ -65,17 +58,12 @@ vec3 yellowFlower(vec2 uv) {
 
 void main() {
     vec3 shadowNormal = sunReceiverNormal(fragWorldPosition);
-    // 根位置的哈希为整株提供固定阈值，随相机移动只改变可见株数。
-    // 与顶点下沉配合，保持保留下来的草叶完整，并避免逐像素网点和半透明排序。
-    float dither = bladeDither(fragRoot);
-    if (fragLodVisibility <= dither) {
-        discard;
-    }
-
     bool nearBlade = fragLod < 0.5;
-    bool smallYellowFlower = fragLod > 3.5; // 对应 GrassLod::YellowFlowerCard（4）。
+    bool crossCard = fragLod > 0.5 && fragLod < 1.5;
+    bool smallYellowFlower = fragLod > 3.5; // GrassLod::YellowFlowerCard
     float bladeHeight = clamp(fragBladeUv.y, 0.0, 1.0);
-    float variation = fragPalette.x;
+    vec2 uv = vec2(fragBladeUv.x, 1.0 - bladeHeight);
+    float variation = fragVariation;
     vec3 viewRay = ubo.cameraPosition.xyz - fragWorldPosition;
     vec3 normal = normalize(fragNormal);
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
@@ -87,47 +75,27 @@ void main() {
     vec3 ambient = max(ubo.ambientLight.rgb, vec3(0.0)) * max(ubo.ambientLight.a, 0.0);
     vec3 sunlight = max(ubo.sunLightColor.rgb, vec3(0.0)) * max(ubo.sunLightDirection.w, 0.0);
 
-    if (nearBlade) {
-        vec3 bladeTexture = vec3(1.0);
-        if ((material.textureFlags & 1u) != 0u) {
-            vec4 blade = texture(textureSampler, vec2(fragBladeUv.x, 1.0 - bladeHeight));
-            if (blade.a < 0.5) discard;
-            bladeTexture = blade.rgb;
+    if (nearBlade || crossCard) {
+        vec3 albedo;
+        if (crossCard) {
+            // Each tuft's two cards share the same variety and alpha cutoff.
+            vec4 sampleColor = texture(grassCrossAlbedo, vec3(uv, step(0.5, variation)));
+            if (sampleColor.a < 0.45) discard;
+            albedo = sampleColor.rgb;
+        } else {
+            albedo = texture(grassBladeAlbedo, uv).rgb;
         }
-        float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
-        float groundDistance = length((fragGroundPosition - ubo.cameraPosition.xyz).xz) / sceneScale;
-        float detail = meadowBladeDetail(groundDistance, material.waterFlow.z);
-        vec3 groundNormal = normalize(fragGroundNormal);
-        vec3 shadedPosition = mix(fragGroundPosition, fragWorldPosition, detail);
-        vec3 alignedShadowNormal = dot(shadowNormal, groundNormal) < 0.0 ? -shadowNormal : shadowNormal;
-        vec3 receiverNormal = normalize(mix(groundNormal, alignedShadowNormal, detail));
-        sunlight *= sunVisibility(shadedPosition, receiverNormal);
-        ambient += effectPointLighting(shadedPosition, groundNormal);
-        vec3 color = vec3(0.0);
-        if (detail > 0.0) {
-            vec3 tint = vec3(0.192, 0.365, 0.075);
-            if (fragTint.a > 0.5) {
-                // 将导入色解码至线性 RGB，保留地图给草叶指定的局部色相。
-                vec3 rgb = fragTint.rgb;
-                vec3 linearTint = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)),
-                                      greaterThan(rgb, vec3(0.04045)));
-                tint = mix(tint, linearTint * vec3(0.64, 0.74, 0.65), 0.65);
-            }
-            float coolGreen = smoothstep(0.74, 0.97, fragPalette.y);
-            tint *= mix(vec3(1.0), vec3(0.81, 0.93, 0.65), coolGreen);
-            float tipLight = smoothstep(0.03, 0.94, bladeHeight);
-            float shade = mix(0.68, 1.12, tipLight) * mix(0.82, 1.16, variation) * mix(0.96, 1.02, fragBladeUv.x);
-            float diffuse = mix(0.22, 0.78, meadowDiffuse(facing));
-            vec3 lighting = ambient + sunlight * (diffuse + (backLight + rim) * 0.35);
-            color += detail * tint * shade * bladeTexture * material.baseColor.rgb * lighting;
-        }
-        if (detail < 1.0) {
-            vec3 groundAlbedo = (material.textureFlags & kGrassGroundTexture) != 0u
-                ? meadowGroundAlbedo(fragGroundUv, groundDistance, material.waterFlow.zw) : kMeadowAlbedo;
-            vec3 groundLight = meadowGroundLighting(dot(groundNormal, lightDirection), ambient, sunlight);
-            color += (1.0 - detail) * meadowGroundTint(groundAlbedo, detail) * groundLight;
-        }
-        SUN_SHADOW_COLOR(vec4(applySceneFog(color, sceneFogAt(shadedPosition, true)), material.opacity));
+
+        vec3 groundFacingNormal = dot(shadowNormal, normal) < 0.0 ? -shadowNormal : shadowNormal;
+        sunlight *= sunVisibility(fragWorldPosition, normalize(mix(normal, groundFacingNormal, 0.23)));
+        ambient += effectPointLighting(fragWorldPosition, normal);
+        float diffuse = mix(0.25, 0.84, meadowDiffuse(facing));
+        vec3 halfDirection = normalize(lightDirection + viewDirection);
+        float specularMask = texture(grassSpecular, vec2(crossCard ? 0.5 : uv.x, uv.y)).r;
+        float specular = specularMask * pow(max(dot(normal, halfDirection), 0.0), 28.0) * 0.052;
+        vec3 lighting = ambient + sunlight * (diffuse + (backLight + rim) * 0.35);
+        vec3 color = albedo * kMeadowTextureExposure * material.baseColor.rgb * lighting + sunlight * specular;
+        SUN_SHADOW_COLOR(vec4(applySceneFog(color, sceneFogAt(fragWorldPosition, true)), material.opacity));
         return;
     }
 
@@ -136,7 +104,7 @@ void main() {
         albedo = yellowFlower(fragBladeUv) * mix(0.97, 1.03, variation);
     } else {
         if ((material.textureFlags & 1u) == 0u) discard;
-        vec4 flower = texture(textureSampler, vec2(fragBladeUv.x, 1.0 - bladeHeight));
+        vec4 flower = texture(textureSampler, uv);
         if (flower.a < 0.54) discard;
         albedo = flower.rgb * mix(0.94, 1.04, variation);
     }

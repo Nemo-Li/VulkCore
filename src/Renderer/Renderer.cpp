@@ -111,7 +111,7 @@ Renderer::~Renderer() {
     fallbackTerrainLayers_.reset();
     particleTextures_.clear();
     skyboxTexture_.reset();
-    grassGroundTexture_.reset();
+    terrainGrass_ = {};
     fallbackTexture_.reset();
     fallbackNormalTexture_.reset();
     indexBuffer_.reset();

@@ -218,7 +218,7 @@ private:
     void applyEditorShader();
     std::filesystem::path defaultSkyboxPath() const;
     void applySkyboxTexture(const std::filesystem::path& path);
-    void applyGrassGroundTexture(const std::filesystem::path& path);
+    void loadTerrainGrassResources();
     void loadResourceSettings();
     void loadTransformSettings(
         std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max()
@@ -567,9 +567,14 @@ private:
     std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
-    std::unique_ptr<Texture> grassGroundTexture_;
+    struct TerrainGrassResources {
+        std::unique_ptr<Texture> groundAlbedo;
+        std::unique_ptr<Texture> groundCombined;
+        std::unique_ptr<Texture> bladeAlbedo;
+        std::unique_ptr<Texture> crossAlbedo;
+        std::unique_ptr<Texture> specular;
+    } terrainGrass_;
     std::filesystem::path skyboxTexturePath_;
-    std::filesystem::path grassGroundTexturePath_;
     bool skyboxEnabled_ = false;
     float grassHeightScale_ = 1.0f;
     GrassGrowthSettings grassGrowth_;

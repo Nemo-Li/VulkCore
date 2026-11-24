@@ -4,12 +4,11 @@
 // 草叶和花卡的实例化顶点阶段。从少量实例属性重建轮廓、风动和踩踏。
 
 // 与 CPU GrassInstance 对应。xyz 分别保存根位置和地表法线。
-// w 分别保存高度和宽度参数，草叶存随机种子，花卡存实际宽度。
-// motion 为朝向角、倾斜随机值、风相位、染色变化。tint.a 标记是否有地表导入颜色。
+// w 分别保存高度和宽度参数，草叶存随机种子，卡片存实际宽度。
+// motion 为朝向角、倾斜随机值、风相位和形状变化。
 layout(location = 0) in vec4 inRootHeight;
 layout(location = 1) in vec4 inNormalWidth;
 layout(location = 2) in vec4 inMotion;
-layout(location = 3) in vec4 inTint;
 
 #include "scene_frame.glsl"
 #include "terrain_road_weights.glsl"
@@ -27,16 +26,9 @@ layout(push_constant) uniform MaterialPushConstants {
 
 layout(location = 0) out vec2 fragBladeUv;
 layout(location = 1) out vec3 fragNormal;
-layout(location = 2) flat out vec4 fragTint;
-layout(location = 3) out vec3 fragWorldPosition;
-// 逐实例数据保持 flat，使整个图元共用同一个可见性、随机种子和材质分支。
-layout(location = 4) flat out float fragLodVisibility;
-layout(location = 5) flat out vec2 fragRoot;
-layout(location = 6) flat out float fragLod;
-layout(location = 7) flat out vec2 fragPalette;
-layout(location = 8) out vec2 fragGroundUv;
-layout(location = 9) out vec3 fragGroundPosition;
-layout(location = 10) flat out vec3 fragGroundNormal;
+layout(location = 2) out vec3 fragWorldPosition;
+layout(location = 3) flat out float fragLod;
+layout(location = 4) flat out float fragVariation;
 
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
@@ -57,11 +49,31 @@ vec2 growthNoise(vec2 position) {
     return mix(lower, upper, t.y);
 }
 
+float bladeDither(vec2 root) {
+    return fract(sin(dot(root, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
 void main() {
     // waterSurface 分别保存高度倍率、最小和最大倾斜弧度、GrassLod。
     float lod = material.waterSurface.w;
     bool nearBlade = lod < 0.5;
+    bool crossCard = lod > 0.5 && lod < 1.5;
+    bool vegetation = nearBlade || crossCard;
     vec3 root = inRootHeight.xyz;
+    mat4 model = ubo.model * material.nodeTransform;
+    float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
+    vec3 rootScene = (model * vec4(root, 1.0)).xyz;
+    vec3 cameraDelta = ubo.cameraPosition.xyz - rootScene;
+    float distanceWorld = (vegetation ? length(cameraDelta) : length(cameraDelta.xz)) / sceneScale;
+    vec4 fade = material.waterFlow;
+    float fadeIn = crossCard ? smoothstep(fade.x, fade.y, distanceWorld) : 1.0;
+    float fadeOut = 1.0 - smoothstep(fade.z, fade.w, distanceWorld);
+    float visibility = fadeIn * fadeOut;
+    float dither = bladeDither(root.xz);
+    // Reject invisible instances before doing wind and growth work for each vertex.
+    gl_Position = vec4(0.0, 0.0, -1.0, 1.0);
+    if (visibility <= dither) return;
+
     vec3 rootNormal = inNormalWidth.xyz;
     float yaw = inMotion.x;
     vec3 right = vec3(cos(yaw), 0.0, sin(yaw));
@@ -79,13 +91,14 @@ void main() {
     // original grass height as the painted dirt fades out.
     float ochreVergeStrength = min(1.0, 2.0 * dirtRatio);
     float shortGrass;
-    vec3 roads = terrainRoadWeights(root.xz, nearBlade, ochreVergeStrength, shortGrass);
+    vec3 roads = terrainRoadWeights(root.xz, vegetation, ochreVergeStrength, shortGrass);
     float ochreGrass = 1.0 - dirtRatio;
-    if (nearBlade && roads.x > 0.0 && dirtRatio > 0.0 && dirtRatio < 1.0) {
+    if (vegetation && roads.x > 0.0 && dirtRatio > 0.0 && dirtRatio < 1.0) {
         float tuft = smoothstep(0.42, 0.82, roadGrassClusters(root.xz));
         ochreGrass += (tuft - 0.5) * (2.0 * min(dirtRatio, 1.0 - dirtRatio));
     }
     float roadVisibility = 1.0 - clamp(dot(roads, vec3(1.0 - ochreGrass, 1.0, 1.0)), 0.0, 1.0);
+    if (visibility * roadVisibility <= dither) return;
     float shortHeight = mix(0.085, 0.22, inMotion.y);
     float bladeHeight = mix(sourceHeight, min(sourceHeight, shortHeight), shortGrass);
     float width = inNormalWidth.w;
@@ -94,6 +107,7 @@ void main() {
         baseWidth = mix(baseWidth, min(baseWidth, mix(0.018, 0.036, width)), shortGrass);
         width = baseWidth * (1.0 - 0.62 * heightWeight);
     }
+    if (crossCard) width *= mix(1.0, 0.36, shortGrass);
     float twist = nearBlade ? (inMotion.w - 0.5) * 0.58 * heightWeight : 0.0;
     vec3 widthAxis = right * cos(twist) + forward * sin(twist);
     vec3 growthOffset = rootNormal * heightWeight;
@@ -119,9 +133,6 @@ void main() {
         vec2(-0.57, 0.82) * detailWave * 0.013;
     localPosition.xz += windOffset * (bladeHeight * bendWeight);
 
-    mat4 model = ubo.model * material.nodeTransform;
-    float sceneScale = max(abs(ubo.cameraPosition.w), 0.000001);
-    vec3 rootScene = (model * vec4(root, 1.0)).xyz;
     // 玩家与草根都在归一化场景空间。把原始场景的踩踏半径换到同一空间再比较。
     vec2 playerDeltaScene = rootScene.xz - ubo.playerPosition.xz;
     float playerDistanceScene = length(playerDeltaScene);
@@ -142,36 +153,13 @@ void main() {
     localPosition.xz += trampleDirection * interaction * bendWeight * (nearBlade ? 0.30 : 0.18) * trampleStrength;
     localPosition.y -= interaction * bendWeight * 0.14 * trampleStrength;
 
-    // LOD 采用原始场景单位的水平距离，与地表草纹理的切换尺度一致。
-    // 草叶复用 waterFlow.x 传入噪声频率。花卡保留 xy 淡入区间，zw 始终是淡出区间。
-    float distanceWorld = distance(ubo.cameraPosition.xz, rootScene.xz) / sceneScale;
-    vec4 fade = material.waterFlow;
-    float fadeIn = !nearBlade && fade.y > fade.x ? smoothstep(fade.x, fade.y, distanceWorld) : 1.0;
-    float visibility = fadeIn * (1.0 - smoothstep(fade.z, fade.w, distanceWorld));
-
-    // 草叶随淡出下沉，再由片元阶段按整株淘汰，让轮廓过渡更平滑。可见性为零时移到近裁剪面外。
-    localPosition.y -= (1.0 - visibility) * mix(inRootHeight.w, bladeHeight, shortGrass) * 0.65;
-    float bladeVisibility = visibility * clamp(roadVisibility, 0.0, 1.0);
-    vec3 worldPosition = (model * vec4(localPosition, 1.0)).xyz;
-    gl_Position = bladeVisibility > 0.0
-        ? ubo.projection * ubo.view * vec4(worldPosition, 1.0)
-        : vec4(0.0, 0.0, -1.0, 1.0);
+    localPosition.y -= (1.0 - fadeOut) * bladeHeight * 0.52;
+    fragWorldPosition = (model * vec4(localPosition, 1.0)).xyz;
+    gl_Position = ubo.projection * ubo.view * vec4(fragWorldPosition, 1.0);
 
     mat3 normalMatrix = transpose(inverse(mat3(model)));
     fragBladeUv = vec2(side * 0.5 + 0.5, heightWeight);
-    // 用前向与地表法线混合近似草叶的受光方向，让草丛与下方地表的亮度更接近。
-    fragNormal = normalize(normalMatrix * mix(forward, rootNormal, nearBlade ? 0.90 : 0.68));
-    fragTint = inTint;
-    fragWorldPosition = worldPosition;
-    fragLodVisibility = bladeVisibility;
-    fragRoot = root.xz;
+    fragNormal = normalize(normalMatrix * mix(forward, rootNormal, vegetation ? 0.88 : 0.68));
     fragLod = lod;
-    fragPalette = inMotion.wz; // 草丛和叶片的深浅变化、逐叶颜色种子。
-    // 把叶片投回草根处的地表切平面，使倾斜和风动后的颜色仍与下方地面衔接。
-    vec2 groundUv = localPosition.xz;
-    float groundHeight = root.y - 0.012 -
-        dot(rootNormal.xz, groundUv - root.xz) / max(rootNormal.y, 0.35);
-    fragGroundUv = groundUv;
-    fragGroundPosition = (model * vec4(groundUv.x, groundHeight, groundUv.y, 1.0)).xyz;
-    fragGroundNormal = normalize(normalMatrix * rootNormal);
+    fragVariation = inMotion.w;
 }

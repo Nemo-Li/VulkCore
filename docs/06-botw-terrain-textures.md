@@ -1,6 +1,6 @@
 # 地形材质与分距离渲染
 
-参考截图中的浅绿草甸、暖赭色裸土、层状岩壁及冷蓝远山用于校准色调与细节尺度。地形材质数组使用程序生成的色块与细节。`scenes/game.scene` 的近景地表草由 `grass_settings` 指定，草叶与地表共用采样和光照。
+参考截图中的浅绿草甸、暖赭色裸土、层状岩壁及冷蓝远山用于校准色调与细节尺度。岩土等地形使用程序生成的材质。草地地表使用 `assets/terrain/source/` 中 `MaterialAlb` 和 `MaterialCmb` 的第 0 层，植被使用同一资源包中的草叶、覆盖图和草片。
 
 ## 参考图分析与改进方向
 
@@ -44,7 +44,7 @@
 | 用途 | 条目 |
 | --- | --- |
 | 水面和地平线 | `WaterAlb`、`WaterNrm`、`WaterEmm`。水材质分别绑定底色、法线和自发光相关槽位，`Horizon` 引用后两项。 |
-| 草 | `GrassAlb`、`GrassCoverAlb`、`GrassCrossAlb`、`GrassSpm`。本样本的材质表引用前三项，`GrassSpm` 的运行时用途待确认。 |
+| 草 | `GrassAlb`、`GrassCoverAlb`、`GrassCrossAlb`、`GrassSpm`。本项目将前三项分别用于近景底色、草根覆盖和中景卡片，以 `GrassSpm` 调制植被高光。 |
 | 花与地表小物件 | `FlowerCrossAlb`、`FlowerFallenLeavesAlb`、`FlowerLongAlb`、`FlowerNormalAlb`、`FlowerPetalAlb`、`FlowerStoneAlb`、`FlowerShellAlb`、`FlowerChipsAlb`。 |
 | 树 | `Tree0Alb`、`Tree0NrmTrs`、`Tree1Alb`、`Tree1NrmTrs`、`TreeDitherMask`。两对树贴图分别有 100 层和 49 层，另有一张抖动遮罩。 |
 
@@ -65,7 +65,7 @@ VulkCore 的地形着色器已有 `sampler2DArray` 绑定，当前从项目生�
 | 范围（地形世界单位） | 采样方式 |
 | --- | --- |
 | 近景，到约 150 | 三平面投影覆盖陡坡和平台。八种材质采用三角网格随机采样，每个节点固定随机偏移、旋转和缩放。相邻三角形共享边上的采样点，权重连续地混合。法线和 AO 共用底色的投影，其中法线梯度转换回原投影空间。法线和 AO 在 28 至 110 单位间淡出，岩石的细节层延长至 280 单位。 |
-| 中景，150 至 520 | 根据距离平滑混合细节与低频颜色。地表草地与近处草叶共用绿色底色，从约 45 单位起逐步褪绿，保留底色纹理的明暗。显式纹理梯度保留正确的 Mip，较大的像素覆盖范围会进一步削弱细节，尤其是以小角度掠过地面的视线。 |
+| 中景，150 至 520 | 根据距离平滑混合岩土细节与低频颜色。草地继续采样 `MaterialAlb`，由 mip 滤波保留低频色彩。显式纹理梯度保留正确的 Mip，较大的像素覆盖范围会进一步削弱细节，尤其是以小角度掠过地面的视线。 |
 | 远景，520 之后 | 按权重混合底色和宏观控制。低频岩板三平面采样保留断续的岩块与遮蔽。两个不同尺度的海拔色带沿山体延伸，色差和法线按像素足迹衰减，减弱高频闪烁。距离雾及山谷浮雾降低远景对比度，背光岩面叠加冷色天空光。 |
 
 按投影轴复用随机变换，裁掉低权重的材质、投影轴和三角网格样本。远景的岩石使用较低频的纹理采样，其他材质使用底色和程序变化。细节数组和全图控制图使用 Vulkan RGBA8 时，包含完整 Mip 的常驻图像约为 26.7 MiB。使用全图控制图的纹理数组路径复用材质底色描述符。
@@ -84,7 +84,7 @@ VulkCore 的地形着色器已有 `sampler2DArray` 绑定，当前从项目生�
 python3 scripts/generate_terrain_materials.py
 ```
 
-脚本使用固定随机种子。用 `--output /path/to/textures` 生成到单独的目录。更新土壤和岩石时，将 `terrain_dirt.png`、`terrain_rock.png`、对应的 `_surface.png` 和同步生成的图集复制回项目。场景当前单独使用 `terrain_grass.png` 作为近景地表草纹理，更新岩土时可保留该文件。更改底色配方后，同步更新 `shader_terrain.frag` 的 `kLandformAverages`，保持远近颜色的过渡。`vulkcore_terrain_smoke` 检查整图 UV 跨瓦片的连续性。
+脚本使用固定随机种子。用 `--output /path/to/textures` 生成到单独的目录。更新土壤和岩石时，将 `terrain_dirt.png`、`terrain_rock.png`、对应的 `_surface.png` 和同步生成的图集复制回项目。场景的草地底色与表面纹理从地形档案加载。更改底色配方后，同步更新 `shader_terrain.frag` 的 `kLandformAverages`，保持远近颜色的过渡。`vulkcore_terrain_smoke` 检查整图 UV 跨瓦片的连续性。
 
 ```bash
 ./build/vulkcore --scene scenes/game.scene --hide-ui

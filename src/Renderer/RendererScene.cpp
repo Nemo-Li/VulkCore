@@ -230,6 +230,7 @@ void Renderer::initializeEmptyScene() {
     enemyPatrols_.clear();
     terrainScene_.reset();
     grassCoverage_ = {};
+    terrainGrass_ = {};
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
     playerController_.clear();
@@ -589,7 +590,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
     grassNode.boundsMaximum = terrain.boundsMaximum();
 
     constexpr std::array<const char*, kGrassLods.size()> lodNames{
-        "LOD0 Near Curved Blades", "Wildflower Cross Cards", "Small Yellow Flowers"
+        "LOD0 Near Curved Blades", "LOD1 Grass Cross Cards", "Wildflower Cross Cards", "Small Yellow Flowers"
     };
     for (std::size_t layer = 0; layer < lodNames.size(); ++layer) {
         const auto lod = kGrassLods[layer];
@@ -601,7 +602,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
         node.meshPartIndices.push_back(static_cast<std::uint32_t>(meshData_.parts.size()));
         // Both flower layers use the existing material slot. Only the original
         // layer samples its texture, and saved material indices stay stable.
-        const auto material = lod == GrassLod::NearMesh ? grassMaterial : flowerMaterial;
+        const auto material = isGrassVegetation(lod) ? grassMaterial : flowerMaterial;
         // Each layer has a regular scene part for material/visibility controls.
         // Its instance ranges live outside the shared scene mesh.
         meshData_.parts.push_back({0, 0, material, node.nodeId});
@@ -730,8 +731,6 @@ void Renderer::clearSceneData() {
 #endif
     skyboxEnabled_ = false;
     skyboxTexturePath_.clear();
-    grassGroundTexturePath_.clear();
-    grassGroundTexture_.reset();
     grassHeightScale_ = 1.0f;
     grassGrowth_ = {};
     cameraPosition_ = {0.0f, 0.0f, 4.0f};
@@ -1198,12 +1197,12 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     bool sceneHasSun = false;
     std::optional<bool> sceneHasSkybox;
     std::string skyboxImage;
-    std::string grassGroundImage;
     float grassHeightScale = 1.0f;
     GrassGrowthSettings grassGrowth;
     bool sceneHasPlayer = true;
     bool sceneClickToMove = false;
     float playerMoveSpeedMultiplier = PlayerController::kDefaultMoveSpeedMultiplier;
+    std::optional<float> playerCameraFollowDistance;
     RoadPaint savedRoadPaint;
     float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
@@ -1344,6 +1343,16 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 sceneStatus_ = "Scene file has an invalid player move speed multiplier.";
                 return false;
             }
+        } else if (key == "player_camera_follow_distance") {
+            float distance = 0.0f;
+            if (!(sceneFile >> distance) || !std::isfinite(distance) ||
+                distance < PlayerController::kMinCameraFollowDistance ||
+                distance > PlayerController::kMaxCameraFollowDistance) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player camera follow distance.";
+                return false;
+            }
+            playerCameraFollowDistance = distance;
         } else if (key == "player_spawn_position") {
             glm::vec3 configuredPosition(0.0f);
             if (!(sceneFile >> configuredPosition.x >> configuredPosition.y >> configuredPosition.z) ||
@@ -1365,7 +1374,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             }
             sceneHasSkybox = enabled != 0;
         } else if (key == "grass_settings") {
-            if (!(sceneFile >> grassHeightScale >> std::quoted(grassGroundImage)) ||
+            std::string legacyGroundImage;
+            if (!(sceneFile >> grassHeightScale >> std::quoted(legacyGroundImage)) ||
                 !std::isfinite(grassHeightScale) || grassHeightScale < 0.25f ||
                 grassHeightScale > 3.0f) {
                 sceneStatusFailed_ = true;
@@ -1519,6 +1529,11 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             ochreDirtRatio_ = savedOchreDirtRatio;
             terrainResourcePath_ = terrainPath;
             waterResourcePath_ = waterPath;
+            try {
+                loadTerrainGrassResources();
+            } catch (const std::exception& error) {
+                warnResource("Terrain grass resources", terrainPath / "source", error.what());
+            }
             if (sceneHasPlayer) {
 #ifdef VULKCORE_OHOS
                 constexpr bool useClickToMove = false;
@@ -1527,6 +1542,9 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
 #endif
                 playerController_.reset(*terrainScene_, *physicsWorld_, playerSpawnPosition_, useClickToMove);
                 playerController_.setMoveSpeedMultiplier(playerMoveSpeedMultiplier);
+                if (playerCameraFollowDistance) {
+                    playerController_.setCameraFollowDistance(*playerCameraFollowDistance);
+                }
                 if (playerModelPath.empty()) {
                     appendPlayerToScene();
                 } else if (playerModelMissing) {
@@ -1572,7 +1590,6 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             normalizedPath(resolvedScenePath.parent_path() / std::filesystem::path(std::u8string(image.begin(), image.end())));
     };
     skyboxTexturePath_ = sceneImagePath(skyboxImage);
-    grassGroundTexturePath_ = sceneImagePath(grassGroundImage);
     if (skyboxEnabled_) {
         createSkyboxTexture();
         if (!skyboxTexture_) {
@@ -1581,14 +1598,6 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         }
     } else {
         skyboxTexture_.reset();
-    }
-    if (!grassGroundTexturePath_.empty()) {
-        try {
-            grassGroundTexture_ = std::make_unique<Texture>(*context_, grassGroundTexturePath_,
-                VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
-        } catch (const std::exception& textureError) {
-            warnResource("Grass ground texture", grassGroundTexturePath_, textureError.what());
-        }
     }
     loadTransformSettings(firstUnmappedMaterial);
     for (auto& material : meshData_.materials) {
@@ -2639,8 +2648,7 @@ bool Renderer::saveTransformSettings() const {
     file << "skybox " << skyboxEnabled_ << ' '
          << std::quoted(sceneReference(skyboxTexturePath_)) << '\n';
     if (terrainScene_) {
-        file << "grass_settings " << grassHeightScale_ << ' '
-             << std::quoted(sceneReference(grassGroundTexturePath_)) << '\n'
+        file << "grass_settings " << grassHeightScale_ << " \"\"\n"
              << "grass_growth " << grassGrowth_.minimumTilt << ' '
              << grassGrowth_.maximumTilt << ' ' << grassGrowth_.noiseSize << '\n'
              << "grass_blade_width " << grassGrowth_.minimumBladeWidth << ' '
@@ -2663,6 +2671,9 @@ bool Renderer::saveTransformSettings() const {
         if (playerClickToMove_) file << "player_click_to_move 1\n";
         if (playerController_.active()) {
             file << "player_move_speed_multiplier " << playerController_.moveSpeedMultiplier() << '\n';
+            if (const auto distance = playerController_.cameraFollowDistance()) {
+                file << "player_camera_follow_distance " << *distance << '\n';
+            }
         }
         if (playerSpawnPosition_.has_value()) {
             file << "player_spawn_position " << playerSpawnPosition_->x << ' '

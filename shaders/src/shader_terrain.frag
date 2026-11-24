@@ -18,7 +18,9 @@ layout(location = 5) in vec4 fragTerrainMapping;
 #include "terrain_road_weights.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D textureSampler;
+layout(set = 0, binding = 3) uniform sampler2D grassGroundCombined;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
+layout(set = 0, binding = 9) uniform sampler2D grassGroundAlbedo;
 layout(set = 0, binding = 7) uniform sampler2DArray surfaceLayers;
 
 layout(push_constant) uniform MaterialPushConstants {
@@ -38,6 +40,7 @@ const int kLandformCount = 8;
 const uint kAlbedoLayers = 8u;
 const uint kSurfaceLayers = 16u;
 const uint kMacroTexture = 32u;
+const uint kTerrainGrassTexture = 64u;
 const int kGrassLayer = 0;
 const int kDirtLayer = 1;
 const int kRockLayer = 2;
@@ -56,13 +59,6 @@ const vec3 kLandformAverages[kLandformCount] = vec3[kLandformCount](
     vec3(0.627, 0.731, 0.765), vec3(0.170, 0.130, 0.063),
     vec3(0.316, 0.283, 0.191), vec3(0.173, 0.125, 0.102)
 );
-const vec3 kGrassArrayAverage = vec3(0.463, 0.602, 0.199);
-// 远景草色取自线性色样，并按场景光照和雾调节强度。
-const vec3 kDistantGrassDark = vec3(0.29, 0.40, 0.145);
-const vec3 kDistantGrassLight = vec3(0.36, 0.49, 0.190);
-const vec3 kFarMeadowAlbedo = vec3(0.26, 0.39, 0.16);
-const vec3 kLuminance = vec3(0.2126, 0.7152, 0.0722);
-
 float hash21(vec2 cell) {
     vec3 p = fract(vec3(cell.xyx) * 0.1031);
     p += dot(p, p.yzx + 33.33);
@@ -87,14 +83,6 @@ vec3 valueNoiseWithGradient(vec2 position) {
 
 float valueNoise(vec2 position) {
     return valueNoiseWithGradient(position).x;
-}
-
-vec3 distantGrassNoise(vec2 groundPosition, float footprint, float cellSize) {
-    // 用屏幕像素的地形足迹估计纹理频率。图案趋近亚像素时一起淡出色差和法线扰动。
-    float visibility = 1.0 - smoothstep(0.30, 0.85, footprint / cellSize);
-    if (visibility <= 0.0) return vec3(0.0);
-    vec3 noise = valueNoiseWithGradient(groundPosition / cellSize);
-    return (noise - vec3(0.5, 0.0, 0.0)) * visibility;
 }
 
 // 在逐像素分支和 UV 折返之前保存梯度，使 textureGrad 获得连续的像素足迹。
@@ -339,7 +327,7 @@ void main() {
     float detailWeight = (1.0 - distanceFade) * (1.0 - smoothstep(0.7, 3.0, footprint));
     float gradientScale = mix(1.0, 2.2, distanceFade);
     bool hasAlbedo = (material.textureFlags & kAlbedoLayers) != 0u;
-    bool hasGrassGround = (material.textureFlags & kGrassGroundTexture) != 0u;
+    bool hasGrassGround = (material.textureFlags & kTerrainGrassTexture) != 0u;
     // binding 1 为兼容路径提供图集，也可在数组层可用时承担整片地形的控制图。
     bool hasMacro = (material.textureFlags & kMacroTexture) != 0u;
     Projection projections[3] = Projection[3](
@@ -473,28 +461,28 @@ void main() {
         rockVisibility = 1.0 - rock * visibility * min(0.36, cavity * 1.65);
     }
 
-    // 程序草提供地表草贴图淡出后的底色和中尺度凹凸，并在最远处收敛到低对比颜色。
-    float grassGroundDistance = length(cameraRay.xz);
-    float paleMeadow = smoothstep(45.0, 235.0, distanceWorld);
-    float farMeadow = smoothstep(245.0, 980.0, hasGrassGround ? grassGroundDistance : distanceWorld);
-    vec3 grassAlbedo = kMeadowAlbedo;
-    vec3 distantGrassBump = vec3(0.0);
-    if (grass > 0.0 && paleMeadow > 0.0) {
-        vec3 patches = distantGrassNoise(groundPosition, footprint, 24.0);
-        vec3 grain = distantGrassNoise(groundPosition + vec2(37.5, -16.0), footprint, 7.5);
-        float shade = clamp(0.5 + 0.36 * (vegetation - 0.5) + patches.x + 0.55 * grain.x, 0.0, 1.0);
-        vec3 paleGrass = mix(kDistantGrassDark, kDistantGrassLight, shade);
-        vec3 distantGrass = mix(paleGrass, kFarMeadowAlbedo, farMeadow) * (1.0 + 0.14 * grain.x);
-        grassAlbedo = mix(kMeadowAlbedo, distantGrass, paleMeadow);
-        vec2 bump = -(0.05 * patches.yz + 0.11 * grain.yz);
-        distantGrassBump = vec3(bump.x, 0.0, bump.y) * (grass * paleMeadow);
-    }
-
-    vec2 grassFadeRange = material.waterFlow.zw;
-    if (hasGrassGround && grass > 0.0 && farMeadow < 1.0) {
-        vec3 authoredGrass = meadowGroundAlbedo(groundPosition, grassGroundDistance, grassFadeRange);
-        grassAlbedo = mix(authoredGrass, grassAlbedo, farMeadow);
-        distantGrassBump *= farMeadow;
+    // The meadow has its own matched albedo and surface maps at every distance.
+    // Take gradients from the unwrapped planar projection for stable mip selection.
+    const float meadowUvScale = 1.0 / 5.0;
+    vec2 meadowUv = groundPosition * meadowUvScale;
+    vec2 meadowDx = roadProjection.dx * meadowUvScale;
+    vec2 meadowDy = roadProjection.dy * meadowUvScale;
+    vec3 grassAlbedo = kLandformAverages[kGrassLayer];
+    vec3 grassBump = vec3(0.0);
+    float grassSpecular = 0.0;
+    if (hasGrassGround && grass > 0.0) {
+        grassAlbedo = textureGrad(grassGroundAlbedo, meadowUv, meadowDx, meadowDy).rgb *
+            kMeadowTextureExposure;
+        float surfaceWeight = 1.0 - smoothstep(32.0, 130.0, distanceWorld);
+        if (surfaceWeight > 0.0) {
+            // MaterialCmb stores tangent XY in RG. B is a specular mask, also
+            // swizzled to A by the archive. It is not ambient occlusion.
+            vec3 combined = textureGrad(grassGroundCombined, meadowUv, meadowDx, meadowDy).rgb;
+            vec2 normalXY = (combined.rg * 255.0 - 128.0) / 127.0;
+            float normalZ = sqrt(max(1.0 - dot(normalXY, normalXY), 0.04));
+            grassBump = vec3(normalXY.x, 0.0, normalXY.y) * (grass * surfaceWeight * 0.82 / normalZ);
+            grassSpecular = combined.b * grass * surfaceWeight;
+        }
     }
 
     // 先混合宏观底色，再按距离和像素尺寸决定是否为各材质和投影轴补采细节。
@@ -526,8 +514,7 @@ void main() {
                 weight *= smoothstep(0.006, 0.028, weight);
                 if (weight <= 0.0) continue;
                 sampledWeight += weight;
-                if (layer == kGrassLayer && hasGrassGround) {
-                    // 保留原始地表草纹理的色相与纹样，使远近两条路径过渡一致。
+                if (layer == kGrassLayer) {
                     detailAlbedo += grassAlbedo * weight;
                     continue;
                 }
@@ -535,14 +522,7 @@ void main() {
                 float layerSurfaceFade = isRock ? rockSurfaceFade : surfaceFade;
                 bool sampleSurface = hasSurfaceLayers && layerSurfaceFade > 0.0;
                 TerrainSample surface = sampleStochasticTerrain(layer, patches, hasAlbedo, sampleSurface, gradientScale);
-                vec3 layerAlbedo = surface.albedo;
-                if (layer == kGrassLayer) {
-                    // 数组和旧图集的草层来源不同，使用各自的均值归一化明暗变化。
-                    vec3 grassAverage = hasAlbedo ? kGrassArrayAverage : kLandformAverages[kGrassLayer];
-                    float relativeLuminance = dot(surface.albedo, kLuminance) / dot(grassAverage, kLuminance);
-                    layerAlbedo = grassAlbedo * mix(1.0, relativeLuminance, 0.65);
-                }
-                detailAlbedo += layerAlbedo * layerTint[layer] * weight;
+                detailAlbedo += surface.albedo * layerTint[layer] * weight;
                 if (sampleSurface) {
                     float bumpStrength = layerSurfaceFade * (isRock ? 1.58 : (layer == kDirtLayer ? 1.0 : 0.78));
                     normalOffset += kProjectionBases[axis] * surface.gradient * (weight * bumpStrength);
@@ -559,7 +539,7 @@ void main() {
     albedo *= mix(0.85, 1.15, controls.a);
     vec3 bedsBump = -vec3(0.8 * beds.y / 150.0, beds.z / 29.0, -0.6 * beds.y / 150.0) *
                     (5.2 * rock * bedsVisible);
-    vec3 bump = normalOffset + slabBump + bedsBump + distantGrassBump;
+    vec3 bump = normalOffset + slabBump + bedsBump + grassBump;
     vec3 roads = terrainRoadWeights(groundPosition);
     if (roads.x > 0.0) {
         float dirtRatio = clamp(material.ochreDirtRatio, 0.0, 1.0);
@@ -599,20 +579,11 @@ void main() {
     float visibility = sunVisibility(fragWorldPosition, shadowNormal);
     vec3 pointLight = effectPointLighting(fragWorldPosition, normal);
     vec3 terrainLight = ambient + sunlight * visibility + pointLight;
-    vec3 litTerrain = albedo * terrainLight;
-    if (grassFadeRange.y > grassFadeRange.x && grass > 0.58 && grassGroundDistance < 1.75 * grassFadeRange.y) {
-        // 草地占主要权重时使用草叶淡出的目标色。保留混合地貌上的过渡。
-        float meadowWeight = smoothstep(0.58, 0.82, grass) *
-            (1.0 - smoothstep(grassFadeRange.y, 1.75 * grassFadeRange.y, grassGroundDistance));
-        float detail = meadowBladeDetail(grassGroundDistance, grassFadeRange.x);
-        vec3 groundAlbedo = meadowGroundTint(hasGrassGround ? grassAlbedo : kMeadowAlbedo, detail);
-        vec3 groundLight = meadowGroundLighting(dot(geometryNormal, lightDirection),
-            ubo.ambientLight.rgb * ubo.ambientLight.a,
-            ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility);
-        litTerrain = mix(litTerrain, groundAlbedo * (groundLight + pointLight), meadowWeight);
-    }
-    // Let the meadow lighting affect only the original ground contribution.
-    litTerrain = (1.0 - roadCoverage) * litTerrain + paintedAlbedo * terrainLight;
+    vec3 halfDirection = normalize(lightDirection + normalize(cameraRay));
+    float highlight = grassSpecular * pow(max(dot(normal, halfDirection), 0.0), 32.0) * 0.055;
+    vec3 meadowHighlight = ubo.sunLightColor.rgb * (ubo.sunLightDirection.w * visibility * highlight);
+    vec3 litTerrain = (albedo * terrainLight + meadowHighlight) * (1.0 - roadCoverage) +
+        paintedAlbedo * terrainLight;
 
     outColor = vec4(applySceneFog(litTerrain * material.baseColor.rgb,
         sceneFogAt(fragWorldPosition, true)), material.opacity);

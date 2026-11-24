@@ -42,7 +42,9 @@ class PlayerController {
 public:
     static constexpr float kBotwLinkHeight = 1.58f;
     static constexpr float kBotwLinkRadius = 0.27f;
-    static constexpr float kCameraDistance = 5.0f;
+    static constexpr float kDefaultCameraFollowDistance = 2.0f;
+    static constexpr float kMinCameraFollowDistance = 0.75f;
+    static constexpr float kMaxCameraFollowDistance = 20.0f;
     static constexpr float kDefaultMoveSpeedMultiplier = 1.0f;
     static constexpr float kMinMoveSpeedMultiplier = 0.1f;
     static constexpr float kMaxMoveSpeedMultiplier = 5.0f;
@@ -79,6 +81,8 @@ public:
     bool clickToMoveEnabled() const { return clickToMove_; }
     float moveSpeedMultiplier() const { return moveSpeedMultiplier_; }
     void setMoveSpeedMultiplier(float multiplier);
+    std::optional<float> cameraFollowDistance() const { return cameraFollowDistance_; }
+    void setCameraFollowDistance(float distance);
     void setMoveDestination(const glm::vec2& destination) { moveDestination_ = destination; }
     void cancelMove() { moveDestination_.reset(); }
     bool debugModeEnabled() const { return debugModeEnabled_; }
@@ -112,6 +116,7 @@ private:
     PlayerSkill triggeredSkill_ = PlayerSkill::None;
     bool lookWasDown_ = false;
     bool lookDragging_ = false;
+    bool cameraOrbitOverridden_ = false;
     double lastCursorX_ = 0.0;
     double lastCursorY_ = 0.0;
     glm::vec3 spawnPosition_{0.0f};
@@ -126,6 +131,7 @@ private:
     static constexpr std::array<float, kPlayerSkillCount> kDefaultSkillAnimationSeconds{0.72f, 0.6f, 1.05f, 0.85f};
     std::array<float, kPlayerSkillCount> skillAnimationSeconds_ = kDefaultSkillAnimationSeconds;
     std::vector<float> footTractionSamples_;
+    std::optional<float> cameraFollowDistance_;
     float yawRadians_ = 0.0f;
     float cameraElevationRadians_ = 0.0f;
 };

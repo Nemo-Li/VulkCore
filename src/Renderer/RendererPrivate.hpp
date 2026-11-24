@@ -30,8 +30,8 @@ constexpr std::uint32_t kTerrainRoadBinding = 11;
 constexpr std::uint32_t kShadowBlendFlag = 1u << 30;
 constexpr std::uint32_t kShadowWaterFlag = 1u << 29;
 constexpr std::uint32_t kShadowCutoutFlag = 1u << 28;
-constexpr std::uint32_t kGrassGroundBinding = 9;
-constexpr std::uint32_t kGrassGroundTextureFlag = 64u;
+constexpr std::uint32_t kTerrainGrassAlbedoBinding = 9;
+constexpr std::uint32_t kTerrainGrassTextureFlag = 64u;
 constexpr std::uint32_t kAlphaMaskBinding = 8;
 constexpr std::uint32_t kAlphaTestFlag = 64u;
 

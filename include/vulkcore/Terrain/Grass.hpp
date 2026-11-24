@@ -18,13 +18,14 @@ class TerrainScene;
 
 enum class GrassLod : std::uint32_t {
     NearMesh = 0,
-    // Slots 1 and 2 belonged to grass cards. Keep the saved wildflower node ID and seed.
+    CrossCard = 1,
+    // Keep the saved wildflower node IDs and seeds.
     FlowerCard = 3,
     YellowFlowerCard = 4,
 };
 
 inline constexpr std::array kGrassLods{
-    GrassLod::NearMesh, GrassLod::FlowerCard, GrassLod::YellowFlowerCard
+    GrassLod::NearMesh, GrassLod::CrossCard, GrassLod::FlowerCard, GrassLod::YellowFlowerCard
 };
 
 inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
@@ -33,6 +34,25 @@ inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
     }
     return std::nullopt;
 }
+
+inline constexpr bool isGrassVegetation(GrassLod lod) {
+    return lod == GrassLod::NearMesh || lod == GrassLod::CrossCard;
+}
+
+// Linear red channel of GrassCoverAlb, repeated in world XZ.
+class GrassCoverMask {
+public:
+    static constexpr float kTileSize = 12.0f;
+    GrassCoverMask() = default;
+    GrassCoverMask(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t> red);
+    bool contains(glm::vec2 worldPosition) const;
+    bool empty() const { return red_.empty(); }
+
+private:
+    std::uint32_t width_ = 0;
+    std::uint32_t height_ = 0;
+    std::vector<std::uint8_t> red_;
+};
 
 struct GrassGrowthSettings {
     static constexpr float kMaxTilt = 60.0f;
@@ -52,8 +72,7 @@ struct GrassGrowthSettings {
 struct GrassInstance {
     glm::vec4 rootHeight;
     glm::vec4 normalWidth; // xyz ground normal, w blade width seed or flower card width
-    glm::vec4 motion; // yaw, tilt seed, wind phase, color variation
-    std::array<std::uint8_t, 4> tint; // RGB plus a map-presence flag
+    glm::vec4 motion; // yaw, tilt seed, wind phase, shape variation
 };
 
 struct GrassDrawRange {
@@ -76,7 +95,8 @@ class GrassCoverage {
 public:
     // Returns true when the active cells change. Distance fades and frustum
     // visibility use the actual camera every frame, including when stationary.
-    bool update(const TerrainScene& terrain, glm::vec2 center, float viewPadding = 0.0f);
+    bool update(const TerrainScene& terrain, glm::vec2 center);
+    void setCoverMask(GrassCoverMask coverMask);
 
     const std::vector<GrassInstance>& instances() const { return instances_; }
     const std::vector<GrassDrawRange>& ranges() const { return ranges_; }
@@ -90,8 +110,9 @@ private:
     };
     using CellCoordinate = std::pair<int, int>;
 
-    static Cell buildCell(const TerrainScene& terrain, GrassLod lod, CellCoordinate coordinate);
+    Cell buildCell(const TerrainScene& terrain, GrassLod lod, CellCoordinate coordinate) const;
 
+    GrassCoverMask coverMask_;
     std::optional<CellCoordinate> anchor_;
     std::uint64_t generation_ = 0;
     std::array<std::map<CellCoordinate, Cell>, kGrassLods.size()> cells_;

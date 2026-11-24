@@ -127,16 +127,24 @@ Texture::Texture(
     std::uint32_t width,
     std::uint32_t height,
     bool arrayView,
-    TextureColorSpace colorSpace
+    TextureColorSpace colorSpace,
+    std::uint32_t layers,
+    VkSamplerAddressMode addressMode
 )
-    : context_(context), arrayView_(arrayView),
-      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB) {
-    if (width == 0 || height == 0) {
-        throw std::runtime_error("raw texture dimensions must be non-zero");
+    : context_(context), arrayLayers_(layers), arrayView_(arrayView),
+      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
+      addressModeU_(addressMode), addressModeV_(addressMode) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
+    const auto& limits = properties.limits;
+    if (!width || !height || !layers || (layers > 1 && !arrayView) ||
+        width > limits.maxImageDimension2D || height > limits.maxImageDimension2D ||
+        layers > limits.maxImageArrayLayers) {
+        throw std::runtime_error("raw texture dimensions or layer count are invalid");
     }
     const std::uint64_t pixelCount = static_cast<std::uint64_t>(width) * height;
-    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4 ||
-        rgbaPixels.size() < static_cast<std::size_t>(pixelCount) * 4) {
+    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4 / layers ||
+        rgbaPixels.size() < static_cast<std::size_t>(pixelCount) * 4 * layers) {
         throw std::runtime_error("raw texture data has invalid dimensions");
     }
 

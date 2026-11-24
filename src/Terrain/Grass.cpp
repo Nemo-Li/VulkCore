@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace VulkCore {
 namespace {
@@ -16,6 +17,8 @@ struct GrassLodSettings {
 };
 
 constexpr GrassLodSettings kNearMeshSettings{8.0f, 16, {0.0f, 0.0f, 30.0f, 40.0f}};
+constexpr GrassLodSettings kCrossCardSettings{16.0f, 20,
+    {kNearMeshSettings.fade.z, kNearMeshSettings.fade.w, 83.0f, 112.0f}};
 constexpr GrassLodSettings kFlowerSettings{8.0f, 8, {0.0f, 0.0f, 19.0f, 27.0f}};
 constexpr float kMappedGrassHeight = kDefaultGrassHeight * 1.18f;
 constexpr float kAnchorSize = 4.0f;
@@ -24,7 +27,9 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kGoldenAngle = 2.39996323f;
 
 const GrassLodSettings& settings(GrassLod lod) {
-    return lod == GrassLod::NearMesh ? kNearMeshSettings : kFlowerSettings;
+    if (lod == GrassLod::NearMesh) return kNearMeshSettings;
+    if (lod == GrassLod::CrossCard) return kCrossCardSettings;
+    return kFlowerSettings;
 }
 
 std::uint32_t hashBits(std::uint32_t value) {
@@ -57,41 +62,63 @@ bool intersectsDisk(glm::vec2 origin, glm::vec2 minimum, glm::vec2 maximum, floa
 
 } // namespace
 
+GrassCoverMask::GrassCoverMask(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t> red)
+    : width_(width), height_(height), red_(std::move(red)) {
+    if (!width_ || !height_ || red_.size() != static_cast<std::uint64_t>(width_) * height_) {
+        throw std::invalid_argument("invalid grass cover mask dimensions");
+    }
+}
+
+bool GrassCoverMask::contains(glm::vec2 worldPosition) const {
+    if (empty()) return true;
+    const glm::vec2 texel = glm::fract(worldPosition / kTileSize) * glm::vec2(width_, height_) - 0.5f;
+    const glm::ivec2 low(glm::floor(texel));
+    const glm::vec2 fraction = glm::fract(texel);
+    const auto sample = [&](glm::ivec2 position) {
+        const int x = (position.x + static_cast<int>(width_)) % static_cast<int>(width_);
+        const int z = (position.y + static_cast<int>(height_)) % static_cast<int>(height_);
+        return static_cast<float>(red_[std::size_t(z) * width_ + x]);
+    };
+    const float row0 = std::lerp(sample(low), sample(low + glm::ivec2(1, 0)), fraction.x);
+    const float row1 = std::lerp(sample(low + glm::ivec2(0, 1)), sample(low + glm::ivec2(1, 1)), fraction.x);
+    // The source's background starts at 127 rather than black.
+    return std::lerp(row0, row1, fraction.y) >= 191.0f;
+}
+
+void GrassCoverage::setCoverMask(GrassCoverMask coverMask) {
+    coverMask_ = std::move(coverMask);
+    anchor_.reset();
+    for (auto& cache : cells_) cache.clear();
+    instances_.clear();
+    ranges_.clear();
+}
+
 glm::vec4 grassFadeDistances(GrassLod lod) {
     return settings(lod).fade;
 }
 
 GrassCoverage::Cell GrassCoverage::buildCell(
     const TerrainScene& terrain, GrassLod lod, CellCoordinate coordinate
-) {
+) const {
     Cell cell;
     cell.minimum = glm::vec3(std::numeric_limits<float>::max());
     cell.maximum = glm::vec3(std::numeric_limits<float>::lowest());
     const auto& lodSettings = settings(lod);
     const int count = lodSettings.samplesPerSide;
     const float spacing = lodSettings.cellSize / static_cast<float>(count);
-    const bool flower = lod != GrassLod::NearMesh;
+    const bool flower = !isGrassVegetation(lod);
+    const bool bladeMesh = lod == GrassLod::NearMesh;
     const bool yellowFlower = lod == GrassLod::YellowFlowerCard;
     const float flowerChance = yellowFlower ? 0.39f : 0.05f;
     const auto append = [&](glm::vec3 root, glm::vec3 normal, float height, float widthOrSeed,
-                            float yaw, float tiltSeed, std::uint32_t seed, float shade,
-                            const std::optional<GrassSample>& map) {
+                            float yaw, float tiltSeed, std::uint32_t seed, float variation) {
         GrassInstance instance{
             glm::vec4(root, height), glm::vec4(normal, widthOrSeed),
-            glm::vec4(yaw, tiltSeed, hash01(seed + 8u), shade), {0, 0, 0, 0}
+            glm::vec4(yaw, tiltSeed, hash01(seed + 8u), variation)
         };
-        if (map) {
-            for (int channel = 0; channel < 3; ++channel) {
-                instance.tint[channel] = static_cast<std::uint8_t>(
-                    std::lround(std::clamp(map->color[channel], 0.0f, 1.0f) * 255.0f)
-                );
-            }
-            instance.tint[3] = 255;
-        }
-        // Use the widest allowed blade so changing the width range keeps these bounds valid.
-        const float maxWidth = flower ? widthOrSeed : GrassGrowthSettings::kMaxBladeWidth;
+        const float maxWidth = bladeMesh ? GrassGrowthSettings::kMaxBladeWidth : widthOrSeed;
         const float reach = height + maxWidth + 0.9f;
-        const float drop = flower ? 1.1f : height * 1.65f + 0.14f;
+        const float drop = 1.1f;
         cell.minimum = glm::min(cell.minimum, root - glm::vec3(reach, drop, reach));
         cell.maximum = glm::max(cell.maximum, root + glm::vec3(reach, height, reach));
         cell.instances.push_back(instance);
@@ -106,6 +133,7 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             const glm::vec2 point = (glm::vec2(gx, gz) + glm::vec2(
                 0.12f + hash01(seed + 1u) * 0.76f, 0.12f + hash01(seed + 2u) * 0.76f
             )) * spacing;
+            if (lod == GrassLod::CrossCard && !coverMask_.contains(point)) continue;
             const auto map = terrain.grassAtWorld(point);
             if (map && (map->height <= 0.0f || lod == GrassLod::FlowerCard)) continue;
             const auto ground = terrain.renderedHeightAtWorld(point);
@@ -137,7 +165,7 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             const glm::vec3 root(point.x, *ground + 0.012f, point.y);
             const float heightVariation = hash01(seed + 4u);
             const float yaw = hash01(seed + 5u) * 2.0f * kPi;
-            if (!flower) {
+            if (bladeMesh) {
                 const float canopyHeight = kDefaultGrassHeight * (0.91f + heightVariation * 0.18f);
                 constexpr int blades = 14;
                 for (int blade = 0; blade < blades; ++blade) {
@@ -147,42 +175,46 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                         std::lerp(0.78f, 1.18f, hash01(bladeSeed + 6u));
                     const glm::vec2 offset = glm::vec2(std::cos(angle), std::sin(angle)) * radius;
                     const glm::vec2 bladePoint = point + offset;
+                    if (!coverMask_.contains(bladePoint)) continue;
                     const auto bladeMap = terrain.grassAtWorld(bladePoint);
                     if (bladeMap ? bladeMap->height <= 0.0f : map.has_value()) continue;
                     const float y = root.y -
                         glm::dot(glm::vec2(normal.x, normal.z), offset) / std::max(normal.y, 0.35f);
                     const float bladeHeight = bladeMap ? bladeMap->height * kMappedGrassHeight : canopyHeight;
                     const float bladeYaw = angle + std::lerp(-0.85f, 0.85f, hash01(bladeSeed + 5u));
-                    // Neighboring leaves share some color, while still varying individually.
-                    const float shade = std::lerp(hash01(bladeSeed + 9u), hash01(seed + 19u), 0.30f);
+                    const float variation = hash01(bladeSeed + 9u);
                     append({bladePoint.x, y, bladePoint.y}, normal,
                            bladeHeight * std::lerp(0.79f, 1.20f, hash01(bladeSeed + 1u)),
                            hash01(bladeSeed + 2u), bladeYaw,
-                           hash01(bladeSeed + 3u), bladeSeed, shade, bladeMap);
+                           hash01(bladeSeed + 3u), bladeSeed, variation);
                 }
             } else {
                 float height = 0.48f + heightVariation * 0.32f;
                 float width = 0.42f;
-                if (yellowFlower) {
+                if (!flower) {
+                    const float canopy = map ? map->height * kMappedGrassHeight : kDefaultGrassHeight;
+                    height = canopy * std::lerp(0.85f, 1.02f, heightVariation);
+                    width = height * 1.75f;
+                } else if (yellowFlower) {
                     const float canopy = map ? map->height * kMappedGrassHeight : kDefaultGrassHeight;
                     height = canopy * std::lerp(0.94f, 1.14f, heightVariation);
                     width = std::min(0.092f, height * 0.092f);
                 }
                 const float shade = hash01(seed + 9u);
-                append(root, normal, height, width, yaw, 0.0f, seed, shade, map);
-                append(root, normal, height, width, yaw + kPi * 0.5f, 0.0f, seed, shade, map);
+                const float tilt = hash01(seed + 6u);
+                append(root, normal, height, width, yaw, tilt, seed, shade);
+                append(root, normal, height, width, yaw + kPi * 0.5f, tilt, seed, shade);
             }
         }
     }
     return cell;
 }
 
-bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center, float viewPadding) {
+bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center) {
     if (!std::isfinite(center.x) || !std::isfinite(center.y)) return false;
     const glm::vec2 terrainMin(terrain.boundsMinimum().x, terrain.boundsMinimum().z);
     const glm::vec2 terrainMax(terrain.boundsMaximum().x, terrain.boundsMaximum().z);
-    const float padding = kAnchorPadding + viewPadding;
-    const glm::vec2 limit(kNearMeshSettings.fade.w + padding + kAnchorSize);
+    const glm::vec2 limit(kCrossCardSettings.fade.w + kAnchorPadding + kAnchorSize);
     center = glm::clamp(center, terrainMin - limit, terrainMax + limit);
     const glm::ivec2 rounded(glm::floor(center / kAnchorSize));
     const CellCoordinate anchor{rounded.x, rounded.y};
@@ -197,7 +229,7 @@ bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center, float 
         const auto& lodSettings = settings(lod);
         auto& cache = cells_[layer];
         const float span = lodSettings.cellSize;
-        const float far = lodSettings.fade.w + padding;
+        const float far = lodSettings.fade.w + kAnchorPadding;
         const glm::ivec2 first(glm::floor(glm::max(origin - far, terrainMin) / span));
         const glm::ivec2 last(glm::floor(glm::min(origin + far, terrainMax) / span));
         for (int z = first.y; z <= last.y; ++z) {

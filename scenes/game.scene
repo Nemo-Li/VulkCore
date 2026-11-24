@@ -1,6 +1,6 @@
 # VulkCore scene
 skybox 1 ""
-grass_settings 1 "../assets/terrain/textures/terrain_grass.png"
+grass_settings 1 ""
 grass_growth 5 32 0.409999996
 grass_blade_width 0.0399999991 0.0799999982
 terrain_road_ochre_ratio 0.800000012
@@ -27,6 +27,7 @@ terrain_road 1 3.75 4 -181.917114 -108.304276 -181.595154 -109.014679 -181.52597
 terrain_resource "../assets/terrain"
 player_present 1
 player_click_to_move 1
+player_camera_follow_distance 2
 player_spawn_position -205 124 -96
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"

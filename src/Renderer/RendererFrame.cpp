@@ -403,7 +403,8 @@ void Renderer::recordCommandBuffer(
     for (const MeshPart& part : meshData_.parts) {
         const auto grassLod = grassLodForLayer(part.nodeId - kGrassLodNodeBase);
         if ((!grassLod && part.indexCount == 0) || !isSceneNodeRenderEnabled(part.nodeId)) continue;
-        if (grassLod && (grassCoverage_.ranges().empty() || !grassIndexBuffer_)) continue;
+        if (grassLod && (grassCoverage_.ranges().empty() || !grassIndexBuffer_ ||
+            (isGrassVegetation(*grassLod) && !terrainGrass_.bladeAlbedo))) continue;
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= materialCount || index >= materialTextures_.size()) continue;
         const MaterialData& material = meshData_.materials[index];
@@ -414,7 +415,7 @@ void Renderer::recordCommandBuffer(
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
         // The light sees off-camera geometry that can still occlude visible surfaces.
         // Skip dense grass blades to avoid drawing them again for each shadow cascade.
-        if (sunShadowsActive_ && part.nodeId != kSunSceneNodeId && grassLod != GrassLod::NearMesh) {
+        if (sunShadowsActive_ && part.nodeId != kSunSceneNodeId && (!grassLod || !isGrassVegetation(*grassLod))) {
             casters.push_back({&part, index, grassLod});
         }
         if (const auto& bounds = part.terrainBounds) {
@@ -443,7 +444,6 @@ void Renderer::recordCommandBuffer(
         queue.push_back({&part, index, grassLod});
     }
 
-    const bool grassEnabled = isSceneNodeRenderEnabled(kGrassSceneNodeId);
     VkPipeline boundPipeline = VK_NULL_HANDLE;
     VkDescriptorSet boundSet = VK_NULL_HANDLE;
     const auto drawPart = [&](const DrawItem& item, bool hdr, int cascade = -1) {
@@ -471,8 +471,6 @@ void Renderer::recordCommandBuffer(
         materialPushConstants.baseColor = material.baseColor;
         const bool terrainMaterial = part.nodeId >= kTerrainChunkNodeBase &&
             part.nodeId < kPlayerSceneNodeId;
-        const bool grassGroundMaterial = terrainMaterial || (item.grassLod == GrassLod::NearMesh &&
-            shaders.shader(ShaderStage::Fragment) == "shader_grass.frag");
         const bool terrainMacro = terrainMaterial && terrainAlbedoLayers_ &&
             material.texturePath.filename() == "terrain_atlas.png" && materialTextures_[materialIndex];
         materialPushConstants.textureFlags =
@@ -482,7 +480,7 @@ void Renderer::recordCommandBuffer(
             (terrainMaterial && terrainAlbedoLayers_ ? 8u : 0u) |
             (terrainMaterial && terrainSurfaceLayers_ ? 16u : 0u) |
             (terrainMacro ? 32u : 0u) |
-            (grassGroundMaterial && grassGroundTexture_ && grassEnabled ? kGrassGroundTextureFlag : 0u);
+            (terrainMaterial && terrainGrass_.groundAlbedo ? kTerrainGrassTextureFlag : 0u);
         materialPushConstants.metallic = material.metallic;
         materialPushConstants.roughness = material.roughness;
         materialPushConstants.opacity = material.transitionOpacity && transitionSettings_.enabled
@@ -521,17 +519,15 @@ void Renderer::recordCommandBuffer(
         if (item.grassLod) {
             materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
             materialPushConstants.metallic = ochreDirtRatio_;
-            materialPushConstants.waterSurface.x = 1.0f;
+            materialPushConstants.waterSurface.x = isGrassVegetation(*item.grassLod) ? grassHeightScale_ : 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
             if (*item.grassLod == GrassLod::NearMesh) {
                 // Near grass has no fade-in, leaving waterFlow.x free for the growth noise frequency.
                 materialPushConstants.waterFlow.x = 1.0f / grassGrowth_.noiseSize;
-                materialPushConstants.waterSurface.x = grassHeightScale_;
                 materialPushConstants.waterSurface.y = glm::radians(grassGrowth_.minimumTilt);
                 materialPushConstants.waterSurface.z = glm::radians(grassGrowth_.maximumTilt);
             }
         } else if (terrainMaterial && fragment == "shader_terrain.frag") {
-            if (grassEnabled) materialPushConstants.waterFlow = grassFadeDistances(GrassLod::NearMesh);
             // Terrain and grass shaders use the metallic slot for the ochre mix.
             materialPushConstants.metallic = ochreDirtRatio_;
         }
@@ -577,7 +573,7 @@ void Renderer::recordCommandBuffer(
             for (const auto& range : grassCoverage_.ranges()) {
                 if (range.lod != *item.grassLod) continue;
                 // Larger blades can reach past the baked instance bounds.
-                const float expansion = *item.grassLod == GrassLod::NearMesh
+                const float expansion = isGrassVegetation(*item.grassLod)
                     ? 3.0f * std::max(0.0f, grassHeightScale_ - 1.0f) : 0.0f;
                 if (clipFromGrass && isOutsideVulkanFrustum(*clipFromGrass,
                     range.minimum - glm::vec3(expansion),

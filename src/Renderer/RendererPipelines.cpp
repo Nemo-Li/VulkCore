@@ -56,8 +56,8 @@ void Renderer::createDescriptorSetLayout() {
     bindings[7].binding = 7;
     bindings[kAlphaMaskBinding] = bindings[6];
     bindings[kAlphaMaskBinding].binding = kAlphaMaskBinding;
-    bindings[kGrassGroundBinding] = bindings[6];
-    bindings[kGrassGroundBinding].binding = kGrassGroundBinding;
+    bindings[kTerrainGrassAlbedoBinding] = bindings[6];
+    bindings[kTerrainGrassAlbedoBinding].binding = kTerrainGrassAlbedoBinding;
     bindings[kSunShadowBinding] = bindings[6];
     bindings[kSunShadowBinding].binding = kSunShadowBinding;
     bindings[kTerrainRoadBinding] = {kTerrainRoadBinding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -560,11 +560,10 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     const auto attributeDescriptions = Vertex::attributeDescriptions();
 
     const bool instancedGrass = configuration.shader(ShaderStage::Vertex).starts_with("shader_grass");
-    const std::array<VkVertexInputAttributeDescription, 4> grassAttributes{{
+    const std::array<VkVertexInputAttributeDescription, 3> grassAttributes{{
         {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, rootHeight)},
         {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, normalWidth)},
-        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, motion)},
-        {3, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(GrassInstance, tint)}
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, motion)}
     }};
     if (instancedGrass) {
         bindingDescription = {0, sizeof(GrassInstance), VK_VERTEX_INPUT_RATE_INSTANCE};
