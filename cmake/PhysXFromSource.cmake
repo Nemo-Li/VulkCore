@@ -4,8 +4,9 @@
 # revision so dependency updates cannot silently change the physics ABI.
 FetchContent_Declare(
     physx
-    GIT_REPOSITORY https://github.com/o3de/PhysX.git
-    GIT_TAG d5c964f23c3ba5553a305bbc7af3b50a5fa47a12
+    URL https://codeload.github.com/o3de/PhysX/tar.gz/d5c964f23c3ba5553a305bbc7af3b50a5fa47a12
+    URL_HASH SHA256=65b7007d99cc7b1f17b6f7a2744c2d0b364a5e85ab4c58d06a023614dd4c69fa
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     EXCLUDE_FROM_ALL
 )
 

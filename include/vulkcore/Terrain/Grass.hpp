@@ -39,7 +39,7 @@ inline constexpr bool isGrassVegetation(GrassLod lod) {
     return lod == GrassLod::NearMesh || lod == GrassLod::CrossCard;
 }
 
-// Linear red channel of GrassCoverAlb, repeated in world XZ.
+// Union of three rotations of the linear GrassCoverAlb red channel per world XZ block.
 class GrassCoverMask {
 public:
     static constexpr float kTileSize = 12.0f;
@@ -49,6 +49,8 @@ public:
     bool empty() const { return red_.empty(); }
 
 private:
+    bool matches(glm::vec2 uv) const;
+
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     std::vector<std::uint8_t> red_;
@@ -73,6 +75,7 @@ struct GrassInstance {
     glm::vec4 rootHeight;
     glm::vec4 normalWidth; // xyz ground normal, w blade width seed or flower card width
     glm::vec4 motion; // yaw, tilt seed, wind phase, shape variation
+    std::array<std::uint8_t, 4> mapColor{}; // RGB tint and a separate map-present flag
 };
 
 struct GrassDrawRange {

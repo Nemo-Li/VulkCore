@@ -8,6 +8,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec3 fragWorldPosition;
 layout(location = 3) flat in float fragLod;
 layout(location = 4) flat in float fragVariation;
+layout(location = 5) flat in vec4 fragMapColor;
 
 #include "scene_fog.glsl"
 #include "effect_lighting.glsl"
@@ -84,6 +85,14 @@ void main() {
             albedo = sampleColor.rgb;
         } else {
             albedo = texture(grassBladeAlbedo, uv).rgb;
+        }
+        if (fragMapColor.a > 0.0) {
+            // The map sets the RGB for both LODs. Texture luminance preserves
+            // leaf detail and the root-to-tip gradient gives the blades depth.
+            float textureLuma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+            float leafDetail = mix(0.78, 1.22, smoothstep(0.0, 0.55, textureLuma));
+            float rootShade = mix(0.78, 1.05, bladeHeight);
+            albedo = fragMapColor.rgb * (leafDetail * rootShade);
         }
 
         vec3 groundFacingNormal = dot(shadowNormal, normal) < 0.0 ? -shadowNormal : shadowNormal;

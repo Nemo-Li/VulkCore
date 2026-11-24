@@ -561,10 +561,11 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     const auto attributeDescriptions = Vertex::attributeDescriptions();
 
     const bool instancedGrass = configuration.shader(ShaderStage::Vertex).starts_with("shader_grass");
-    const std::array<VkVertexInputAttributeDescription, 3> grassAttributes{{
+    const std::array<VkVertexInputAttributeDescription, 4> grassAttributes{{
         {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, rootHeight)},
         {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, normalWidth)},
-        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, motion)}
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, motion)},
+        {3, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(GrassInstance, mapColor)}
     }};
     if (instancedGrass) {
         bindingDescription = {0, sizeof(GrassInstance), VK_VERTEX_INPUT_RATE_INSTANCE};

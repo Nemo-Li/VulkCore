@@ -27,7 +27,7 @@ constexpr float kMinCameraElevation = -35.0f * kPi / 180.0f;
 constexpr float kMaxCameraElevation = 65.0f * kPi / 180.0f;
 constexpr float kInitialCameraElevation = 15.0f * kPi / 180.0f;
 constexpr float kFollowCameraElevation = 18.0f * kPi / 180.0f;
-constexpr glm::vec3 kFollowCameraOffset(0.0f, PlayerController::kBotwLinkHeight + 0.20f, 0.0f);
+constexpr glm::vec3 kFollowCameraOffset(0.0f, 3.0f, 0.0f); // Measured from the player's feet.
 constexpr float kFollowCameraTurnSpeed = 3.0f; // Radians per second.
 constexpr float kFollowCameraTurnResponse = 8.0f;
 constexpr float kFollowCameraArmResponse = 7.0f;

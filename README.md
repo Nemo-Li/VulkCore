@@ -324,10 +324,9 @@ Player 移动。未设置该字段时继续显示程序化胶囊，也可以在 
 
 草地实例按相机位置增量更新。近景用四段弯曲叶片网格和 `GrassAlb`，中景用两张相交的 `GrassCrossAlb` 草片。
 两级在 30–40 个地形单位间交接，草片在 83–112 个单位间淡出，留下使用 `MaterialAlb` 与 `MaterialCmb` 的地表。
-两级都按 `GrassCoverAlb` 的亮色路径放置，草叶保留风动和踩踏。
+两级草地使用每个区块三张随机旋转的 `GrassCoverAlb` 遮罩，草叶保留风动和踩踏。
 
-`assets/terrain/source/` 保存配对的地形档案。可在地形根目录的 `terrain_grass/` 下提供
-`.grass.extm` 来控制草高和裸地位置。
+`assets/terrain/source/` 保存配对的地形档案。只有地形根目录 `terrain_grass/` 下有 `.grass.extm` 且草高大于零的位置才生成草，草高和底色取自瓦片。
 目录布局与实现细节见 [BOTW 风格草地技术方案](docs/07-botw-grass.md)。
 
 #### Material Shaders 与水面预设

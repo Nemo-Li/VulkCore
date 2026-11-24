@@ -9,6 +9,7 @@
 layout(location = 0) in vec4 inRootHeight;
 layout(location = 1) in vec4 inNormalWidth;
 layout(location = 2) in vec4 inMotion;
+layout(location = 3) in vec4 inMapColor;
 
 #include "scene_frame.glsl"
 #include "terrain_road_weights.glsl"
@@ -29,6 +30,7 @@ layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec3 fragWorldPosition;
 layout(location = 3) flat out float fragLod;
 layout(location = 4) flat out float fragVariation;
+layout(location = 5) flat out vec4 fragMapColor;
 
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
@@ -105,6 +107,7 @@ void main() {
     if (nearBlade) {
         float baseWidth = mix(ubo.grassBladeWidthRange.x, ubo.grassBladeWidthRange.y, width);
         baseWidth = mix(baseWidth, min(baseWidth, mix(0.018, 0.036, width)), shortGrass);
+        if (inMapColor.a > 0.0) baseWidth *= min(1.0, sourceHeight / 0.70);
         width = baseWidth * (1.0 - 0.62 * heightWeight);
     }
     if (crossCard) width *= mix(1.0, 0.36, shortGrass);
@@ -150,6 +153,7 @@ void main() {
         radialDirection * 0.58 + movementDirection * 0.72 + vec2(0.0001)
     );
     float trampleStrength = mix(1.0, 0.24, shortGrass);
+    if (vegetation) trampleStrength *= min(1.0, bladeHeight / 0.35);
     localPosition.xz += trampleDirection * interaction * bendWeight * (nearBlade ? 0.30 : 0.18) * trampleStrength;
     localPosition.y -= interaction * bendWeight * 0.14 * trampleStrength;
 
@@ -162,4 +166,5 @@ void main() {
     fragNormal = normalize(normalMatrix * mix(forward, rootNormal, vegetation ? 0.88 : 0.68));
     fragLod = lod;
     fragVariation = inMotion.w;
+    fragMapColor = inMapColor;
 }
