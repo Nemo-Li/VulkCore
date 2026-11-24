@@ -192,17 +192,15 @@ void Renderer::drawParticleSystemControls(std::uint32_t nodeId, bool& shouldSave
     }
     ImGui::SliderFloat("Spread", &settings.spreadDegrees, 0.0f, 89.0f, "%.1f deg");
     settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
-    if (nodeId != kPlayerLightningParticleNodeId) {
-        ImGui::DragFloat3(
-            "Direction",
-            &settings.emissionDirection.x,
-            0.01f,
-            -1.0f,
-            1.0f,
-            "%.2f"
-        );
-        settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
-    }
+    ImGui::DragFloat3(
+        "Direction",
+        &settings.emissionDirection.x,
+        0.01f,
+        -1.0f,
+        1.0f,
+        "%.2f"
+    );
+    settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
     ImGui::SliderFloat("Shape radius", &settings.shapeRadius, 0.0f, 1.0f, "%.2f");
     settingsChanged |= ImGui::IsItemDeactivatedAfterEdit();
 

@@ -240,9 +240,8 @@ void Renderer::initializeEmptyScene() {
     playerModelAutoScale_ = 1.0f;
     playerModelGroundOffset_ = 0.0f;
     playerRunAnimationClipIndex_.reset();
-    playerAttackAnimationClipIndex_.reset();
-    playerLightningAnimationClipIndex_.reset();
-    playerFlameAnimationClipIndex_.reset();
+    playerSkillAnimationClips_.fill(std::nullopt);
+    playerSkillEffects_.fill(std::nullopt);
     MaterialData defaultMaterial;
     defaultMaterial.name = "DefaultMaterial";
     meshData_.materials.push_back(std::move(defaultMaterial));
@@ -257,12 +256,7 @@ void Renderer::initializeEmptyScene() {
     sunVertexStart_ = 0;
     sunIndexStart_ = 0;
     sunPresent_ = false;
-    tornadoMeshMaterialIndex_ = 0;
-    tornadoMeshPartIndex_ = 0;
-    tornadoMeshPresent_ = false;
-    tornadoMeshVisible_ = false;
-    tornadoMeshAlwaysVisible_ = false;
-    tornadoMeshTransform_ = glm::mat4(1.0f);
+    tornadoPreviewTransform_ = glm::mat4(1.0f);
 }
 
 void Renderer::appendTerrainToScene(
@@ -633,14 +627,19 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         playerMoveMarker_.reset();
     }
     // A mouse drag can make an ImGui item active without requiring text input.
+    std::array<bool, kPlayerSkillCount> skillEnabled{};
+    for (std::size_t index = 0; index < skillEnabled.size(); ++index) {
+        skillEnabled[index] = playerSkillEffects_[index].has_value();
+    }
     playerController_.update(
         window_,
         deltaSeconds,
         *physicsWorld_,
         sceneEditMode_ || effectCamera_ || io.WantTextInput,
-        !viewportHovered || effectCamera_ || roadEditorActive()
+        !viewportHovered || effectCamera_ || roadEditorActive(),
+        skillEnabled
     );
-    updatePlayerAttackEffect();
+    updatePlayerSkillEffects();
     if (!roadEditorActive()) updatePlayerCamera();
 }
 
@@ -1638,9 +1637,8 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         std::chrono::steady_clock::now() - startTime_
     ).count();
     if (isTornadoScene) {
-        createTornadoMeshEffect(true);
+        createTornadoPreview();
     }
-    createPlayerAttackEffect();
     if (terrainScene_) {
         // A game scene starts with a single continuous camera view. The
         // editor's post-process split preview is not part of gameplay.
@@ -1797,6 +1795,8 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
         std::uint32_t id{};
         std::string path;
         bool autoPlay{}, loop{};
+        std::optional<std::size_t> skillIndex;
+        PlayerSkillEffect skill;
     };
     std::vector<PendingRealtimeEffect> pendingRealtimeEffects;
     bool valid = true;
@@ -2127,9 +2127,24 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             std::string effectRecord;
             std::getline(file, effectRecord);
             std::istringstream effectStream(effectRecord);
-            if (effectStream >> effect.id >> std::quoted(effect.path) >> effect.autoPlay >> effect.loop) {
-                pendingRealtimeEffects.push_back(std::move(effect));
+            if (!(effectStream >> effect.id >> std::quoted(effect.path) >> effect.autoPlay >> effect.loop)) {
+                continue;
             }
+            std::string modifier;
+            if (effectStream >> modifier; modifier == "skill") {
+                char skillKey{};
+                auto& skill = effect.skill;
+                if (!(effectStream >> skillKey >> skill.forwardOffset >> skill.heightOffset >> skill.followPlayer) ||
+                    kPlayerSkillKeys.find(skillKey) == std::string_view::npos ||
+                    !std::isfinite(skill.forwardOffset) || !std::isfinite(skill.heightOffset)) {
+                    sceneResourceWarnings_.push_back("Invalid player skill binding: " + effect.path);
+                    continue;
+                }
+                effect.skillIndex = kPlayerSkillKeys.find(skillKey);
+                skill.nodeId = effect.id;
+                effect.autoPlay = effect.loop = false;
+            }
+            pendingRealtimeEffects.push_back(std::move(effect));
         } else if (key == "particle_system_object") {
             int enabled = 0;
             int playOnAwake = 0;
@@ -2349,14 +2364,12 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
     postProcessSplitPosition_ = std::clamp(postProcessSplitPosition, 0.1f, 0.9f);
     postProcessSplitView_ = postProcessSplitView != 0;
     for (PendingParticleSystem& pending : pendingParticleSystems) {
-        if (removedSceneNodeIds_.contains(pending.nodeId)) {
+        if (removedSceneNodeIds_.contains(pending.nodeId) ||
+            (pending.nodeId >= kLegacyPlayerEffectNodeBase && pending.nodeId < kTornadoPreviewNodeId)) {
             continue;
         }
-        const bool playerEffect = pending.nodeId == kPlayerLightningParticleNodeId ||
-            pending.nodeId == kPlayerFlameParticleNodeId;
-        if (playerEffect && !playerController_.active()) continue;
         ModelNode* node = findSceneNodeById(meshData_, pending.nodeId);
-        if (!node && !playerEffect) {
+        if (!node) {
             if (particleSystems_.size() >= kMaximumParticleSystems) {
                 continue;
             }
@@ -2390,7 +2403,11 @@ void Renderer::loadTransformSettings(std::size_t firstUnmappedMaterial) {
             if (std::filesystem::is_regular_file(legacy, error)) path = legacy;
         }
         try {
+            if (effect.skillIndex && playerSkillEffects_[*effect.skillIndex]) {
+                throw std::runtime_error("Player skill key is already bound.");
+            }
             loadRealtimeEffect(effect.id, path, effect.autoPlay, effect.loop);
+            if (effect.skillIndex) playerSkillEffects_[*effect.skillIndex] = effect.skill;
         } catch (const std::exception& error) {
             const auto message = "Realtime effect: " + path.string() + " (" + error.what() + ")";
             sceneResourceWarnings_.push_back(message);
@@ -2781,12 +2798,6 @@ bool Renderer::saveTransformSettings() const {
 
     saveRealtimeEffects(file, sceneReference);
 
-    for (const auto effectId : {kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId}) {
-        if (const auto it = particleSystems_.find(effectId); it != particleSystems_.end()) {
-            saveParticleSystemSettings(file, effectId, it->second.settings());
-        }
-    }
-
     std::unordered_set<std::size_t> activeMaterialIndices;
     if (!meshData_.materials.empty()) {
         activeMaterialIndices.insert(0);
@@ -2935,9 +2946,9 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
     if (removingPlayer) {
         if (physicsWorld_) physicsWorld_->removePlayer();
         playerController_.clear();
-        removedNodeIds.insert(removedNodeIds.end(),
-            {kPlayerAttackParticleNodeId, kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId});
-        removeSceneNodeById(kPlayerTornadoMeshNodeId);
+        for (const auto& skill : playerSkillEffects_) {
+            if (skill) stopRealtimeEffect(skill->nodeId);
+        }
     }
 
     bool hasParticleResources = false;
@@ -2959,6 +2970,9 @@ bool Renderer::removeSceneNodeById(std::uint32_t nodeId) {
         enemyPatrols_.erase(removedNodeId);
         particleSystems_.erase(removedNodeId);
         realtimeEffects_.erase(removedNodeId);
+        for (auto& skill : playerSkillEffects_) {
+            if (skill && skill->nodeId == removedNodeId) skill.reset();
+        }
         particleTextures_.erase(removedNodeId);
         const auto descriptorIt = particleDescriptorSets_.find(removedNodeId);
         if (descriptorIt != particleDescriptorSets_.end()) {

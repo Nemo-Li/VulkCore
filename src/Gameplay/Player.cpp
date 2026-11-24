@@ -174,11 +174,11 @@ void PlayerController::clear() {
     grounded_ = true;
     moving_ = false;
     jumpWasDown_ = false;
-    tornadoAttackWasDown_ = false;
-    lightningAttackWasDown_ = false;
-    flameAttackWasDown_ = false;
-    activeAttack_ = PlayerAttack::None;
-    triggeredAttack_ = PlayerAttack::None;
+    skillWasDown_.fill(false);
+    activeSkill_ = PlayerSkill::None;
+    triggeredSkill_ = PlayerSkill::None;
+    skillAnimationSeconds_ = kDefaultSkillAnimationSeconds;
+    attackAnimationTimeSeconds_ = 0.0f;
     lookWasDown_ = false;
     lookDragging_ = false;
     spawnPosition_ = glm::vec3(0.0f);
@@ -224,11 +224,9 @@ void PlayerController::reset(
     grounded_ = physics.playerGrounded();
     moving_ = false;
     jumpWasDown_ = false;
-    tornadoAttackWasDown_ = false;
-    lightningAttackWasDown_ = false;
-    flameAttackWasDown_ = false;
-    activeAttack_ = PlayerAttack::None;
-    triggeredAttack_ = PlayerAttack::None;
+    skillWasDown_.fill(false);
+    activeSkill_ = PlayerSkill::None;
+    triggeredSkill_ = PlayerSkill::None;
     attackAnimationTimeSeconds_ = 0.0f;
     lookWasDown_ = false;
     lookDragging_ = false;
@@ -273,8 +271,8 @@ bool PlayerController::teleport(
     velocity_ = physics.playerLinearVelocity();
     grounded_ = physics.playerGrounded();
     moving_ = false;
-    activeAttack_ = PlayerAttack::None;
-    triggeredAttack_ = PlayerAttack::None;
+    activeSkill_ = PlayerSkill::None;
+    triggeredSkill_ = PlayerSkill::None;
     attackAnimationTimeSeconds_ = 0.0f;
     runAnimationTimeSeconds_ = 0.0f;
     lookDragging_ = false;
@@ -318,25 +316,9 @@ void PlayerController::configureRunGait(
     runAnimationTimeSeconds_ = 0.0f;
 }
 
-void PlayerController::configureAttackAnimation(
-    PlayerAttack attack,
-    float durationSeconds
-) {
-    if (!std::isfinite(durationSeconds) || durationSeconds <= 0.0f) {
-        return;
-    }
-    switch (attack) {
-    case PlayerAttack::Tornado:
-        tornadoAttackDurationSeconds_ = durationSeconds;
-        break;
-    case PlayerAttack::LightningSlash:
-        lightningAttackDurationSeconds_ = durationSeconds;
-        break;
-    case PlayerAttack::FlameNova:
-        flameAttackDurationSeconds_ = durationSeconds;
-        break;
-    case PlayerAttack::None:
-        break;
+void PlayerController::configureSkillAnimation(PlayerSkill skill, float durationSeconds) {
+    if (skill != PlayerSkill::None && std::isfinite(durationSeconds) && durationSeconds > 0.0f) {
+        skillAnimationSeconds_[static_cast<std::size_t>(skill)] = durationSeconds;
     }
 }
 
@@ -375,48 +357,32 @@ void PlayerController::update(
     float deltaSeconds,
     PhysicsWorld& physics,
     bool keyboardCaptured,
-    bool mouseCaptured
+    bool mouseCaptured,
+    const std::array<bool, kPlayerSkillCount>& skillEnabled
 ) {
     if (!active_) {
         return;
     }
     deltaSeconds = std::clamp(deltaSeconds, 0.0f, 0.1f);
     grounded_ = physics.playerGrounded();
-    triggeredAttack_ = PlayerAttack::None;
-
-    const bool tornadoAttackDown = window != nullptr &&
-        keyPressed(window, Key::Tornado);
-    const bool lightningAttackDown = window != nullptr &&
-        keyPressed(window, Key::Lightning);
-    const bool flameAttackDown = window != nullptr &&
-        keyPressed(window, Key::Flame);
-    if (!keyboardCaptured) {
-        if (lightningAttackDown && !lightningAttackWasDown_) {
-            triggeredAttack_ = PlayerAttack::LightningSlash;
-        } else if (flameAttackDown && !flameAttackWasDown_) {
-            triggeredAttack_ = PlayerAttack::FlameNova;
-        } else if (tornadoAttackDown && !tornadoAttackWasDown_) {
-            triggeredAttack_ = PlayerAttack::Tornado;
+    triggeredSkill_ = PlayerSkill::None;
+    constexpr std::array skillKeys{Key::SkillQ, Key::SkillW, Key::SkillE, Key::SkillR};
+    static_assert(skillKeys.size() == kPlayerSkillCount);
+    for (std::size_t index = 0; index < skillKeys.size(); ++index) {
+        const bool down = keyPressed(window, skillKeys[index]);
+        if (!keyboardCaptured && skillEnabled[index] && down && !skillWasDown_[index] &&
+            triggeredSkill_ == PlayerSkill::None) {
+            triggeredSkill_ = static_cast<PlayerSkill>(index);
         }
+        skillWasDown_[index] = down;
     }
-    tornadoAttackWasDown_ = tornadoAttackDown;
-    lightningAttackWasDown_ = lightningAttackDown;
-    flameAttackWasDown_ = flameAttackDown;
-    if (triggeredAttack_ != PlayerAttack::None) {
-        activeAttack_ = triggeredAttack_;
+    if (triggeredSkill_ != PlayerSkill::None) {
+        activeSkill_ = triggeredSkill_;
         attackAnimationTimeSeconds_ = 0.0f;
-    }
-    if (activeAttack_ != PlayerAttack::None) {
+    } else if (attacking()) {
         attackAnimationTimeSeconds_ += deltaSeconds;
-        float attackDuration = tornadoAttackDurationSeconds_;
-        if (activeAttack_ == PlayerAttack::LightningSlash) {
-            attackDuration = lightningAttackDurationSeconds_;
-        } else if (activeAttack_ == PlayerAttack::FlameNova) {
-            attackDuration = flameAttackDurationSeconds_;
-        }
-        if (attackAnimationTimeSeconds_ >= attackDuration) {
-            attackAnimationTimeSeconds_ = attackDuration;
-            activeAttack_ = PlayerAttack::None;
+        if (attackAnimationTimeSeconds_ >= skillAnimationSeconds_[static_cast<std::size_t>(activeSkill_)]) {
+            activeSkill_ = PlayerSkill::None;
         }
     }
 
@@ -476,7 +442,7 @@ void PlayerController::update(
             keyPressed(window, Key::D) ||
             keyPressed(window, Key::Right);
         const bool moveForward =
-            keyPressed(window, Key::W) ||
+            (!skillEnabled[static_cast<std::size_t>(PlayerSkill::W)] && keyPressed(window, Key::W)) ||
             keyPressed(window, Key::Up);
         const bool moveBackward =
             keyPressed(window, Key::S) ||

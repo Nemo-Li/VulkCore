@@ -295,9 +295,8 @@ private:
         const glm::vec3& cameraRight,
         const glm::vec3& cameraUp
     );
-    void createTornadoMeshEffect(bool alwaysVisible = false);
-    void createPlayerAttackEffect();
-    void updatePlayerAttackEffect();
+    void createTornadoPreview();
+    void updatePlayerSkillEffects();
     bool removeSceneNodeById(std::uint32_t nodeId);
     void selectModelNode(ModelNode& node);
     void updateSceneNodeTransforms(float elapsedSeconds, float deltaSeconds, const glm::vec3& editMovement);
@@ -507,13 +506,15 @@ private:
     float playerModelAutoScale_ = 1.0f;
     float playerModelGroundOffset_ = 0.0f;
     std::optional<std::uint32_t> playerRunAnimationClipIndex_;
-    std::optional<std::uint32_t> playerAttackAnimationClipIndex_;
-    std::optional<std::uint32_t> playerLightningAnimationClipIndex_;
-    std::optional<std::uint32_t> playerFlameAnimationClipIndex_;
+    std::array<std::optional<std::uint32_t>, kPlayerSkillCount> playerSkillAnimationClips_;
+    struct PlayerSkillEffect {
+        std::uint32_t nodeId = 0;
+        float forwardOffset = 0.0f;
+        float heightOffset = 0.0f;
+        bool followPlayer = false;
+    };
+    std::array<std::optional<PlayerSkillEffect>, kPlayerSkillCount> playerSkillEffects_;
     static constexpr std::uint32_t kPlayerSceneNodeId = 0xE2000000u;
-    static constexpr std::uint32_t kPlayerAttackParticleNodeId = 0xDFFFFFF0u;
-    static constexpr std::uint32_t kPlayerLightningParticleNodeId = 0xDFFFFFF1u;
-    static constexpr std::uint32_t kPlayerFlameParticleNodeId = 0xDFFFFFF2u;
     std::unordered_map<std::uint32_t, glm::mat4> sceneNodeTransforms_;
     std::unordered_map<std::uint32_t, bool> sceneNodeRenderEnabled_;
     std::unordered_set<std::uint32_t> removedSceneNodeIds_;
@@ -604,10 +605,9 @@ private:
     std::filesystem::path pendingSceneOpen_;
     bool editorDirty_ = false;
     bool editorSceneChangeConfirmed_ = false;
-    enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerSettings, PlayerEffect };
+    enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerSettings };
     EditorSelection editorSelection_ = EditorSelection::None;
     std::optional<std::uint32_t> editorPart_;
-    std::uint32_t editorPlayerEffect_ = 0;
     struct EditorFilePicker {
         std::string title;
         EditorFileType type{};
@@ -706,12 +706,7 @@ private:
     std::unordered_map<std::uint32_t, ParticleSystem> particleSystems_;
     std::array<char, 512> particleTexturePathBuffer_{};
     std::uint32_t particleTexturePathNodeId_ = std::numeric_limits<std::uint32_t>::max();
-    std::uint32_t tornadoMeshMaterialIndex_ = 0;
-    std::uint32_t tornadoMeshPartIndex_ = 0;
-    bool tornadoMeshPresent_ = false;
-    bool tornadoMeshVisible_ = false;
-    bool tornadoMeshAlwaysVisible_ = false;
-    glm::mat4 tornadoMeshTransform_{1.0f};
+    glm::mat4 tornadoPreviewTransform_{1.0f};
     float lastFrameElapsedSeconds_ = 0.0f;
 
     static constexpr std::uint32_t kMaximumParticleSystems = 16;

@@ -117,10 +117,14 @@ node_removed 4000030
 node_removed 4000031
 node_removed 4000032
 node_removed 4000033
-particle_system_object 3758096369 1 0 0 192 0.159999996 190 0.340000004 0.159999996 0.00139200001 0.219999999 0.000187199985 0.00026879998 95 0 -0.0362406895 -0.0656050071 -0.0285305101 -0.964735866 0.0598922893 0.256315529 13 3.35999976e-05 2 1 0.680000007 0.819999993 1 1 0.319999993 0.0799999982 1 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\lightning_slash.png"
-particle_system_object 3758096370 1 0 0 320 0.239999995 560 0.720000029 0.219999999 0.000563999987 0.300000012 0.000148799998 5.75999984e-05 18 0 -0.0360504873 -0.0657874122 -0.0285810437 0 0 1 24 0.000100799996 4 1 1 0.819999993 0.280000001 1 1 0.0799999982 0.00999999978 0 "D:\\Study\\VulkCore\\assets\\textures\\vfx\\flame_nova.png"
 node_transform 1000001 -0.0425714478 0.0297301859 -0.015020608 0 0 0 1
 node_transform 2000001 -0.0426181592 0.0297280904 -0.0145661114 0 0 0 1
 node_transform 3000001 -0.0425500683 0.029723689 -0.0142000085 0 0 0 1
-material 32 "Tornado VFX (layered energy ribbons)" 0.680000007 0.819999993 1 0.939999998 0 0.180000007 0.959999979 2 0 1 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_ribbon.png" shader_tornado.vert - - - shader_tornado.frag - 0 1 0.119999997 1 0.349999994 1 0.0250000004 0.0599999987 0.200000003 0.920000017 3.5999999
-material_textures 32 "D:/Study/VulkCore\\assets\\textures\\vfx\\tornado_distortion.png" ""
+realtime_effect 3489660928 "../assets/effects/player/lightning.vfx3d" 0 0 skill Q 2.15 0.08 0
+realtime_effect 3489660929 "../assets/effects/player/shield.vfx3d" 0 0 skill W 0 0.05 1
+realtime_effect 3489660930 "../assets/effects/player/fire.vfx3d" 0 0 skill E 0.75 0.08 0
+realtime_effect 3489660931 "../assets/effects/player/arcane.vfx3d" 0 0 skill R 2.8 0.08 0
+node_transform 3489660928 0 0 0 0 0 0 0.82
+node_transform 3489660929 0 0 0 0 0 0 0.9
+node_transform 3489660930 0 0 0 0 0 0 0.72
+node_transform 3489660931 0 0 0 0 0 0 0.9

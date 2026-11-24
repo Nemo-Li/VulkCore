@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -27,12 +29,9 @@ CapsuleMeshData createCapsuleMesh(
 class TerrainScene;
 class PhysicsWorld;
 
-enum class PlayerAttack : std::uint8_t {
-    None = 0,
-    Tornado,
-    LightningSlash,
-    FlameNova,
-};
+enum class PlayerSkill : std::uint8_t { Q, W, E, R, None };
+inline constexpr std::string_view kPlayerSkillKeys = "QWER";
+inline constexpr auto kPlayerSkillCount = static_cast<std::size_t>(PlayerSkill::None);
 
 struct PlayerCameraView {
     glm::vec3 position;
@@ -66,13 +65,14 @@ public:
         float groundSpeed,
         std::vector<float> footTractionSamples
     );
-    void configureAttackAnimation(PlayerAttack attack, float durationSeconds);
+    void configureSkillAnimation(PlayerSkill skill, float durationSeconds);
     void update(
         Window* window,
         float deltaSeconds,
         PhysicsWorld& physics,
         bool keyboardCaptured,
-        bool mouseCaptured
+        bool mouseCaptured,
+        const std::array<bool, kPlayerSkillCount>& skillEnabled
     );
 
     bool active() const { return active_; }
@@ -90,10 +90,9 @@ public:
     float facingYawRadians() const { return facingYawRadians_; }
     bool moving() const { return moving_; }
     float runAnimationTimeSeconds() const { return runAnimationTimeSeconds_; }
-    bool attacking() const { return activeAttack_ != PlayerAttack::None; }
-    bool attackTriggered() const { return triggeredAttack_ != PlayerAttack::None; }
-    PlayerAttack activeAttack() const { return activeAttack_; }
-    PlayerAttack triggeredAttack() const { return triggeredAttack_; }
+    bool attacking() const { return activeSkill_ != PlayerSkill::None; }
+    PlayerSkill activeSkill() const { return activeSkill_; }
+    PlayerSkill triggeredSkill() const { return triggeredSkill_; }
     float attackAnimationTimeSeconds() const { return attackAnimationTimeSeconds_; }
     PlayerCameraView cameraView(const PhysicsWorld& physics) const;
 
@@ -108,11 +107,9 @@ private:
     bool grounded_ = true;
     bool moving_ = false;
     bool jumpWasDown_ = false;
-    bool tornadoAttackWasDown_ = false;
-    bool lightningAttackWasDown_ = false;
-    bool flameAttackWasDown_ = false;
-    PlayerAttack activeAttack_ = PlayerAttack::None;
-    PlayerAttack triggeredAttack_ = PlayerAttack::None;
+    std::array<bool, kPlayerSkillCount> skillWasDown_{};
+    PlayerSkill activeSkill_ = PlayerSkill::None;
+    PlayerSkill triggeredSkill_ = PlayerSkill::None;
     bool lookWasDown_ = false;
     bool lookDragging_ = false;
     double lastCursorX_ = 0.0;
@@ -126,9 +123,8 @@ private:
     float runGroundSpeed_ = 0.0f;
     float moveSpeedMultiplier_ = kDefaultMoveSpeedMultiplier;
     float attackAnimationTimeSeconds_ = 0.0f;
-    float tornadoAttackDurationSeconds_ = 0.85f;
-    float lightningAttackDurationSeconds_ = 0.72f;
-    float flameAttackDurationSeconds_ = 1.05f;
+    static constexpr std::array<float, kPlayerSkillCount> kDefaultSkillAnimationSeconds{0.72f, 0.6f, 1.05f, 0.85f};
+    std::array<float, kPlayerSkillCount> skillAnimationSeconds_ = kDefaultSkillAnimationSeconds;
     std::vector<float> footTractionSamples_;
     float yawRadians_ = 0.0f;
     float cameraElevationRadians_ = 0.0f;

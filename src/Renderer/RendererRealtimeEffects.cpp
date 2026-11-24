@@ -636,7 +636,7 @@ void Renderer::importRealtimeEffect(const std::filesystem::path& path) {
     try {
         std::uint32_t id = kParticleSceneNodeBase;
         while (findSceneNodeById(meshData_, id) || removedSceneNodeIds_.contains(id) || particleSystems_.contains(id)) {
-            require(++id < kPlayerAttackParticleNodeId, "No free effect node ID.");
+            require(++id < kLegacyPlayerEffectNodeBase, "No free effect node ID.");
         }
         addRealtimeEffect(id, normalizedPath(path));
         selectedModelNode_ = &meshData_.additionalNodes.back();
@@ -685,8 +685,14 @@ bool Renderer::drawRealtimeEffectControls(ModelNode& node) {
     edited |= ImGui::DragFloat3("Rotation", &node.transformRotationDegrees.x, 1.0f);
     edited |= ImGui::DragFloat("Scale", &node.transformScaleFactor, 0.025f, kMinimumModelScaleFactor, kMaximumRealtimeEffectScale,
         "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    edited |= ImGui::Checkbox("Play on awake", &effect.autoPlay);
-    edited |= ImGui::Checkbox("Loop", &effect.loop);
+    const auto skill = std::find_if(playerSkillEffects_.begin(), playerSkillEffects_.end(),
+        [&node](const auto& binding) { return binding && binding->nodeId == node.nodeId; });
+    if (skill == playerSkillEffects_.end()) {
+        edited |= ImGui::Checkbox("Play on awake", &effect.autoPlay);
+        edited |= ImGui::Checkbox("Loop", &effect.loop);
+    } else {
+        ImGui::TextDisabled("Player skill %c", kPlayerSkillKeys[skill - playerSkillEffects_.begin()]);
+    }
     if (ImGui::Button("Replay")) playRealtimeEffect(node.nodeId);
     ImGui::SameLine();
     if (ImGui::Button("Stop")) stopRealtimeEffect(node.nodeId);
@@ -713,7 +719,16 @@ void Renderer::saveRealtimeEffects(std::ostream& file,
         if (it == realtimeEffects_.end()) continue;
         const auto& effect = *it->second;
         file << "realtime_effect " << node.nodeId << ' ' << std::quoted(reference(effect.path))
-             << ' ' << effect.autoPlay << ' ' << effect.loop << '\n';
+             << ' ' << effect.autoPlay << ' ' << effect.loop;
+        for (std::size_t index = 0; index < playerSkillEffects_.size(); ++index) {
+            const auto& skill = playerSkillEffects_[index];
+            if (skill && skill->nodeId == node.nodeId) {
+                file << " skill " << kPlayerSkillKeys[index] << ' ' << skill->forwardOffset
+                     << ' ' << skill->heightOffset << ' ' << skill->followPlayer;
+                break;
+            }
+        }
+        file << '\n';
     }
 }
 
@@ -726,6 +741,25 @@ void Renderer::loadRealtimeEffect(std::uint32_t id, const std::filesystem::path&
 
 void Renderer::invalidateRealtimeEffectPipelines() {
     for (auto& [id, effect] : realtimeEffects_) effect->destroyPipelines();
+}
+
+void Renderer::updatePlayerSkillEffects() {
+    const float yaw = playerController_.facingYawRadians();
+    const glm::vec3 forward(std::sin(yaw), 0.0f, std::cos(yaw));
+    const auto triggered = static_cast<std::size_t>(playerController_.triggeredSkill());
+    for (std::size_t index = 0; index < playerSkillEffects_.size(); ++index) {
+        const auto& skill = playerSkillEffects_[index];
+        if (!skill || (index != triggered && !skill->followPlayer)) continue;
+        const glm::vec3 position = playerController_.position() + forward * skill->forwardOffset +
+            glm::vec3(0.0f, skill->heightOffset, 0.0f);
+        if (index == triggered) {
+            playRealtimeEffect(skill->nodeId, position);
+        } else if (const auto it = realtimeEffects_.find(skill->nodeId); it != realtimeEffects_.end()) {
+            auto& effect = *it->second;
+            // Replay in the editor uses the authored position rather than attaching to the player.
+            if (effect.playing && effect.position) effect.position = position;
+        }
+    }
 }
 
 void Renderer::updateRealtimeEffects(float dt) {

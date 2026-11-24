@@ -17,7 +17,7 @@ struct Window;
 using Window = GLFWwindow;
 #endif
 
-enum class Key { A, D, W, S, Left, Right, Up, Down, Jump, Lightning, Flame, Tornado, Screenshot };
+enum class Key { A, D, W, S, Left, Right, Up, Down, Jump, SkillQ, SkillE, SkillR, Screenshot, SkillW, Count };
 using ResizeCallback = void (*)(Window*, int, int);
 
 bool keyPressed(Window* window, Key key);

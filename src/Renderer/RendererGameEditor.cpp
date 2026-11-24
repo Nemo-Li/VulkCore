@@ -335,7 +335,7 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
     const auto id = node.nodeId;
     const bool terrain = id >= kTerrainSceneNodeId && id < kPlayerSceneNodeId;
     const bool grass = id == kGrassSceneNodeId || grassLodForLayer(id - kGrassLodNodeBase).has_value();
-    if (terrain || grass || id == kPlayerTornadoMeshNodeId ||
+    if (terrain || grass || id == kTornadoPreviewNodeId ||
         (&node == &meshData_.hierarchy && node.name == "Scene")) {
         return glm::vec3(0.0f);
     }
@@ -561,18 +561,6 @@ void Renderer::drawGameOutliner() {
     };
     drawRoot(drawRoot, meshData_.hierarchy);
     for (auto& object : meshData_.additionalNodes) drawRoot(drawRoot, object);
-    for (const auto effectId : {kPlayerLightningParticleNodeId, kPlayerFlameParticleNodeId}) {
-        if (!particleSystems_.contains(effectId)) continue;
-        const char* label = effectId == kPlayerLightningParticleNodeId
-            ? "Lightning Slash (Q)" : "Flame Nova (E)";
-        if (ImGui::Selectable(label, editorSelection_ == EditorSelection::PlayerEffect &&
-            editorPlayerEffect_ == effectId)) {
-            editorSelection_ = EditorSelection::PlayerEffect;
-            editorPlayerEffect_ = effectId;
-            selectedModelNode_ = nullptr;
-            editorPart_.reset();
-        }
-    }
 
     if (pendingSceneChange_ == EditorSceneChange::None && ImGui::IsWindowFocused() &&
         editorSelection_ == EditorSelection::Node && selectedModelNode_ && editorDeletePressed()) {
@@ -857,14 +845,6 @@ void Renderer::drawGameInspector() {
             }
             return;
         }
-        if (editorSelection_ == EditorSelection::PlayerEffect) {
-            ImGui::SeparatorText(editorPlayerEffect_ == kPlayerLightningParticleNodeId
-                ? "Lightning Slash" : "Flame Nova");
-            drawEditorShader(ShaderStage::Vertex, "shader_particle.vert", "particle");
-            drawEditorShader(ShaderStage::Fragment, "shader_particle.frag", "particle");
-            drawParticleSystemControls(editorPlayerEffect_, editorDirty_);
-            return;
-        }
         if (!selectedModelNode_) {
             ImGui::TextWrapped("Select an object in the scene.");
             return;
@@ -908,7 +888,7 @@ void Renderer::drawGameInspector() {
             drawFirstMaterial(node, "water");
             return;
         }
-        if (node.nodeId == kPlayerTornadoMeshNodeId) {
+        if (node.nodeId == kTornadoPreviewNodeId) {
             drawFirstMaterial(node, "tornado");
             return;
         }

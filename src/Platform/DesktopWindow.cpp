@@ -2,6 +2,8 @@
 #include <GLFW/glfw3.h>
 #include <backends/imgui_impl_glfw.h>
 
+#include <iterator>
+
 #include "vulkcore/Platform/Window.hpp"
 
 namespace VulkCore {
@@ -9,7 +11,8 @@ namespace VulkCore {
 bool keyPressed(Window* window, Key key) {
     constexpr int keys[] = {GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S,
         GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_SPACE,
-        GLFW_KEY_Q, GLFW_KEY_E, GLFW_KEY_R, GLFW_KEY_F12};
+        GLFW_KEY_Q, GLFW_KEY_E, GLFW_KEY_R, GLFW_KEY_F12, GLFW_KEY_W};
+    static_assert(std::size(keys) == static_cast<unsigned>(Key::Count));
     return window && glfwGetKey(window, keys[static_cast<unsigned>(key)]) == GLFW_PRESS;
 }
 MovementInput analogMovement(Window*) { return {}; }

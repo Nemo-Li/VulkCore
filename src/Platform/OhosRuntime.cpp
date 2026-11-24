@@ -278,7 +278,8 @@ napi_value setKey(napi_env env, napi_callback_info info) {
     std::int32_t key = -1;
     bool pressed = false;
     if (argc == 2 && napi_get_value_int32(env, args[0], &key) == napi_ok &&
-        napi_get_value_bool(env, args[1], &pressed) == napi_ok && key >= 0 && key < 13) {
+        napi_get_value_bool(env, args[1], &pressed) == napi_ok && key >= 0 &&
+        key < static_cast<std::int32_t>(VulkCore::Key::Count)) {
         std::lock_guard lock(runtime.window.inputMutex);
         runtime.window.keys[static_cast<unsigned>(key)] = pressed;
     }

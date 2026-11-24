@@ -233,31 +233,29 @@ int playerRunClipScore(const SkeletalAnimationClip& clip) {
     return -1;
 }
 
-int playerAttackClipScore(
-    const SkeletalAnimationClip& clip,
-    PlayerAttack attack
-) {
+int playerSkillClipScore(const SkeletalAnimationClip& clip, PlayerSkill skill) {
     const std::string name = normalizedAnimationName(clip.name);
-    switch (attack) {
-    case PlayerAttack::Tornado:
-        if (name == "attackfirst") return 1000;
-        if (name == "attack1") return 900;
-        break;
-    case PlayerAttack::LightningSlash:
+    switch (skill) {
+    case PlayerSkill::Q:
         if (name == "attack2") return 1000;
         if (name == "attack3") return 800;
         break;
-    case PlayerAttack::FlameNova:
+    case PlayerSkill::W:
+        if (name == "yasuospell2anm") return 1000;
+        if (name == "attack3") return 900;
+        break;
+    case PlayerSkill::E:
         if (name == "attack4") return 1000;
         if (name == "attack3") return 900;
         break;
-    case PlayerAttack::None:
+    case PlayerSkill::R:
+        if (name == "attackfirst") return 1000;
+        if (name == "attack1") return 900;
+        break;
+    case PlayerSkill::None:
         return -1;
     }
-    if (name.find("attack") != std::string::npos) {
-        return 100;
-    }
-    return -1;
+    return name.find("attack") != std::string::npos ? 100 : -1;
 }
 
 int footBoneScore(const std::string& sourceName, bool leftFoot) {
@@ -488,9 +486,7 @@ EstimatedPlayerRunGait estimatePlayerRunGait(
 
 void Renderer::configurePlayerRunAnimation() {
     playerRunAnimationClipIndex_.reset();
-    playerAttackAnimationClipIndex_.reset();
-    playerLightningAnimationClipIndex_.reset();
-    playerFlameAnimationClipIndex_.reset();
+    playerSkillAnimationClips_.fill(std::nullopt);
     SkeletalAnimationInstance* playerInstance = nullptr;
     for (SkeletalAnimationInstance& instance : meshData_.skeletalAnimationInstances) {
         if (instance.ownerNodeId == kPlayerSceneNodeId) {
@@ -519,51 +515,32 @@ void Renderer::configurePlayerRunAnimation() {
         return;
     }
     int bestScore = -1;
-    int bestAttackScore = -1;
-    int bestLightningScore = -1;
-    int bestFlameScore = -1;
     std::uint32_t bestClipIndex = 0;
-    std::uint32_t bestAttackClipIndex = 0;
-    std::uint32_t bestLightningClipIndex = 0;
-    std::uint32_t bestFlameClipIndex = 0;
-    for (std::uint32_t clipIndex = 0;
-         clipIndex < playerInstance->animationCount;
-         ++clipIndex) {
-        const int score = playerRunClipScore(
-            meshData_.skeletalAnimations[animationStart + clipIndex]
-        );
-        if (score > bestScore) {
-            bestScore = score;
+    std::array<int, kPlayerSkillCount> bestSkillScores;
+    bestSkillScores.fill(-1);
+    for (std::uint32_t clipIndex = 0; clipIndex < playerInstance->animationCount; ++clipIndex) {
+        const auto& clip = meshData_.skeletalAnimations[animationStart + clipIndex];
+        const int runScore = playerRunClipScore(clip);
+        if (runScore > bestScore) {
+            bestScore = runScore;
             bestClipIndex = clipIndex;
         }
-        const int attackScore = playerAttackClipScore(
-            meshData_.skeletalAnimations[animationStart + clipIndex],
-            PlayerAttack::Tornado
-        );
-        if (attackScore > bestAttackScore) {
-            bestAttackScore = attackScore;
-            bestAttackClipIndex = clipIndex;
-        }
-        const int lightningScore = playerAttackClipScore(
-            meshData_.skeletalAnimations[animationStart + clipIndex],
-            PlayerAttack::LightningSlash
-        );
-        if (lightningScore > bestLightningScore) {
-            bestLightningScore = lightningScore;
-            bestLightningClipIndex = clipIndex;
-        }
-        const int flameScore = playerAttackClipScore(
-            meshData_.skeletalAnimations[animationStart + clipIndex],
-            PlayerAttack::FlameNova
-        );
-        if (flameScore > bestFlameScore) {
-            bestFlameScore = flameScore;
-            bestFlameClipIndex = clipIndex;
+        for (std::size_t index = 0; index < bestSkillScores.size(); ++index) {
+            const int skillScore = playerSkillClipScore(clip, static_cast<PlayerSkill>(index));
+            if (skillScore > bestSkillScores[index]) {
+                bestSkillScores[index] = skillScore;
+                playerSkillAnimationClips_[index] = clipIndex;
+            }
         }
     }
-    if (bestScore < 0) {
-        return;
+    for (std::size_t index = 0; index < playerSkillAnimationClips_.size(); ++index) {
+        if (!playerSkillAnimationClips_[index]) continue;
+        const auto& clip = meshData_.skeletalAnimations[animationStart + *playerSkillAnimationClips_[index]];
+        const double ticksPerSecond = clip.ticksPerSecond > 0.0 ? clip.ticksPerSecond : 25.0;
+        playerController_.configureSkillAnimation(static_cast<PlayerSkill>(index),
+            static_cast<float>(clip.durationTicks / ticksPerSecond));
     }
+    if (bestScore < 0) return;
 
     const ModelNode* root = nullptr;
     for (ModelNode& node : meshData_.additionalNodes) {
@@ -576,51 +553,6 @@ void Renderer::configurePlayerRunAnimation() {
         return;
     }
     playerRunAnimationClipIndex_ = bestClipIndex;
-    const auto configureAttack = [this, animationStart](
-                                     PlayerAttack attack,
-                                     int score,
-                                     std::uint32_t clipIndex,
-                                     std::optional<std::uint32_t>& destination,
-                                     const char* key
-                                 ) {
-        if (score < 0) {
-            return;
-        }
-        destination = clipIndex;
-        const SkeletalAnimationClip& attackClip = meshData_.skeletalAnimations[
-            animationStart + clipIndex
-        ];
-        const double attackTicksPerSecond = attackClip.ticksPerSecond > 0.0
-            ? attackClip.ticksPerSecond
-            : 25.0;
-        playerController_.configureAttackAnimation(
-            attack,
-            static_cast<float>(attackClip.durationTicks / attackTicksPerSecond)
-        );
-        std::cerr << "Configured Player attack clip " << attackClip.name
-                  << " (" << key << " key)\n";
-    };
-    configureAttack(
-        PlayerAttack::Tornado,
-        bestAttackScore,
-        bestAttackClipIndex,
-        playerAttackAnimationClipIndex_,
-        "R"
-    );
-    configureAttack(
-        PlayerAttack::LightningSlash,
-        bestLightningScore,
-        bestLightningClipIndex,
-        playerLightningAnimationClipIndex_,
-        "Q"
-    );
-    configureAttack(
-        PlayerAttack::FlameNova,
-        bestFlameScore,
-        bestFlameClipIndex,
-        playerFlameAnimationClipIndex_,
-        "E"
-    );
     playerInstance->activeClip = bestClipIndex;
     const SkeletalAnimationClip& clip = meshData_.skeletalAnimations[
         animationStart + bestClipIndex
@@ -1125,24 +1057,17 @@ void Renderer::updateSkeletalAnimations(float deltaSeconds) {
         if (instance.ownerNodeId == kPlayerSceneNodeId) {
             const bool hasRunClip = playerRunAnimationClipIndex_.has_value() &&
                 *playerRunAnimationClipIndex_ < instance.animationCount;
-            const std::optional<std::uint32_t>* activeAttackClip = nullptr;
-            if (playerController_.activeAttack() == PlayerAttack::Tornado) {
-                activeAttackClip = &playerAttackAnimationClipIndex_;
-            } else if (playerController_.activeAttack() == PlayerAttack::LightningSlash) {
-                activeAttackClip = &playerLightningAnimationClipIndex_;
-            } else if (playerController_.activeAttack() == PlayerAttack::FlameNova) {
-                activeAttackClip = &playerFlameAnimationClipIndex_;
-            }
-            const bool hasAttackClip = activeAttackClip != nullptr &&
-                activeAttackClip->has_value() &&
-                **activeAttackClip < instance.animationCount;
-            instance.enabled = (hasAttackClip && playerController_.attacking()) ||
-                (hasRunClip && playerController_.moving());
+            const bool attacking = playerController_.attacking();
+            const auto skillClip = attacking
+                ? playerSkillAnimationClips_[static_cast<std::size_t>(playerController_.activeSkill())]
+                : std::nullopt;
+            const bool hasSkillClip = skillClip && *skillClip < instance.animationCount;
+            instance.enabled = hasSkillClip || (hasRunClip && playerController_.moving());
             instance.playing = false;
-            instance.looping = !playerController_.attacking();
-            if (hasAttackClip && playerController_.attacking()) {
+            instance.looping = !attacking;
+            if (hasSkillClip) {
                 instance.timeSeconds = playerController_.attackAnimationTimeSeconds();
-                instance.activeClip = **activeAttackClip;
+                instance.activeClip = *skillClip;
             } else if (hasRunClip) {
                 instance.timeSeconds = playerController_.runAnimationTimeSeconds();
                 instance.activeClip = *playerRunAnimationClipIndex_;
@@ -1297,19 +1222,18 @@ void Renderer::updateSceneNodeTransforms(float elapsedSeconds, float deltaSecond
         if (&node == selectedModelNode_ && editMovement != glm::vec3(0.0f)) {
             editorDirty_ |= translateSceneNode(node, objectTransform, editMovement);
         }
-        const bool isTornadoMesh = node.nodeId == kPlayerTornadoMeshNodeId;
+        const bool isTornadoPreview = node.nodeId == kTornadoPreviewNodeId;
         const bool renderEnabled = parentRenderEnabled && node.renderEnabled &&
-            !removedSceneNodeIds_.contains(node.nodeId) &&
-            (!isTornadoMesh || tornadoMeshVisible_);
-        glm::mat4 transform = isTornadoMesh
-            ? tornadoMeshTransform_
+            !removedSceneNodeIds_.contains(node.nodeId);
+        glm::mat4 transform = isTornadoPreview
+            ? tornadoPreviewTransform_
             : objectTransform * nodeManualTransform(node);
         const bool patrolControlled = !enemyPatrols_.empty() &&
             updateEnemyPatrol(node, transform, renderEnabled, deltaSeconds);
         if (terrainScene_ && !modelGravity_.empty()) {
             updateModelGravity(node, objectTransform, transform, renderEnabled, patrolControlled);
         }
-        if (!isTornadoMesh && node.rotationAnimationEnabled) {
+        if (!isTornadoPreview && node.rotationAnimationEnabled) {
             // Parent animation is applied after child-local animation, so
             // transforms are accumulated in hierarchy order from root to leaf.
             transform *= nodeAnimationTransform(node, elapsedSeconds);

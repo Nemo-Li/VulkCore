@@ -89,11 +89,12 @@ struct Index {
         }).margin({ left: 24, bottom: 24 })
         Row({ space: 10 }) {
           this.control('Q', 9)
+          this.control('W', 13)
           this.control('E', 10)
           this.control('R', 11)
           this.control('Jump', 8)
         }.position({ right: 24, bottom: 24 })
-        Text('Move: joystick   Look: drag right side   Skills: Q / E / R')
+        Text('Move: joystick   Look: drag right side   Skills: Q / W / E / R')
           .fontSize(14).fontColor('#ffffff').position({ left: 24, top: 12 })
           .hitTestBehavior(HitTestMode.None)
       }
