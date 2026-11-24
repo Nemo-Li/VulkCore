@@ -83,6 +83,7 @@ public:
     void setMoveSpeedMultiplier(float multiplier);
     std::optional<float> cameraFollowDistance() const { return cameraFollowDistance_; }
     void setCameraFollowDistance(float distance);
+    void recenterFollowCamera();
     void setMoveDestination(const glm::vec2& destination) { moveDestination_ = destination; }
     void cancelMove() { moveDestination_.reset(); }
     bool debugModeEnabled() const { return debugModeEnabled_; }
@@ -101,6 +102,15 @@ public:
     PlayerCameraView cameraView(const PhysicsWorld& physics) const;
 
 private:
+    struct FollowCameraPose {
+        float yaw;
+        float elevation;
+        float distance;
+    };
+
+    FollowCameraPose desiredFollowCameraPose() const;
+    float followCameraClearance(const PhysicsWorld& physics, float yaw, float distance) const;
+    void updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds);
     glm::vec3 horizontalForward() const;
     float currentFootTraction() const;
 
@@ -132,6 +142,7 @@ private:
     std::array<float, kPlayerSkillCount> skillAnimationSeconds_ = kDefaultSkillAnimationSeconds;
     std::vector<float> footTractionSamples_;
     std::optional<float> cameraFollowDistance_;
+    std::optional<FollowCameraPose> followCameraPose_;
     float yawRadians_ = 0.0f;
     float cameraElevationRadians_ = 0.0f;
 };

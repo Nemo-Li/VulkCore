@@ -518,9 +518,13 @@ bool Renderer::buildImGuiFrame() {
     if (playerController_.active() && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
         playerController_.setDebugModeEnabled(!playerController_.debugModeEnabled());
     }
-    if (terrainScene_ && playerController_.active() && sceneShortcuts &&
-        !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_M, false)) {
-        miniMapVisible_ = !miniMapVisible_;
+    if (terrainScene_ && playerController_.active() && sceneShortcuts && !ImGui::IsAnyItemActive()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+            miniMapVisible_ = !miniMapVisible_;
+        }
+        if (!sceneEditMode_ && !effectCamera_ && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
+            playerController_.recenterFollowCamera();
+        }
     }
     if (transitionSettings_.enabled) {
         const bool held = !sceneEditMode_ && !playerController_.debugModeEnabled() &&

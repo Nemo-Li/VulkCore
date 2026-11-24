@@ -27,12 +27,19 @@ constexpr float kMinCameraElevation = -35.0f * kPi / 180.0f;
 constexpr float kMaxCameraElevation = 65.0f * kPi / 180.0f;
 constexpr float kInitialCameraElevation = 15.0f * kPi / 180.0f;
 constexpr float kFollowCameraElevation = 18.0f * kPi / 180.0f;
-constexpr float kFollowCameraHeight = PlayerController::kBotwLinkHeight + 0.20f;
+constexpr glm::vec3 kFollowCameraOffset(0.0f, PlayerController::kBotwLinkHeight + 0.20f, 0.0f);
+constexpr float kFollowCameraTurnSpeed = 3.0f; // Radians per second.
+constexpr float kFollowCameraTurnResponse = 8.0f;
+constexpr float kFollowCameraArmResponse = 7.0f;
 constexpr float kCameraDistance = 5.0f;
 constexpr float kClickToMoveCameraElevation = 52.0f * kPi / 180.0f;
 constexpr float kClickToMoveCameraDistance = 13.0f;
 constexpr float kFallbackRunCycleSeconds = 0.9f;
 constexpr float kFallbackRunStrideHeightRatio = 1.3f;
+
+glm::vec3 forwardFromYaw(float yaw) {
+    return glm::normalize(glm::vec3(std::sin(yaw), 0.0f, std::cos(yaw)));
+}
 
 std::optional<float> playerGroundHeight(
     const TerrainScene& terrain,
@@ -173,6 +180,7 @@ void PlayerController::clear() {
     clickToMove_ = false;
     moveSpeedMultiplier_ = kDefaultMoveSpeedMultiplier;
     cameraFollowDistance_.reset();
+    followCameraPose_.reset();
     cameraOrbitOverridden_ = false;
     cancelMove();
     debugModeEnabled_ = false;
@@ -236,6 +244,7 @@ void PlayerController::reset(
     lookWasDown_ = false;
     lookDragging_ = false;
     cameraOrbitOverridden_ = false;
+    followCameraPose_.reset();
     // Imported player models use local +Z as forward. Spawn facing world -Z.
     facingYawRadians_ = kPi;
     runAnimationTimeSeconds_ = 0.0f;
@@ -281,7 +290,8 @@ bool PlayerController::teleport(
     attackAnimationTimeSeconds_ = 0.0f;
     runAnimationTimeSeconds_ = 0.0f;
     lookDragging_ = false;
-    cameraOrbitOverridden_ = false;
+    if (!clickToMove_) cameraOrbitOverridden_ = false;
+    followCameraPose_.reset();
     return true;
 }
 
@@ -302,8 +312,13 @@ void PlayerController::setMoveSpeedMultiplier(float multiplier) {
 void PlayerController::setCameraFollowDistance(float distance) {
     if (std::isfinite(distance)) {
         cameraFollowDistance_ = std::clamp(distance, kMinCameraFollowDistance, kMaxCameraFollowDistance);
-        cameraOrbitOverridden_ = false;
     }
+}
+
+void PlayerController::recenterFollowCamera() {
+    if (!cameraFollowDistance_) return;
+    cameraOrbitOverridden_ = false;
+    lookDragging_ = false;
 }
 
 void PlayerController::configureRunGait(
@@ -406,16 +421,17 @@ void PlayerController::update(
         lookDragging_ = !mouseCaptured;
         if (lookDragging_) {
             cursorPosition(window, &lastCursorX_, &lastCursorY_);
-            if (cameraFollowDistance_ && !cameraOrbitOverridden_) {
-                yawRadians_ = kPi - facingYawRadians_;
-                cameraElevationRadians_ = kFollowCameraElevation;
-            }
         }
     } else if (lookDragging_) {
         double cursorX = 0.0;
         double cursorY = 0.0;
         cursorPosition(window, &cursorX, &cursorY);
-        if (cameraFollowDistance_ && (cursorX != lastCursorX_ || cursorY != lastCursorY_)) {
+        if (cameraFollowDistance_ && !cameraOrbitOverridden_ &&
+            (cursorX != lastCursorX_ || cursorY != lastCursorY_)) {
+            // Begin orbiting from the displayed view, even while it is catching up.
+            const auto pose = followCameraPose_.value_or(desiredFollowCameraPose());
+            yawRadians_ = kPi - pose.yaw;
+            cameraElevationRadians_ = pose.elevation;
             cameraOrbitOverridden_ = true;
         }
         yawRadians_ = std::remainder(
@@ -475,7 +491,7 @@ void PlayerController::update(
         // Keep one input heading while a direction is held so the follow
         // camera turning with the player does not continuously steer it.
         if (cameraFollowDistance_ && !moving_ && !cameraOrbitOverridden_ && !lookDragging_) {
-            yawRadians_ = kPi - facingYawRadians_;
+            yawRadians_ = kPi - (followCameraPose_ ? followCameraPose_->yaw : facingYawRadians_);
         }
         const glm::vec3 forward = horizontalForward();
         const glm::vec3 right = glm::vec3(-forward.z, 0.0f, forward.x);
@@ -486,7 +502,7 @@ void PlayerController::update(
     }
     moving_ = movementDirection2D != glm::vec2(0.0f);
     if (moving_) {
-        if (!lookDragging_) cameraOrbitOverridden_ = false;
+        if (!clickToMove_ && !lookDragging_) cameraOrbitOverridden_ = false;
         const float targetFacingYaw = std::atan2(movementDirection2D.x, movementDirection2D.y);
         const float facingDelta = std::remainder(targetFacingYaw - facingYawRadians_, 2.0f * kPi);
         const float maximumTurn = kPlayerTurnSpeed * deltaSeconds;
@@ -527,19 +543,65 @@ void PlayerController::update(
     position_ = physics.playerRenderFootPosition();
     velocity_ = physics.playerLinearVelocity();
     grounded_ = physics.playerGrounded();
+    if (cameraFollowDistance_) updateFollowCamera(physics, deltaSeconds);
+}
+
+PlayerController::FollowCameraPose PlayerController::desiredFollowCameraPose() const {
+    return {
+        cameraOrbitOverridden_ ? kPi - yawRadians_ : facingYawRadians_,
+        cameraOrbitOverridden_ ? cameraElevationRadians_ : kFollowCameraElevation,
+        *cameraFollowDistance_
+    };
+}
+
+float PlayerController::followCameraClearance(const PhysicsWorld& physics, float yaw, float distance) const {
+    return physics.terrainSweepDistance(
+        position_ + kFollowCameraOffset, -forwardFromYaw(yaw), distance, kCameraCollisionRadius
+    );
+}
+
+void PlayerController::updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds) {
+    const auto desired = desiredFollowCameraPose();
+    if (!followCameraPose_) {
+        followCameraPose_ = desired;
+        followCameraPose_->distance = followCameraClearance(physics, desired.yaw, desired.distance);
+        return;
+    }
+
+    auto& pose = *followCameraPose_;
+    if (lookDragging_ && cameraOrbitOverridden_) {
+        // Direct orbit input stays responsive.
+        pose.yaw = desired.yaw;
+        pose.elevation = desired.elevation;
+    } else {
+        // Follow changes in the desired view along the shortest arc, including
+        // when a manual orbit is recentered.
+        const float blend = -std::expm1(-kFollowCameraTurnResponse * deltaSeconds);
+        const float maxStep = kFollowCameraTurnSpeed * deltaSeconds;
+        const float yawDifference = std::remainder(desired.yaw - pose.yaw, 2.0f * kPi);
+        glm::vec2 step = glm::vec2(yawDifference, desired.elevation - pose.elevation) * blend;
+        const float stepLength = glm::length(step);
+        if (stepLength > maxStep) step *= maxStep / stepLength;
+        pose.yaw = std::remainder(pose.yaw + step.x, 2.0f * kPi);
+        pose.elevation += step.y;
+    }
+
+    // Test the actual camera heading. Obstructions shorten the arm immediately.
+    // Ease the distance back out once the space behind the player clears.
+    const float sweepDistance = std::max(desired.distance, pose.distance);
+    const float clearance = followCameraClearance(physics, pose.yaw, sweepDistance);
+    const float armBlend = -std::expm1(-kFollowCameraArmResponse * deltaSeconds);
+    pose.distance = std::min(clearance, std::lerp(pose.distance, std::min(desired.distance, clearance), armBlend));
 }
 
 PlayerCameraView PlayerController::cameraView(const PhysicsWorld& physics) const {
     if (cameraFollowDistance_) {
-        const glm::vec3 forward = cameraOrbitOverridden_ ? horizontalForward() :
-            glm::normalize(glm::vec3(std::sin(facingYawRadians_), 0.0f, std::cos(facingYawRadians_)));
-        const glm::vec3 pivot = position_ + glm::vec3(0.0f, kFollowCameraHeight, 0.0f);
-        const float distance = physics.terrainSweepDistance(
-            pivot, -forward, *cameraFollowDistance_, kCameraCollisionRadius
-        );
-        const glm::vec3 eye = pivot - forward * distance;
-        const float elevation = cameraOrbitOverridden_ ? cameraElevationRadians_ : kFollowCameraElevation;
-        const glm::vec3 look = forward * std::cos(elevation) - glm::vec3(0.0f, std::sin(elevation), 0.0f);
+        auto pose = followCameraPose_.value_or(desiredFollowCameraPose());
+        if (!followCameraPose_) pose.distance = followCameraClearance(physics, pose.yaw, pose.distance);
+        const glm::vec3 forward = forwardFromYaw(pose.yaw);
+        const glm::vec3 eye = position_ + kFollowCameraOffset - forward * pose.distance;
+        const glm::vec3 look = forward * std::cos(pose.elevation) -
+            glm::vec3(0.0f, std::sin(pose.elevation), 0.0f);
         return {eye, eye + look};
     }
 
