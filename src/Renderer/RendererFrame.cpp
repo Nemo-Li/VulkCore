@@ -898,7 +898,10 @@ void Renderer::captureTransitionFrame(float progress, float time, const std::fil
 }
 
 bool Renderer::drawFrame() {
-    if (mode_ == Mode::ModelViewer) loadModelViewerDrop();
+    if (mode_ == Mode::ModelViewer) {
+        loadModelViewerDrop();
+        updateViewerTexture();
+    }
 #ifndef VULKCORE_OHOS
     if (const auto node = std::exchange(pendingSceneNodeRemoval_, std::nullopt)) {
         if (removeSceneNodeById(*node)) {
@@ -1021,6 +1024,7 @@ bool Renderer::drawFrame() {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
     const auto clipFromScene = updateUniformBuffer();
+    if (clipFromScene && mode_ == Mode::ModelViewer) drawViewerPoints(*clipFromScene);
 #ifndef VULKCORE_OHOS
     if (clipFromScene) {
         if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);

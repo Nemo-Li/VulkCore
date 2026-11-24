@@ -169,7 +169,9 @@ cmake --build build --target sbfres_viewer --parallel
 ./build/sbfres_viewer
 ```
 
-把 `.sbfres` 或 `.bfres` 模型拖入窗口即可渲染。同目录同名的 `.Tex` 贴图包会自动加载，也可以把模型和贴图包一起拖入。按住鼠标左键拖动可环绕模型，滚轮可缩放，按 **F** 恢复构图。多模型文件可以在左上角切换子模型。也可以用 `./build/sbfres_viewer path/to/model.sbfres` 启动时打开模型。格式支持范围见 [SBFRES 导入文档](docs/09-sbfres-import.md)。
+把 `.sbfres` 或 `.bfres` 拖入窗口，也可以在 `./build/sbfres_viewer` 后传入文件路径。模型页用 **Model group** 选择 FMDL，用 **Shape** 单独查看某个 FSHP。按住鼠标左键可环绕，滚轮可缩放，按 **F** 恢复构图。
+
+`.Tex.sbfres` 可单独打开。纹理页用 **Texture** 选择内部纹理，用 **Layer** 滑块或左右箭头浏览数组层。同目录同名的 `.Tex` 贴图包会随模型自动打开，也可以把模型和贴图包一起拖入，通过 **Models** 和 **Textures** 切换。格式支持范围见 [SBFRES 导入文档](docs/09-sbfres-import.md)。
 
 ### 导出鸿蒙手机工程
 

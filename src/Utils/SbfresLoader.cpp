@@ -195,24 +195,30 @@ void decodeBcChannel(const Binary& block, std::array<Pixel, 16>& pixels, std::si
     for (unsigned i = 0; i < 16; ++i) pixels[i][channel] = values[(selectors >> (3 * i)) & 7];
 }
 
+float half(std::uint16_t value);
+
 EmbeddedTextureData decodeTexture(const Binary& bntx, std::size_t header, std::size_t budget,
-                                  bool normalMap) {
+                                  bool normalMap, std::uint32_t layer = 0) {
     const auto width = bntx.u32(header + 0x24);
     const auto height = bntx.u32(header + 0x28);
     const auto format = bntx.u32(header + 0x1c);
     const auto tile = bntx.u8(header + 0x10);
     const auto blockHeightLog = bntx.u32(header + 0x34) & 7;
     const auto mips = bntx.u16(header + 0x16);
+    const auto layers = bntx.u32(header + 0x30);
+    const auto dimension = bntx.u32(header + 0x5c);
     if (width == 0 || height == 0 || width > 8192 || height > 8192 ||
-        bntx.u32(header + 0x2c) != 1 || bntx.u32(header + 0x30) != 1 ||
-        bntx.u32(header + 0x5c) != 1 || tile > 1 || blockHeightLog > 5 || mips == 0) {
+        bntx.u32(header + 0x2c) != 1 || (dimension != 1 && dimension != 5) ||
+        (dimension == 1 && layers != 1) || layers == 0 || tile > 1 || blockHeightLog > 5 || mips == 0) {
         bntx.fail("expected a supported 2D texture layout");
     }
+    if (layer >= layers) bntx.fail("array layer out of range");
     std::size_t bytesPerBlock = 0;
     const auto codec = format >> 8;
     switch (format) {
     case 0x0201: bytesPerBlock = 1; break; // R8
     case 0x0b01: case 0x0b06: bytesPerBlock = 4; break; // RGBA8
+    case 0x1505: bytesPerBlock = 8; break; // RGBA16 float
     case 0x1a01: case 0x1a06: case 0x1d01: bytesPerBlock = 8; break; // BC1, BC4
     case 0x1b01: case 0x1b06: case 0x1c01: case 0x1c06: case 0x1e01:
         bytesPerBlock = 16; break; // BC2, BC3, BC5
@@ -221,9 +227,20 @@ EmbeddedTextureData decodeTexture(const Binary& bntx, std::size_t header, std::s
     const auto mipTable = bntx.table(header + 0x70, mips, 8);
     const auto mip0 = bntx.pointer(mipTable);
     const auto surface = bntx.slice(mip0, bntx.u32(header + 0x50));
-    const auto mip1 = mips > 1 ? bntx.pointer(mipTable + 8) : mip0 + surface.size();
-    if (!mip0 || mip1 <= mip0 || mip1 - mip0 > surface.size()) bntx.fail("invalid mip offsets");
-    const Binary source{surface.first(mip1 - mip0), "BNTX mip 0"};
+    // Each layer stores a complete mip chain. The BRTI mip offsets address layer 0.
+    const auto layerStride = surface.size() / layers;
+    if (mip0 == 0 || layerStride == 0 || surface.size() % layers != 0) {
+        bntx.fail("invalid array layer size");
+    }
+    std::size_t mip0Size = layerStride;
+    std::size_t previous = mip0;
+    for (std::size_t level = 1; level < mips; ++level) {
+        const auto offset = bntx.pointer(mipTable + 8 * level);
+        if (offset <= previous || offset - mip0 >= layerStride) bntx.fail("invalid mip offsets");
+        if (level == 1) mip0Size = offset - mip0;
+        previous = offset;
+    }
+    const Binary source{surface.subspan(layerStride * layer, mip0Size), "BNTX mip 0"};
 
     const std::size_t blockSize = codec >= 0x1a ? 4 : 1;
     const auto blocksWide = (width + blockSize - 1) / blockSize;
@@ -252,6 +269,13 @@ EmbeddedTextureData decodeTexture(const Binary& bntx, std::size_t header, std::s
             switch (codec) {
             case 0x02: pixels[0][0] = block.u8(0); break;
             case 0x0b: std::copy_n(block.bytes.begin(), 4, pixels[0].begin()); break;
+            case 0x15:
+                for (std::size_t c = 0; c < pixels[0].size(); ++c) {
+                    const float value = half(block.u16(c * 2));
+                    pixels[0][c] = std::uint8_t(std::round(255.0f *
+                        (std::isnan(value) ? 0.0f : std::clamp(value, 0.0f, 1.0f))));
+                }
+                break;
             case 0x1a: decodeBcColor(block, pixels, false); break;
             case 0x1b:
             case 0x1c:
@@ -291,40 +315,54 @@ EmbeddedTextureData decodeTexture(const Binary& bntx, std::size_t header, std::s
     return result;
 }
 
+struct TextureSource { Binary pack; std::size_t header; };
+
+std::vector<TextureSource> readTextureSources(const Binary& file) {
+    std::vector<TextureSource> sources;
+    const auto count = file.u16(0xc8);
+    const auto external = file.table(0x98, count, 16);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto entry = external + 16 * i;
+        Binary pack{file.slice(file.pointer(entry), file.u32(entry + 8)), "BNTX"};
+        if (!pack.hasMagic(0, "BNTX")) continue;
+        pack.magic(0x20, "NX  ");
+        if (pack.u16(0x0c) != 0xfeff) pack.fail("unsupported byte order");
+        pack.bytes = pack.slice(0, pack.u32(0x1c));
+        const auto textures = pack.u32(0x24);
+        if (textures > 65535 - sources.size()) pack.fail("texture count exceeds budget");
+        const auto table = pack.table(0x28, textures, 8);
+        for (std::size_t j = 0; j < textures; ++j) {
+            const auto header = pack.pointer(table + 8 * j);
+            pack.magic(header, "BRTI");
+            sources.push_back({pack, header});
+        }
+    }
+    return sources;
+}
+
 class TexturePacks {
 public:
-    bool add(const Binary& file) {
-        bool hasPack = false;
-        const auto count = file.u16(0xc8);
-        const auto external = file.table(0x98, count, 16);
-        for (std::size_t i = 0; i < count; ++i) {
-            const auto entry = external + 16 * i;
-            Binary pack{file.slice(file.pointer(entry), file.u32(entry + 8)), "BNTX"};
-            if (!pack.hasMagic(0, "BNTX")) continue;
-            hasPack = true;
-            pack.magic(0x20, "NX  ");
-            if (pack.u16(0x0c) != 0xfeff) pack.fail("unsupported byte order");
-            pack.bytes = pack.slice(0, pack.u32(0x1c));
-            const auto textures = pack.u32(0x24);
-            const auto table = pack.table(0x28, textures, 8);
-            for (std::size_t j = 0; j < textures; ++j) {
-                const auto header = pack.pointer(table + 8 * j);
-                pack.magic(header, "BRTI");
-                const auto name = pack.string(header + 0x60);
-                // A texture sidecar added after the model can replace an embedded entry.
-                sources_.insert_or_assign(name, TextureSource{pack, header});
-            }
+    explicit TexturePacks(bool preview) : preview_(preview) {}
+
+    void add(const std::vector<TextureSource>& sources) {
+        for (const auto& source : sources) {
+            // A companion added after the model can replace an embedded entry.
+            sources_.insert_or_assign(source.pack.string(source.header + 0x60), source);
         }
-        return hasPack;
     }
 
     EmbeddedTextureData resolve(const std::string& name, bool normalMap) {
         const auto source = sources_.find(name);
         if (source == sources_.end()) return {};
+        const auto& [pack, header] = source->second;
+        if (pack.u32(header + 0x30) > 1) {
+            // The regular material shader has no source-specific array layer mapping.
+            if (preview_) return {};
+            pack.fail("expected a supported 2D texture layout");
+        }
         const auto key = (normalMap ? "normal:" : "color:") + name;
         auto cached = decoded_.find(key);
         if (cached == decoded_.end()) {
-            const auto& [pack, header] = source->second;
             auto texture = decodeTexture(pack, header, remaining_, normalMap);
             remaining_ -= texture.data.size();
             cached = decoded_.emplace(key, std::move(texture)).first;
@@ -335,7 +373,7 @@ public:
     }
 
 private:
-    struct TextureSource { Binary pack; std::size_t header; };
+    bool preview_;
     std::unordered_map<std::string, TextureSource> sources_;
     std::unordered_map<std::string, EmbeddedTextureData> decoded_;
     std::size_t remaining_ = kTextureLimit;
@@ -665,6 +703,27 @@ void addBounds(ModelNode& node, const glm::vec3& p) {
     }
 }
 
+// Some FMDLs repeat an FVTX header for another shape but keep only one copy
+// of the layout tables. Only reuse a layout for the exact same GPU stream.
+std::size_t sharedVertexLayout(const Binary& file, std::size_t table, std::size_t count, std::size_t vertex) {
+    if (file.pointer(vertex + 0x10) || file.pointer(vertex + 0x38) || file.pointer(vertex + 0x40)) {
+        return vertex;
+    }
+    std::size_t layout = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto candidate = table + i * 0x60;
+        if (file.u32(candidate + 0x50) != file.u32(vertex + 0x50) ||
+            file.u16(candidate + 0x54) != file.u16(vertex + 0x54) ||
+            file.u32(candidate + 0x58) != file.u32(vertex + 0x58) ||
+            !file.hasMagic(candidate, "FVTX") || !file.pointer(candidate + 0x10) ||
+            !file.pointer(candidate + 0x38) || !file.pointer(candidate + 0x40)) continue;
+        if (layout != 0) file.fail("ambiguous shared FVTX layout");
+        layout = candidate;
+    }
+    if (layout == 0) file.fail("missing FVTX layout");
+    return layout;
+}
+
 void appendShape(
     const Binary& file,
     const Binary& gpu,
@@ -727,7 +786,7 @@ void appendShape(
     appendVertices(
         file,
         gpu,
-        vertex,
+        sharedVertexLayout(file, vertexTable, vertexBufferCount, vertex),
         vertexCount,
         geometryTransform,
         skinCount,
@@ -1168,6 +1227,55 @@ std::string lower(std::string value) {
 
 } // namespace
 
+struct SbfresTextureArchive::Data {
+    explicit Data(const std::filesystem::path& path) : bytes(readArchive(path)), file(fres(bytes)),
+        sources(readTextureSources(file)) {}
+
+    void readCatalog() {
+        entries.reserve(sources.size());
+        for (const auto& [pack, header] : sources) {
+            SbfresTextureInfo info;
+            info.name = pack.string(header + 0x60);
+            info.width = pack.u32(header + 0x24);
+            info.height = pack.u32(header + 0x28);
+            info.layers = pack.u32(header + 0x30);
+            info.mipLevels = pack.u16(header + 0x16);
+            info.format = pack.u32(header + 0x1c);
+            for (std::size_t i = 0; i < info.components.size(); ++i) {
+                info.components[i] = pack.u8(header + 0x58 + i);
+            }
+            entries.push_back(std::move(info));
+        }
+    }
+
+    std::vector<std::uint8_t> bytes;
+    Binary file;
+    std::vector<TextureSource> sources;
+    std::vector<SbfresTextureInfo> entries;
+};
+
+SbfresTextureArchive::SbfresTextureArchive(const std::filesystem::path& path) {
+    try {
+        auto archive = std::make_shared<Data>(path);
+        if (archive->sources.empty()) throw std::runtime_error("missing BNTX textures");
+        archive->readCatalog();
+        data_ = std::move(archive);
+    } catch (const std::exception& error) {
+        throw std::runtime_error("failed to load '" + path.string() + "': " + error.what());
+    }
+}
+
+std::span<const SbfresTextureInfo> SbfresTextureArchive::entries() const {
+    if (!data_) return {};
+    return data_->entries;
+}
+
+EmbeddedTextureData SbfresTextureArchive::decodeLayer(std::size_t index, std::uint32_t layer) const {
+    if (index >= entries().size()) throw std::runtime_error("BNTX texture index out of range");
+    const auto& [pack, header] = data_->sources[index];
+    return decodeTexture(pack, header, kTextureLimit, false, layer);
+}
+
 bool isBfresPath(const std::filesystem::path& path) {
     const auto extension = lower(path.extension().string());
     return extension == ".sbfres" || extension == ".bfres";
@@ -1192,32 +1300,35 @@ BfresContent inspectBfresContent(const std::filesystem::path& path) {
         return BfresContent::Model;
     }
     if (hasAnimation) return BfresContent::SkeletalAnimation;
+    if (!readTextureSources(file).empty()) return BfresContent::Texture;
     return BfresContent::Other;
+}
+
+std::filesystem::path findBfresTextureSidecar(const std::filesystem::path& modelPath) {
+    auto name = modelPath.stem();
+    name += ".Tex";
+    name += modelPath.extension();
+    auto sidecar = modelPath.parent_path() / name;
+    return std::filesystem::exists(sidecar) ? sidecar : std::filesystem::path{};
 }
 
 MeshData loadSbfresMesh(
     const std::filesystem::path& modelPath,
     const std::filesystem::path& texturePath,
     const std::filesystem::path& animationPath,
-    bool includeEmbeddedAnimations
+    bool includeEmbeddedAnimations,
+    SbfresTextureArchive* previewTextures
 ) {
-    auto sidecarPath = texturePath;
-    if (sidecarPath.empty()) {
-        auto name = modelPath.stem();
-        name += ".Tex";
-        name += modelPath.extension();
-        sidecarPath = modelPath.parent_path() / name;
-        if (!std::filesystem::exists(sidecarPath)) sidecarPath.clear();
-    }
+    const auto sidecarPath = texturePath.empty() ? findBfresTextureSidecar(modelPath) : texturePath;
     try {
-        const auto modelBytes = readArchive(modelPath);
-        const auto model = fres(modelBytes);
-        std::vector<std::uint8_t> sidecarBytes;
-        TexturePacks textures;
-        textures.add(model);
+        auto model = std::make_shared<SbfresTextureArchive::Data>(modelPath);
+        std::shared_ptr<SbfresTextureArchive::Data> sidecar;
+        TexturePacks textures(previewTextures != nullptr);
+        textures.add(model->sources);
         if (!sidecarPath.empty()) {
-            sidecarBytes = readArchive(sidecarPath);
-            if (!textures.add(fres(sidecarBytes))) throw std::runtime_error("missing BNTX texture pack");
+            sidecar = std::make_shared<SbfresTextureArchive::Data>(sidecarPath);
+            if (sidecar->sources.empty()) throw std::runtime_error("missing BNTX texture pack");
+            textures.add(sidecar->sources);
         }
         std::vector<std::uint8_t> animationBytes;
         std::vector<SkeletalAnimationClip> animations;
@@ -1226,10 +1337,15 @@ MeshData loadSbfresMesh(
             animations = readSkeletalAnimations(fres(animationBytes));
             if (animations.empty()) throw std::runtime_error("animation BFRES contains no FSKA clips");
         } else if (includeEmbeddedAnimations) {
-            animations = readSkeletalAnimations(model);
+            animations = readSkeletalAnimations(model->file);
         }
-        auto result = parseModel(model, textures, std::move(animations));
+        auto result = parseModel(model->file, textures, std::move(animations));
         if (result.hierarchy.name.empty()) result.hierarchy.name = modelPath.stem().string();
+        if (previewTextures) {
+            auto archive = sidecar ? std::move(sidecar) : std::move(model);
+            archive->readCatalog();
+            previewTextures->data_ = archive->entries.empty() ? nullptr : std::move(archive);
+        }
         return result;
     } catch (const std::exception& error) {
         auto source = modelPath.string();

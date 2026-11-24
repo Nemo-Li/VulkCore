@@ -66,6 +66,7 @@ void Renderer::shutdownImGui() {
         return;
     }
 
+    destroyViewerTexture();
     ImGui_ImplVulkan_Shutdown();
     shutdownWindowImGui();
     ImGui::DestroyContext();

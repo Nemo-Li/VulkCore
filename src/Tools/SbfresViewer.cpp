@@ -40,8 +40,9 @@ void onDrop(GLFWwindow* window, int count, const char** filenames) {
 
 void printUsage(std::ostream& out) {
     out << "Usage: sbfres_viewer [model.sbfres [model.Tex.sbfres [model_Animation.sbfres]]]\n"
-        << "Drop a model onto the window, optionally with its .Tex companion and animation BFRES,\n"
-        << "drag with the left mouse button to orbit, scroll to zoom, or press F to fit the model.\n";
+        << "       sbfres_viewer textures.Tex.sbfres\n"
+        << "Drop a model, a texture package, or a model with its texture and animation companions.\n"
+        << "Left-drag to orbit models, scroll to zoom, or press F to fit the selection.\n";
 }
 
 } // namespace

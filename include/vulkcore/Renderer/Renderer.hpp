@@ -25,6 +25,7 @@
 #include "vulkcore/Renderer/Texture.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
 #include "vulkcore/Terrain/RoadPaint.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 #include "vulkcore/Platform/Window.hpp"
 
@@ -168,7 +169,12 @@ private:
     bool drawModelViewerUi();
     void loadModelViewerDrop();
     void selectViewerModel(std::size_t index);
+    void selectViewerShape(std::optional<std::size_t> shape);
     void fitViewerModel();
+    void drawViewerPoints(const glm::mat4& clipFromScene);
+    void drawViewerTextures();
+    void updateViewerTexture();
+    void destroyViewerTexture();
     bool drawGameEditor();
     void drawRoadBrushControls();
     void updateRoadEditorCamera(float deltaSeconds, bool viewportHovered);
@@ -407,6 +413,25 @@ private:
     std::string viewerAnimationFilename_;
     std::string viewerError_;
     std::size_t viewerModelIndex_ = 0;
+    std::optional<std::size_t> viewerShapeIndex_;
+    bool viewerHasSurface_ = false;
+    struct ViewerPoint {
+        std::uint32_t nodeId;
+        std::uint32_t vertexIndex;
+    };
+    std::vector<ViewerPoint> viewerPoints_;
+    bool viewerShowingTextures_ = false;
+    struct ViewerTextures {
+        SbfresTextureArchive archive;
+        std::string filename;
+        std::string error;
+        std::size_t index = 0;
+        std::uint32_t layer = 0;
+        bool showAlpha = false;
+        bool reload = false;
+        std::unique_ptr<Texture> image;
+        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+    } viewerTextures_;
     std::chrono::steady_clock::time_point startTime_;
     std::unique_ptr<VulkanContext> context_;
     std::unique_ptr<SwapChain> swapChain_;

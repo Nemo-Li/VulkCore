@@ -22,6 +22,44 @@
 - `terrain_macro.png` 是覆盖整个载入地形的 1024×1024 线性 RGBA 控制图。R 控制湿润与植被倾向，G 控制含铁岩层与暖色倾向，B 控制沉积与裸土，A 控制大尺度明暗。所有瓦片共用地形 X/Z 边界归一化的 UV。坡度、高程和扭曲后的地形空间噪声共同决定草、土、岩的边界。大尺度地貌权重独立于距离，避免相机移动时草坡逐渐变成裸岩。
 - 两个 Vulkan 纹理数组按草、土、岩、沙、雪、泥、砾石、火山灰的顺序装载，每层独立生成 Mip。旧资源包可回退到 4×2 的 `terrain_atlas.png`，并将采样限制在相应图格内。缺少整图或表面图时，分别使用连续程序噪声或几何法线。TSCB 的 U/V 缩放继续控制近景纹理的采样密度。
 
+## Switch 地形材质样本
+
+这次分析的 `Terrain.sbfres` 与 `Terrain.Tex.sbfres` 都是 Yaz0 压缩的 Switch BFRES 5.0.3 文件。前者包含 7 个模型和 34 个形状。后者内嵌 `textures.bntx`，包含 22 个带压缩像素数据的纹理条目。
+
+`Tera` 是地形子系统使用的内部前缀，很可能取自 `Terrain`。模型名包括 `TeraTerrain`、`TeraRoute`、`TeraGrass`、`TeraFlower`、`TeraTree`、`TeraWater` 和 `Horizon`。公开反编译代码在 `KingSystem/Terrain` 下使用了 `ksys::tera` 命名空间。 [teraSystem.h](https://github.com/zeldaret/botw/blob/master/src/KingSystem/Terrain/teraSystem.h)
+
+### 地表底色与组合图
+
+| 纹理 | 规格 | 材质用途 |
+| --- | --- | --- |
+| `MaterialAlb` | 83 层，每层 1024×1024，11 级 mip，BC1 sRGB（`0x1A06`） | 地形和道路的底色，绑定到 `_a0` |
+| `MaterialCmb` | 83 层，每层 512×512，10 级 mip，BC1 UNORM（`0x1A01`） | 地形和道路的线性组合图，供 `_n0` 法线槽与 `_s0` 高光槽采样 |
+
+83 是二维纹理数组的层数。采样坐标的第三分量选取 `0–82` 中的一个图层，每层各有自己的 mip 链，采样时另行选择 mip 级别。
+
+`Cmb` 很可能是 `Combined` 的缩写。地形不透明材质的 ShaderAssign 将 `_n0` 和 `_s0` 指向同一个材质槽，道路材质将两个槽都填为 `MaterialCmb`。抽查 15 层解码数据时，R、G 的中位数集中在 128 附近，结合绑定推测这两个通道存放法线的 X、Y 分量。B 存放分布随材质变化的灰度数据，可能用作高光遮罩。BNTX 的组件选择是 `R/G/B/B`，因此 GPU 采样结果的 A 和 B 读取同一个分量。法线重建公式、B 通道的高光计算与强度仍需原着色器验证。
+
+### 其他纹理
+
+| 用途 | 条目 |
+| --- | --- |
+| 水面和地平线 | `WaterAlb`、`WaterNrm`、`WaterEmm`。水材质分别绑定底色、法线和自发光相关槽位，`Horizon` 引用后两项。 |
+| 草 | `GrassAlb`、`GrassCoverAlb`、`GrassCrossAlb`、`GrassSpm`。本样本的材质表引用前三项，`GrassSpm` 的运行时用途待确认。 |
+| 花与地表小物件 | `FlowerCrossAlb`、`FlowerFallenLeavesAlb`、`FlowerLongAlb`、`FlowerNormalAlb`、`FlowerPetalAlb`、`FlowerStoneAlb`、`FlowerShellAlb`、`FlowerChipsAlb`。 |
+| 树 | `Tree0Alb`、`Tree0NrmTrs`、`Tree1Alb`、`Tree1NrmTrs`、`TreeDitherMask`。两对树贴图分别有 100 层和 49 层，另有一张抖动遮罩。 |
+
+### 形状绑定与地图材质分布
+
+形状通过 `FSHP.materialIndex` 选择 `FMAT`，材质按槽位记录采样器和贴图名，再从 BNTX 的同名记录取图。样本中的 `TeraTerrain / NormalNear` 选用 `OpaqueNear`，由 `_a0` 读取 `MaterialAlb`，由 `_n0` 读取 `MaterialCmb`。 [SBFRES 材质解析](09-sbfres-import.md)
+
+`TeraTerrain` 的 7 个形状各含 3 个顶点，只有位置属性。近、中、远形状共用三角形坐标，分别对应 `OpaqueNear`、`OpaqueMiddle` 和 `OpaqueFar`。实际地图网格依赖瓦片布局和 `.hght` 高度数据，地表材质分布依赖 `.mate`。现有 `MainField.tscb` 有 88 条材质记录，素材中的两个纹理数组各有 83 层。材质记录和纹理层之间的对应关系需要单独核对。 [地形文件结构](https://zeldamods.org/wiki/Terrain) · [VulkCore 地图加载](../src/Terrain/Terrain.cpp)
+
+### 本地导出与 VulkCore 支持
+
+`MaterialAlb` 的本地导出位于 `exports/MaterialAlb/`。`MaterialAlb_00.png` 至 `MaterialAlb_82.png` 保留数组层号，每张是从 mip 0 解码出的 1024×1024 RGBA8 sRGB 图。解码过程先展开 Yaz0，再按 BNTX 数组层跨度定位各层，对 BC1 块解除 Tegra 平铺并解码。83 张图已逐张回读核对。本地解析清单位于 `build/terrain-sbfres-analysis/`。
+
+VulkCore 的地形着色器已有 `sampler2DArray` 绑定，当前从项目生成的 PNG 组装底色与表面数据。样本中的 `MaterialCmb` 与项目的 `*_surface.png` 使用各自的通道约定，项目的表面图存放 RGB 法线和 A 环境光可见度。通用模型材质导入使用单层二维贴图。`sbfres_viewer` 可以独立浏览 BNTX 内各纹理的数组层，模型页用默认贴图显示引用数组的几何。 [当前地形着色器](../shaders/src/shader_terrain.frag) · [查看器用法](09-sbfres-import.md#查看地形模型和纹理包)
+
 ## 距离和像素覆盖范围
 
 | 范围（地形世界单位） | 采样方式 |

@@ -22,6 +22,17 @@ cmake --build build --parallel
   --capture-frame 1 0 1280 960 build/tree_apple_sbfres.png
 ```
 
+## 查看地形模型和纹理包
+
+```sh
+./build/sbfres_viewer /path/to/Terrain.sbfres
+./build/sbfres_viewer /path/to/Terrain.Tex.sbfres
+```
+
+- **Models** 页按 7 个 FMDL 列出模型组。展开 **Shape** 可在组内单独渲染一个 FSHP，选择 **All shapes** 恢复整组。`TeraWater` 的两个 FVTX 头引用同一段 GPU 数据，解析器会复用组内与其匹配的顶点布局。`TeraFlower` 和 `TeraTree` 的源形状各自缩成单个点，查看器会在对应的顶点位置绘制红点。
+- **Textures** 页列出 BNTX 中的 22 个纹理条目。选择纹理后可用滑块或左右箭头浏览数组层，预览每层的 mip 0。`MaterialAlb` 和 `MaterialCmb` 都可查看第 0–82 层。界面显示尺寸、层数、mip 数和 BNTX 分量映射，并可打开 **Show alpha** 检查透明度。
+- 模型使用 VulkCore 的基础光照。引用数组贴图的材质使用默认贴图预览几何，数组图像可在 **Textures** 页检查。完整地图需要独立瓦片与高度数据。 [地形材质与纹理导出](06-botw-terrain-textures.md#switch-地形材质样本)
+
 ## 解包和偏移规则
 
 - SBFRES 以 `Yaz0` 开头。`+0x04` 是大端解压大小，数据从 `+0x10` 开始。控制字节从最高位向最低位读取，1 表示一个字面字节，0 表示回溯引用。引用的低 12 位加 1 得到距离，高 4 位非零时加 2 得到长度，为零时读取额外字节并加 18。重叠的引用逐字节展开。解析器也接受已经解压的 `.bfres`。
@@ -56,7 +67,7 @@ cmake --build build --parallel
 
 - `FMAT` 的步长为 `0xB8`。`+0x38` 是贴图名指针数组，`+0xA8` 是贴图数，`+0x50` 指向采样器名字典。同一索引的采样器名与贴图名配对，再用贴图名匹配 BNTX。`_a0` 和 `_n0` 分别映射基础色和法线。启用 alpha test 的材质把 `_ms0` 绑定到独立遮罩。
 - BNTX 内部指针以 BNTX payload 起点为基准。从 `NX` 头的 `+0x24`、`+0x28` 读取数量和 BRTI 指针表。BRTI 记录提供平铺方式、宽高、格式、组件选择、GOB 高度参数和 mip 指针。图像以像素或 BC 压缩块为单位重新排序。Pitch-linear 使用 32 字节行对齐，Tegra block-linear 按 64 字节宽、8 行的 GOB 及其垂直分组计算地址。
-- CPU 解码 R8、RGBA8、BC1/2/3、BC4 UNORM 和 BC5 UNORM 的 mip 0，按 BRTI 的通道选择转为 RGBA8。Vulkan 上传时保留颜色贴图的 sRGB 或线性语义，法线与遮罩使用线性格式。支持线性 blit 的设备会重新生成 mip 链。
+- CPU 解码 R8、RGBA8、RGBA16F、BC1/2/3、BC4 UNORM 和 BC5 UNORM 的 mip 0，按 BRTI 的通道选择转为 RGBA8。数组中每层保存完整 mip 链，预览用数据总长度除以层数得到层跨度，再按 BRTI 的 mip 偏移读取所选层。RGBA16F 预览把数值限制到 0–1 后量化。Vulkan 上传时保留颜色贴图的 sRGB 或线性语义，法线与遮罩使用线性格式。支持线性 blit 的设备会重新生成 mip 链。
 - 从 `FMAT` 的 `+0x18` 和 `+0x20` 读取 RenderInfo 值与键。`gsys_render_state_display_face=both` 复用现有双面渲染。树叶的 `gsys_alpha_test_enable=true` 和 `gsys_alpha_test_value=0.6` 启用裁切。树叶的 BC1 基础色 mip 0 完全不透明，独立 BC4 遮罩的红通道决定叶片轮廓。两张遮罩分别为 200×200 和 1024×1024。
 
 ## 现有渲染管线与改动

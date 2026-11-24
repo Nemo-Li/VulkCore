@@ -71,6 +71,10 @@ void Renderer::loadResourcePreview() {
         }
         try {
             const auto content = inspectBfresContent(selected);
+            if (content == BfresContent::Texture) {
+                preview.message = "Open this texture package in SBFRES Viewer to browse its textures.";
+                return;
+            }
             if (content == BfresContent::Other) {
                 preview.message = "This package has no model or skeletal animation to preview.";
                 return;
