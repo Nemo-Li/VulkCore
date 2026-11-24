@@ -925,9 +925,18 @@ bool Renderer::drawFrame() {
         const auto action = std::exchange(pendingSceneChange_, EditorSceneChange::None);
         const auto path = std::exchange(pendingSceneOpen_, {});
         editorSceneChangeConfirmed_ = false;
-        const auto before = currentScenePath_;
-        const bool changed = action == EditorSceneChange::Create ? createNewEmptyScene() : loadSceneResource(path);
-        if (changed || currentScenePath_ != before) editorDirty_ = false;
+        if (action == EditorSceneChange::Close) {
+            clearSceneData();
+            toolUiVisible_ = true;
+            editorDirty_ = false;
+            sceneEditMode_ = false;
+            sceneStatus_.clear();
+            sceneStatusFailed_ = false;
+        } else {
+            const auto before = currentScenePath_;
+            const bool changed = action == EditorSceneChange::Create ? createNewEmptyScene() : loadSceneResource(path);
+            if (changed || currentScenePath_ != before) editorDirty_ = false;
+        }
     }
 #ifdef VULKCORE_OHOS
     // Update the swapchain, scene targets and projection before drawing into a

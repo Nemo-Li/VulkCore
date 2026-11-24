@@ -67,6 +67,7 @@ public:
         fullscreen_ = enabled;
         if (enabled) sceneEditMode_ = false;
     }
+    bool hasPendingSceneClose() const { return pendingSceneChange_ == EditorSceneChange::Close; }
     void setTerrainFrustumCullingEnabled(bool enabled) { terrainFrustumCullingEnabled_ = enabled; }
     void initializeResourceBrowser(const std::filesystem::path& root);
     void queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y);
@@ -75,7 +76,7 @@ public:
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
 private:
-    bool toolUiVisible() const { return toolUiVisible_ && !fullscreen_; }
+    bool toolUiVisible() const { return !fullscreen_ && (toolUiVisible_ || hasPendingSceneClose()); }
 
     struct SceneRenderTarget {
         VkImage colorImage = VK_NULL_HANDLE;
@@ -176,6 +177,7 @@ private:
     void updateViewerTexture();
     void destroyViewerTexture();
     bool drawGameEditor();
+    void queueSceneClose();
     void drawRoadBrushControls();
     void updateRoadEditorCamera(float deltaSeconds, bool viewportHovered);
     void updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHovered);
@@ -606,6 +608,7 @@ private:
     bool screenshotFromToolbar_ = false;
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
     bool effectEditorSelected_ = false;
+    bool selectSceneWorkspace_ = false;
     std::unique_ptr<EffectEditorView> effectEditorView_;
 #endif
 #ifndef VULKCORE_OHOS
@@ -630,7 +633,7 @@ private:
     ResourcePreview resourcePreview_;
     std::optional<std::uint32_t> pendingSceneNodeRemoval_;
 #endif
-    enum class EditorSceneChange { None, Open, Create };
+    enum class EditorSceneChange { None, Open, Create, Close };
     EditorSceneChange pendingSceneChange_ = EditorSceneChange::None;
     std::filesystem::path pendingSceneOpen_;
     bool editorDirty_ = false;

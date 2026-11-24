@@ -510,6 +510,10 @@ bool Renderer::buildImGuiFrame() {
     const bool sceneShortcuts = io.KeyMods == 0 && !io.WantTextInput &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 #ifndef VULKCORE_OHOS
+    if (sceneShortcuts && !ImGui::IsAnyItemActive() && !ImGui::GetDragDropPayload() &&
+        ImGui::IsKeyPressed(ImGuiKey_X, false)) {
+        queueSceneClose();
+    }
     if (!fullscreen_ && sceneShortcuts && fixedFrameOutput_.empty() && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
         sceneEditMode_ = !sceneEditMode_;
         if (sceneEditMode_) toolUiVisible_ = true;

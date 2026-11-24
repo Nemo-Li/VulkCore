@@ -144,8 +144,11 @@ void Application::mainLoop() {
         }
 
         const bool fullscreenPressed = glfwGetKey(window_, GLFW_KEY_F1) == GLFW_PRESS;
-        if (fullscreenPressed && !fullscreenKeyDown) {
-            if (glfwGetWindowMonitor(window_)) {
+        const bool fullscreen = glfwGetWindowMonitor(window_) != nullptr;
+        const bool toggleFullscreen = renderer_->hasPendingSceneClose() ? fullscreen :
+            (fullscreenPressed && !fullscreenKeyDown);
+        if (toggleFullscreen) {
+            if (fullscreen) {
                 glfwSetWindowMonitor(window_, nullptr, windowedBounds.x, windowedBounds.y,
                     windowedBounds.width, windowedBounds.height, GLFW_DONT_CARE);
             } else {

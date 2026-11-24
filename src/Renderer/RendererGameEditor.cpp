@@ -35,6 +35,18 @@ void Renderer::queueSceneOpen(const std::filesystem::path& path) {
     toolUiVisible_ = true;
 }
 
+void Renderer::queueSceneClose() {
+    if (pendingSceneChange_ != EditorSceneChange::None || !fixedFrameOutput_.empty() ||
+        (currentScenePath_.empty() && !editorDirty_)) {
+        return;
+    }
+    pendingSceneChange_ = EditorSceneChange::Close;
+    editorSceneChangeConfirmed_ = false;
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    selectSceneWorkspace_ = true;
+#endif
+}
+
 void Renderer::openEditorFilePicker(const char* title, EditorFileType type,
                                     const std::filesystem::path& directory,
                                     std::function<void(const std::filesystem::path&)> accept) {
@@ -115,7 +127,9 @@ bool Renderer::drawGameEditor() {
 
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
     if (ImGui::BeginTabBar("Editor workspaces")) {
-        if (ImGui::BeginTabItem("Scene")) {
+        const auto sceneFlags = std::exchange(selectSceneWorkspace_, false) ?
+            ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Scene", nullptr, sceneFlags)) {
             effectEditorSelected_ = false;
             ImGui::EndTabItem();
         }
@@ -198,6 +212,7 @@ bool Renderer::drawGameEditor() {
             ImGuiChildFlags_Borders, toolbarFlags) && ImGui::BeginMenuBar()) {
         if (ImGui::MenuItem("New Scene", newSceneShortcut)) newScene();
         if (ImGui::MenuItem("Open Scene...")) openScene();
+        if (ImGui::MenuItem("Close Scene", "X", false, canSave)) queueSceneClose();
         if (ImGui::MenuItem("Save", nullptr, false, canSave)) saveScene();
         if (ImGui::MenuItem("Import Realtime Effect...")) {
             openEditorFilePicker("Select the exported .vfx3d file", EditorFileType::RealtimeEffect,
@@ -286,8 +301,10 @@ bool Renderer::drawGameEditor() {
     }
     if (ImGui::BeginPopupModal("Unsaved scene changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("The current scene has unsaved changes.");
-        const bool creating = pendingSceneChange_ == EditorSceneChange::Create;
-        if (ImGui::Button(creating ? "Save and create" : "Save and open")) {
+        const char* saveLabel = "Save and open";
+        if (pendingSceneChange_ == EditorSceneChange::Create) saveLabel = "Save and create";
+        if (hasPendingSceneClose()) saveLabel = "Save and close";
+        if (ImGui::Button(saveLabel)) {
             saveScene();
             if (!editorDirty_) ImGui::CloseCurrentPopup();
         }
