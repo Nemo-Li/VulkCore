@@ -27,105 +27,28 @@ terrain_road 1 3.75 4 -181.917114 -108.304276 -181.595154 -109.014679 -181.52597
 terrain_resource "../assets/terrain"
 player_present 1
 player_click_to_move 1
-player_camera_follow_distance 2
+player_move_speed_multiplier 1
+player_camera_follow_distance 7.88999987
 player_spawn_position -205 124 -96
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
-model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 1000001
-node_gravity 1000001
-node_patrol 1000001 1 6 0 1.39999998 0.800000012 0 "Walk" "Wait"
-model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 2000001
-node_gravity 2000001
-node_patrol 2000001 1 0 -6 1.39999998 0.800000012 0 "Walk" "Wait"
-model_resource_path "../build/windows/Release/resource/Enemy_Bokoblin.sbfres" 3000001
-node_gravity 3000001
-node_patrol 3000001 1 -6 0 1.39999998 0.800000012 0 "Walk" "Wait"
 model_resource_path "../assets/models/spawn_woodland/spawn_woodland.glb" 5000001
 distance_fog 150 2050 0.430000007 0.340000004 0.50999999 0.670000017 0.239999995 0.409999996 0.600000024
 floating_mist 0.340000004
 sun_present 0
-camera_position -0.038427379 -0.0650578812 -0.0266288333
+camera_position -0.0501115397 -0.0648031458 -0.0321359709
 ambient_color 0.839999974 0.910000026 0.99000001
 ambient_intensity 0.939999998
 sun_light_direction 0.435540557 0.532327354 0.725900888
 sun_light_color 0.910000026 0.879999995 0.829999983
 sun_light_intensity 0.939999998
 shader_demo 0 1 0.25 0.5 0
-node_removed 4000022
 node_removed 4026531840
-node_removed 4000011
-node_removed 1
-node_removed 2
-node_removed 4000005
-node_removed 3
-node_removed 4000018
-node_removed 4
-node_removed 5
-node_removed 6
-node_removed 7
-node_removed 4000014
-node_removed 8
-node_removed 4000019
-node_removed 9
-node_removed 10
-node_removed 11
-node_removed 12
-node_removed 4000015
-node_removed 13
-node_removed 14
-node_removed 15
-node_removed 16
-node_removed 17
-node_removed 4000016
-node_removed 18
-node_removed 19
-node_removed 4000002
-node_removed 20
-node_removed 4000023
-node_removed 21
-node_removed 4000028
-node_removed 22
-node_removed 23
-node_removed 24
-node_removed 4000003
-node_removed 25
-node_removed 4000024
-node_removed 26
-node_removed 4000029
-node_removed 27
-node_removed 28
-node_removed 29
-node_removed 30
-node_removed 31
-node_removed 32
-node_removed 33
-node_removed 4000001
-node_removed 4000004
-node_removed 4000006
-node_removed 4000007
-node_removed 4000008
-node_removed 4000009
-node_removed 4000010
-node_removed 4000012
-node_removed 4000013
-node_removed 4000017
-node_removed 4000020
-node_removed 4000021
-node_removed 4000025
-node_removed 4000026
-node_removed 4000027
-node_removed 4000030
-node_removed 4000031
-node_removed 4000032
-node_removed 4000033
-node_transform 1000001 -0.0425714478 0.0297301859 -0.015020608 0 0 0 1
-node_transform 2000001 -0.0426181592 0.0297280904 -0.0145661114 0 0 0 1
-node_transform 3000001 -0.0425500683 0.029723689 -0.0142000085 0 0 0 1
-realtime_effect 3489660928 "../assets/effects/player/lightning.vfx3d" 0 0 skill Q 2.15 0.08 0
-realtime_effect 3489660929 "../assets/effects/player/shield.vfx3d" 0 0 skill W 0 0.05 1
-realtime_effect 3489660930 "../assets/effects/player/fire.vfx3d" 0 0 skill E 0.75 0.08 0
-realtime_effect 3489660931 "../assets/effects/player/arcane.vfx3d" 0 0 skill R 2.8 0.08 0
-node_transform 3489660928 0 0 0 0 0 0 0.82
-node_transform 3489660929 0 0 0 0 0 0 0.9
-node_transform 3489660930 0 0 0 0 0 0 0.72
-node_transform 3489660931 0 0 0 0 0 0 0.9
+realtime_effect 3489660928 "../assets/effects/player/lightning.vfx3d" 0 0 skill Q 2.1500001 0.0799999982 0
+realtime_effect 3489660929 "../assets/effects/player/shield.vfx3d" 0 0 skill W 0 0.0500000007 1
+realtime_effect 3489660930 "../assets/effects/player/fire.vfx3d" 0 0 skill E 0.75 0.0799999982 0
+realtime_effect 3489660931 "../assets/effects/player/arcane.vfx3d" 0 0 skill R 2.79999995 0.0799999982 0
+node_transform 3489660928 0 0 0 0 0 0 0.819999993
+node_transform 3489660929 0 0 0 0 0 0 0.899999976
+node_transform 3489660930 0 0 0 0 0 0 0.720000029
+node_transform 3489660931 0 0 0 0 0 0 0.899999976
