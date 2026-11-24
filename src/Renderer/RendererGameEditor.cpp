@@ -23,15 +23,14 @@ constexpr ImVec4 kEditorFailure{1.0f, 0.65f, 0.46f, 1.0f};
 } // namespace
 
 void Renderer::queueSceneOpen(const std::filesystem::path& path) {
+    if (sceneLoad_) return;
     std::error_code error;
     if (!isSceneResourcePath(path) || !std::filesystem::is_regular_file(path, error)) {
         sceneStatusFailed_ = true;
         sceneStatus_ = "Choose an existing .scene file.";
         return;
     }
-    pendingSceneOpen_ = normalizedPath(path);
-    pendingSceneChange_ = EditorSceneChange::Open;
-    editorSceneChangeConfirmed_ = false;
+    queueStartupScene(path);
     toolUiVisible_ = true;
 }
 

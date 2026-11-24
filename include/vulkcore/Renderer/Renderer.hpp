@@ -39,6 +39,8 @@ class VulkanContext;
 class TerrainScene;
 class HdrComposition;
 class RealtimeEffect;
+class SceneLoadTask;
+struct TerrainMeshData;
 enum class EditorFileType;
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
 class EffectEditorView;
@@ -72,6 +74,7 @@ public:
     void initializeResourceBrowser(const std::filesystem::path& root);
     void queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y);
     void queueSceneOpen(const std::filesystem::path& path);
+    void queueStartupScene(const std::filesystem::path& path);
     void queueModelViewerDrop(std::vector<std::filesystem::path> paths);
     void captureTransitionFrame(float progress, float time, const std::filesystem::path& output);
 
@@ -167,6 +170,7 @@ private:
     void initializeImGui();
     void shutdownImGui();
     bool buildImGuiFrame();
+    void buildSceneLoadingFrame();
     bool drawModelViewerUi();
     void loadModelViewerDrop();
     void selectViewerModel(std::size_t index);
@@ -220,7 +224,12 @@ private:
     void applyEditorShader();
     std::filesystem::path defaultSkyboxPath() const;
     void applySkyboxTexture(const std::filesystem::path& path);
-    void loadTerrainGrassResources();
+    struct TerrainGrassImages {
+        std::array<EmbeddedTextureData, 5> images;
+        GrassCoverMask coverMask;
+    };
+    static std::optional<TerrainGrassImages> decodeTerrainGrass(const std::filesystem::path& terrainRoot);
+    SceneLoadTask uploadTerrainGrass(TerrainGrassImages images);
     void loadResourceSettings();
     void loadTransformSettings(
         std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max()
@@ -228,23 +237,24 @@ private:
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void appendTerrainToScene(
-        const TerrainScene& terrain,
+        const TerrainMeshData& terrainMesh,
         const std::filesystem::path& terrainRoot
     );
-    void appendWaterToScene(const TerrainScene& terrain);
+    void appendWaterToScene(const TerrainMeshData& waterMesh);
     void appendPlayerToScene();
     void appendGrassToScene(const TerrainScene& terrain);
     void updateGrassCoverage();
     void updatePlayerController(float deltaSeconds, bool viewportHovered);
     void updatePlayerCamera();
-    void clearSceneData();
+    void clearSceneData(bool rebuildResources = true);
     const SceneModelResource* sceneModelResourceForNode(const ModelNode& node) const;
     void recalculateSceneBounds();
     void appendImportedModel(
         MeshData importedMesh,
         const std::filesystem::path& path,
-        std::optional<std::uint32_t> preferredRootNodeId = std::nullopt,
-        bool playerModel = false
+        std::optional<std::uint32_t> preferredRootNodeId,
+        bool playerModel,
+        bool updateBounds
     );
     void synchronizeModelResourceMaterial(
         const std::filesystem::path& path,
@@ -264,6 +274,8 @@ private:
     bool playRealtimeEffect(std::uint32_t nodeId, std::optional<glm::vec3> worldPosition = std::nullopt);
     bool stopRealtimeEffect(std::uint32_t nodeId);
     bool loadSceneResource(const std::filesystem::path& path);
+    SceneLoadTask loadSceneSteps(std::filesystem::path path, bool incremental);
+    void advanceSceneLoad();
     void createBoundingBoxPipeline();
     void createParticlePipelines();
     void createPostProcessPipeline();
@@ -342,9 +354,12 @@ private:
     void removeSunMesh();
     void rebuildSceneGeometryResources();
     void createVertexBuffer();
+    SceneLoadTask createVertexBufferSteps();
     void createIndexBuffer();
     void createMaterialTextures();
+    SceneLoadTask createMaterialTextureSteps(bool incremental);
     void createSkyboxTexture();
+    void clearMaterialResources();
     void rebuildMaterialResources();
     void createUniformBuffers();
     void createDescriptorPool();
@@ -367,7 +382,8 @@ private:
     bool importModelResource(
         const std::filesystem::path& path,
         std::optional<std::uint32_t> preferredRootNodeId = std::nullopt,
-        bool playerModel = false
+        bool playerModel = false,
+        bool rebuildResources = true
     );
     void discoverModelResources();
     void selectModelResource(const std::filesystem::path& path);
@@ -382,7 +398,7 @@ private:
     VkPipeline graphicsPipelineForMaterial(
         const MaterialData& material, bool hdr, VkCullModeFlags cullMode
     );
-    void prepareTerrainAndGrassPipelines();
+    SceneLoadTask prepareScenePipelines(bool incremental);
     VkPipeline computePipelineForMaterial(const MaterialData& material);
     std::string graphicsPipelineKey(
         const ShaderConfiguration& configuration,
@@ -636,6 +652,9 @@ private:
     enum class EditorSceneChange { None, Open, Create, Close };
     EditorSceneChange pendingSceneChange_ = EditorSceneChange::None;
     std::filesystem::path pendingSceneOpen_;
+    std::unique_ptr<SceneLoadTask> sceneLoad_;
+    std::filesystem::path loadingScenePath_;
+    bool sceneLoadApplying_ = false;
     bool editorDirty_ = false;
     bool editorSceneChangeConfirmed_ = false;
     enum class EditorSelection { None, Node, Skybox, Environment, GrassGround, PlayerSettings };

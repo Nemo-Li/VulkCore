@@ -84,8 +84,9 @@ Application::~Application() {
 
 void Application::run() {
     initWindow(kWindowWidth, kWindowHeight, false);
-    renderer_ = std::make_unique<Renderer>(window_, startupScene_, hideTools_);
+    renderer_ = std::make_unique<Renderer>(window_, std::filesystem::path{}, hideTools_);
     renderer_->setTerrainFrustumCullingEnabled(terrainFrustumCullingEnabled_);
+    if (!startupScene_.empty()) renderer_->queueStartupScene(startupScene_);
     renderer_->initializeResourceBrowser(executablePath().parent_path() / "resource");
     glfwSetDropCallback(window_, [](GLFWwindow* window, int count, const char** paths) {
         auto* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));

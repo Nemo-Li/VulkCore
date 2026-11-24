@@ -1,6 +1,7 @@
 #include "vulkcore/Platform/Window.hpp"
 
 #include "HdrComposition.hpp"
+#include "SceneLoadTask.hpp"
 
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
 #include "../Platform/EffectEditorView.hpp"
@@ -54,7 +55,6 @@ Renderer::Renderer(
         discoverModelResources();
         discoverSceneResources();
         loadTransformSettings();
-        createSkyboxTexture();
     } else {
         ambientLightColor_ = glm::vec3(0.45f, 0.47f, 0.48f);
     }
@@ -83,6 +83,7 @@ Renderer::Renderer(
 }
 
 Renderer::~Renderer() {
+    sceneLoad_.reset();
     if (!context_) {
         return;
     }

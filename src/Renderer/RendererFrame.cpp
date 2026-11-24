@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "SceneLoadTask.hpp"
 
 #include <utility>
 #include "HdrComposition.hpp"
@@ -368,6 +369,36 @@ void Renderer::recordCommandBuffer(
     }
 
     const VkExtent2D extent = swapChain_->extent();
+    if (sceneLoad_) {
+        // The live scene can be between GPU rebuild steps. Draw only the
+        // loading UI and reuse the usual attachment/layout transitions.
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.015f, 0.02f, 0.03f, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
+        VkRenderPassBeginInfo pass{};
+        pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        pass.renderPass = sceneRenderPass_;
+        pass.framebuffer = sceneRenderTargets_[currentFrame_].framebuffer;
+        pass.renderArea.extent = extent;
+        pass.clearValueCount = static_cast<std::uint32_t>(clearValues.size());
+        pass.pClearValues = clearValues.data();
+        vkCmdBeginRenderPass(commandBuffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdEndRenderPass(commandBuffer);
+        recordLegacySceneTransfer(commandBuffer, imageIndex);
+        pass.renderPass = renderPass_;
+        pass.framebuffer = swapChain_->framebuffers()[imageIndex];
+        pass.clearValueCount = 0;
+        pass.pClearValues = nullptr;
+        vkCmdBeginRenderPass(commandBuffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+        vkCmdEndRenderPass(commandBuffer);
+        if (captureScreenshot) recordScreenshotCopy(commandBuffer, imageIndex);
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to record loading command buffer");
+        }
+        return;
+    }
+
     std::uint32_t uniformOffset = 0;
     const uint32_t materialCount = static_cast<uint32_t>(meshData_.materials.size());
 
@@ -899,29 +930,33 @@ bool Renderer::drawFrame() {
         updateViewerTexture();
     }
 #ifndef VULKCORE_OHOS
-    if (const auto node = std::exchange(pendingSceneNodeRemoval_, std::nullopt)) {
-        if (removeSceneNodeById(*node)) {
-            editorSelection_ = EditorSelection::None;
-            editorPart_.reset();
-            editorDirty_ = true;
-            sceneStatusFailed_ = false;
-            sceneStatus_ = "Removed object from the scene.";
+    if (!sceneLoad_) {
+        if (const auto node = std::exchange(pendingSceneNodeRemoval_, std::nullopt)) {
+            if (removeSceneNodeById(*node)) {
+                editorSelection_ = EditorSelection::None;
+                editorPart_.reset();
+                editorDirty_ = true;
+                sceneStatusFailed_ = false;
+                sceneStatus_ = "Removed object from the scene.";
+            }
         }
-    }
-    if (!resourceBrowser_.root.empty()) {
-        processResourceTransfers();
-        processResourceTrash();
-        processSceneModelDrop();
-        if (toolUiVisible() && resourceBrowser_.open) loadResourcePreview();
-        resourceBrowser_.dropZones.clear();
-        resourcePreview_.draw = false;
-    }
-    if (editorShaderApplyRequested_) {
-        editorShaderApplyRequested_ = false;
-        applyEditorShader();
+        if (!resourceBrowser_.root.empty()) {
+            processResourceTransfers();
+            processResourceTrash();
+            processSceneModelDrop();
+            if (toolUiVisible() && resourceBrowser_.open) loadResourcePreview();
+            resourceBrowser_.dropZones.clear();
+            resourcePreview_.draw = false;
+        }
+        if (editorShaderApplyRequested_) {
+            editorShaderApplyRequested_ = false;
+            applyEditorShader();
+        }
+    } else {
+        advanceSceneLoad();
     }
 #endif
-    if (pendingSceneChange_ != EditorSceneChange::None && (!editorDirty_ || editorSceneChangeConfirmed_)) {
+    if (!sceneLoad_ && pendingSceneChange_ != EditorSceneChange::None && (!editorDirty_ || editorSceneChangeConfirmed_)) {
         const auto action = std::exchange(pendingSceneChange_, EditorSceneChange::None);
         const auto path = std::exchange(pendingSceneOpen_, {});
         editorSceneChangeConfirmed_ = false;
@@ -932,7 +967,14 @@ bool Renderer::drawFrame() {
             sceneEditMode_ = false;
             sceneStatus_.clear();
             sceneStatusFailed_ = false;
-        } else {
+        }
+#ifndef VULKCORE_OHOS
+        else if (action == EditorSceneChange::Open) {
+            loadingScenePath_ = path;
+            sceneLoad_ = std::make_unique<SceneLoadTask>(loadSceneSteps(path, true));
+        }
+#endif
+        else {
             const auto before = currentScenePath_;
             const bool changed = action == EditorSceneChange::Create ? createNewEmptyScene() : loadSceneResource(path);
             if (changed || currentScenePath_ != before) editorDirty_ = false;
@@ -987,64 +1029,69 @@ bool Renderer::drawFrame() {
         ensureScreenshotBuffer();
     }
 
-    const bool viewportHovered = buildImGuiFrame();
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-    const float particleDeltaSeconds = std::clamp(
-        elapsedSeconds - lastFrameElapsedSeconds_,
-        0.0f,
-        0.1f
-    );
+    std::optional<glm::mat4> clipFromScene;
+    if (sceneLoad_) {
+        buildSceneLoadingFrame();
+    } else {
+        const bool viewportHovered = buildImGuiFrame();
+        const auto now = std::chrono::steady_clock::now();
+        const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+        const float particleDeltaSeconds = std::clamp(
+            elapsedSeconds - lastFrameElapsedSeconds_,
+            0.0f,
+            0.1f
+        );
 #ifndef VULKCORE_OHOS
-    if ((playerController_.active() || transitionSettings_.enabled) &&
-        (!toolUiVisible() || roadEditorActive())) {
-        restoreSceneCamera();
-    }
+        if ((playerController_.active() || transitionSettings_.enabled) &&
+            (!toolUiVisible() || roadEditorActive())) {
+            restoreSceneCamera();
+        }
 #endif
-    updatePlayerController(particleDeltaSeconds, viewportHovered);
+        updatePlayerController(particleDeltaSeconds, viewportHovered);
 #ifndef VULKCORE_OHOS
-    updateRoadEditorCamera(particleDeltaSeconds, viewportHovered);
+        updateRoadEditorCamera(particleDeltaSeconds, viewportHovered);
 #endif
-    updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
-    updateCameraBasis();
-    glm::vec3 editMovement(0.0f);
+        updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
+        updateCameraBasis();
+        glm::vec3 editMovement(0.0f);
 #ifndef VULKCORE_OHOS
-    editMovement = updateGameEditorSelection(particleDeltaSeconds, viewportHovered);
+        editMovement = updateGameEditorSelection(particleDeltaSeconds, viewportHovered);
 #endif
-    updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds, editMovement);
+        updateSceneNodeTransforms(elapsedSeconds, particleDeltaSeconds, editMovement);
 #ifndef VULKCORE_OHOS
-    if (resourcePreview_.draw) {
-        updateSkeletalMesh(resourcePreview_.mesh, particleDeltaSeconds, kMaxFramesInFlight,
-            [this](std::size_t start, std::size_t count) {
-                resourcePreview_.vertices[currentFrame_]->upload(resourcePreview_.mesh.vertices.data() + start,
-                    sizeof(Vertex) * count, sizeof(Vertex) * start);
-            });
-    }
+        if (resourcePreview_.draw) {
+            updateSkeletalMesh(resourcePreview_.mesh, particleDeltaSeconds, kMaxFramesInFlight,
+                [this](std::size_t start, std::size_t count) {
+                    resourcePreview_.vertices[currentFrame_]->upload(resourcePreview_.mesh.vertices.data() + start,
+                        sizeof(Vertex) * count, sizeof(Vertex) * start);
+                });
+        }
 #endif
-    lastFrameElapsedSeconds_ = elapsedSeconds;
-    updateRealtimeEffects(particleDeltaSeconds);
-    if (mode_ == Mode::ModelViewer) updateBoundingBoxVertices();
+        lastFrameElapsedSeconds_ = elapsedSeconds;
+        updateRealtimeEffects(particleDeltaSeconds);
+        if (mode_ == Mode::ModelViewer) updateBoundingBoxVertices();
 
+        clipFromScene = updateUniformBuffer();
+        if (clipFromScene && mode_ == Mode::ModelViewer) drawViewerPoints(*clipFromScene);
+#ifndef VULKCORE_OHOS
+        if (clipFromScene) {
+            if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);
+            else {
+                updatePlayerMoveClick(*clipFromScene, viewportHovered);
+                drawGameSelectionOutline(*clipFromScene);
+            }
+        }
+#endif
+        updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
+        updateRoadIndex();
+        updateGrassCoverage();
+        updateParticleBuffer();
+        if (mode_ == Mode::ModelViewer) updateBoundingBoxBuffer();
+    }
+    ImGui::Render();
     if (vkResetFences(context_->device(), 1, &inFlightFences_[currentFrame_]) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset in-flight frame fence!");
     }
-    const auto clipFromScene = updateUniformBuffer();
-    if (clipFromScene && mode_ == Mode::ModelViewer) drawViewerPoints(*clipFromScene);
-#ifndef VULKCORE_OHOS
-    if (clipFromScene) {
-        if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);
-        else {
-            updatePlayerMoveClick(*clipFromScene, viewportHovered);
-            drawGameSelectionOutline(*clipFromScene);
-        }
-    }
-#endif
-    updateParticleSystems(particleDeltaSeconds, cameraRight_, cameraUp_);
-    updateRoadIndex();
-    ImGui::Render();
-    updateGrassCoverage();
-    updateParticleBuffer();
-    if (mode_ == Mode::ModelViewer) updateBoundingBoxBuffer();
     if (vkResetCommandBuffer(commandBuffers_[currentFrame_], 0) != VK_SUCCESS) {
         throw std::runtime_error("failed to reset command buffer!");
     }
@@ -1139,7 +1186,7 @@ void Renderer::recreateSwapChain() {
     recreatePresentSemaphores();
     createSceneRenderResources();
     configureHdrComposition();
-    updateSceneTextureDescriptors();
+    if (!sceneLoadApplying_) updateSceneTextureDescriptors();
     ImGui_ImplVulkan_SetMinImageCount(
         std::max(2u, static_cast<uint32_t>(swapChain_->framebuffers().size()))
     );

@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "SceneLoadTask.hpp"
 #include "HdrComposition.hpp"
 
 namespace VulkCore {
@@ -750,15 +751,15 @@ VkPipeline Renderer::sunShadowPipelineForMaterial(const MaterialData& material) 
     }
 }
 
-void Renderer::prepareTerrainAndGrassPipelines() {
-    // Compile pipelines at scene load, even when the initial view sees sky.
-    const bool hdr = hdrComposition_ != nullptr;
+SceneLoadTask Renderer::prepareScenePipelines(bool incremental) {
+    // Warm visible and off-camera materials while the loading UI can still draw.
     std::unordered_set<std::uint32_t> preparedMaterials;
     for (const MeshPart& part : meshData_.parts) {
-        if (!part.terrainBounds && !grassLodForLayer(part.nodeId - kGrassLodNodeBase)) continue;
+        if (!incremental && !part.terrainBounds && !grassLodForLayer(part.nodeId - kGrassLodNodeBase)) continue;
         const std::uint32_t index = materialIndexForPart(part);
         if (index >= meshData_.materials.size() || !preparedMaterials.insert(index).second) continue;
         const MaterialData& material = meshData_.materials[index];
+        const bool hdr = hdrComposition_ != nullptr;
         if (material.doubleSided && material.drawBackFacesFirst && isTransparentMaterial(material)) {
             graphicsPipelineForMaterial(material, hdr, VK_CULL_MODE_FRONT_BIT);
             graphicsPipelineForMaterial(material, hdr, VK_CULL_MODE_BACK_BIT);
@@ -766,7 +767,9 @@ void Renderer::prepareTerrainAndGrassPipelines() {
             graphicsPipelineForMaterial(material, hdr,
                 material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         }
+        if (incremental) co_yield 0;
     }
+    co_return true;
 }
 
 std::uint32_t Renderer::materialIndexForPart(const MeshPart& part) const {

@@ -1,5 +1,9 @@
 #include "RendererImplementation.hpp"
 #include "HdrComposition.hpp"
+#include "SceneLoadTask.hpp"
+
+#include <atomic>
+#include <future>
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
@@ -261,11 +265,9 @@ void Renderer::initializeEmptyScene() {
 }
 
 void Renderer::appendTerrainToScene(
-    const TerrainScene& terrain,
+    const TerrainMeshData& terrainMesh,
     const std::filesystem::path& terrainRoot
 ) {
-    TerrainMeshOptions meshOptions;
-    const TerrainMeshData terrainMesh = terrain.buildMesh(meshOptions);
     if (terrainMesh.vertices.empty() || terrainMesh.indices.empty() ||
         terrainMesh.chunks.empty()) {
         throw std::runtime_error("BOTW terrain contains no renderable heightmap data");
@@ -276,11 +278,6 @@ void Renderer::appendTerrainToScene(
             terrainMesh.indices.size()) {
         throw std::runtime_error("BOTW terrain exceeds the renderer's 32-bit mesh limits");
     }
-    if (!physicsWorld_) {
-        throw std::runtime_error("physics world is not initialized");
-    }
-    physicsWorld_->setTerrain(terrainMesh);
-
     MaterialData terrainMaterial;
     terrainMaterial.name = "BOTW Terrain (TSCB landform atlas)";
     terrainMaterial.baseColor = glm::vec4(1.0f);
@@ -377,11 +374,9 @@ void Renderer::appendTerrainToScene(
         throw std::runtime_error("BOTW terrain chunks contain no triangles");
     }
     meshData_.additionalNodes.push_back(std::move(terrainNode));
-    recalculateSceneBounds();
 }
 
-void Renderer::appendWaterToScene(const TerrainScene& terrain) {
-    const TerrainMeshData waterMesh = terrain.buildWaterMesh();
+void Renderer::appendWaterToScene(const TerrainMeshData& waterMesh) {
     if (waterMesh.vertices.empty() || waterMesh.indices.empty() ||
         waterMesh.chunks.empty()) {
         return;
@@ -493,7 +488,6 @@ void Renderer::appendWaterToScene(const TerrainScene& terrain) {
 
     if (!waterNode.children.empty()) {
         meshData_.additionalNodes.push_back(std::move(waterNode));
-        recalculateSceneBounds();
     }
 }
 
@@ -562,7 +556,6 @@ void Renderer::appendPlayerToScene() {
         kPlayerSceneNodeId
     });
     meshData_.additionalNodes.push_back(std::move(playerNode));
-    recalculateSceneBounds();
 }
 
 void Renderer::appendGrassToScene(const TerrainScene& terrain) {
@@ -712,7 +705,7 @@ const Renderer::SceneModelResource* Renderer::sceneModelResourceForNode(
     return nullptr;
 }
 
-void Renderer::clearSceneData() {
+void Renderer::clearSceneData(bool rebuildResources) {
     context_->waitIdle();
     selectedModelNode_ = nullptr;
     editorSelection_ = EditorSelection::None;
@@ -771,12 +764,14 @@ void Renderer::clearSceneData() {
     modelImportPathBuffer_.fill('\0');
     boundingBoxVertices_.fill(Vertex{});
 
-    vertexBuffers_.clear();
-    indexBuffer_.reset();
-    createVertexBuffer();
-    createIndexBuffer();
-    createParticleTextures();
-    rebuildMaterialResources();
+    if (rebuildResources) {
+        vertexBuffers_.clear();
+        indexBuffer_.reset();
+        createVertexBuffer();
+        createIndexBuffer();
+        createParticleTextures();
+        rebuildMaterialResources();
+    }
 }
 
 void Renderer::recalculateSceneBounds() {
@@ -826,7 +821,8 @@ void Renderer::appendImportedModel(
     MeshData importedMesh,
     const std::filesystem::path& path,
     std::optional<std::uint32_t> preferredRootNodeId,
-    bool playerModel
+    bool playerModel,
+    bool updateBounds
 ) {
     float playerAutoScale = 1.0f;
     float playerGroundOffset = 0.0f;
@@ -1023,7 +1019,7 @@ void Renderer::appendImportedModel(
     if (playerModel) {
         configurePlayerRunAnimation();
     }
-    recalculateSceneBounds();
+    if (updateBounds) recalculateSceneBounds();
 }
 
 bool Renderer::createNewEmptyScene() {
@@ -1173,7 +1169,45 @@ bool Renderer::saveSceneResource(const std::filesystem::path& path) {
     return true;
 }
 
+void Renderer::queueStartupScene(const std::filesystem::path& path) {
+    if (sceneLoad_) return;
+    pendingSceneOpen_ = path;
+    pendingSceneChange_ = EditorSceneChange::Open;
+    editorSceneChangeConfirmed_ = false;
+}
+
+void Renderer::advanceSceneLoad() {
+    try {
+        if (sceneLoad_->advance()) return;
+        if (sceneLoad_->succeeded()) {
+            editorDirty_ = false;
+        }
+    } catch (const std::exception& error) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = "Failed to load scene: " + std::string(error.what());
+    }
+    sceneLoad_.reset();
+    if (sceneLoadApplying_ && sceneStatusFailed_) {
+        clearSceneData();
+        editorDirty_ = false;
+    }
+    sceneLoadApplying_ = false;
+    if (sceneStatusFailed_) {
+        toolUiVisible_ = true;
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+        selectSceneWorkspace_ = true;
+#endif
+        std::cerr << sceneStatus_ << '\n';
+    }
+}
+
 bool Renderer::loadSceneResource(const std::filesystem::path& path) {
+    auto task = loadSceneSteps(path, false);
+    while (task.advance()) {}
+    return task.succeeded();
+}
+
+SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremental) {
     sceneStatusFailed_ = false;
     sceneStatus_.clear();
     std::error_code error;
@@ -1181,7 +1215,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     if (!std::filesystem::is_regular_file(resolvedScenePath, error)) {
         sceneStatusFailed_ = true;
         sceneStatus_ = "Scene file was not found: " + resolvedScenePath.string();
-        return false;
+        co_return false;
     }
     const bool isTornadoScene = resolvedScenePath.filename() == "tornado.scene";
 
@@ -1209,7 +1243,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     if (!sceneFile.is_open()) {
         sceneStatusFailed_ = true;
         sceneStatus_ = "Scene file could not be opened: " + resolvedScenePath.string();
-        return false;
+        co_return false;
     }
     struct SavedAnimation {
         std::string clipName;
@@ -1232,7 +1266,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 !std::isfinite(patrol.speed) || !std::isfinite(patrol.wait) || !std::isfinite(patrol.facingOffsetDegrees)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid patrol settings.";
-                return false;
+                co_return false;
             }
             patrol.enabled = enabled != 0;
             patrol.offset = glm::clamp(patrol.offset, glm::vec2(-100.0f), glm::vec2(100.0f));
@@ -1248,7 +1282,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 !std::isfinite(animation.speed)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid skeletal playback settings.";
-                return false;
+                co_return false;
             }
             savedAnimations.insert_or_assign(id, std::move(animation));
         } else if (key == "node_gravity") {
@@ -1256,7 +1290,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> id)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid gravity node ID.";
-                return false;
+                co_return false;
             }
             gravityNodeIds.push_back(id);
         } else if (key == "model_resource_path") {
@@ -1264,7 +1298,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> std::quoted(configuredPath))) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid model path.";
-                return false;
+                co_return false;
             }
             std::string modelReferenceSuffix;
             std::getline(sceneFile, modelReferenceSuffix);
@@ -1277,7 +1311,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                     (savedRootNodeId - 1) % kSceneModelNodeStride != 0) {
                     sceneStatusFailed_ = true;
                     sceneStatus_ = "Scene file has an invalid model root node ID.";
-                    return false;
+                    co_return false;
                 }
                 rootNodeId = static_cast<std::uint32_t>(savedRootNodeId);
             }
@@ -1287,28 +1321,28 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> std::quoted(configuredPath))) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid terrain path.";
-                return false;
+                co_return false;
             }
             terrainPath = std::move(configuredPath);
         } else if (key == "terrain_road") {
             if (!savedRoadPaint.readStroke(sceneFile)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid terrain road stroke.";
-                return false;
+                co_return false;
             }
         } else if (key == "terrain_road_ochre_ratio") {
             if (!(sceneFile >> savedOchreDirtRatio) || !std::isfinite(savedOchreDirtRatio) ||
                 savedOchreDirtRatio < 0.0f || savedOchreDirtRatio > 1.0f) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid ochre dirt ratio.";
-                return false;
+                co_return false;
             }
         } else if (key == "water_resource") {
             std::string configuredPath;
             if (!(sceneFile >> std::quoted(configuredPath))) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid water path.";
-                return false;
+                co_return false;
             }
             waterPath = std::move(configuredPath);
         } else if (key == "player_model_resource") {
@@ -1316,7 +1350,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> std::quoted(configuredPath)) || configuredPath.empty()) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player model path.";
-                return false;
+                co_return false;
             }
             playerModelPath = std::move(configuredPath);
         } else if (key == "player_present") {
@@ -1324,7 +1358,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player state.";
-                return false;
+                co_return false;
             }
             sceneHasPlayer = present != 0;
         } else if (key == "player_click_to_move") {
@@ -1332,7 +1366,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             if (!(sceneFile >> enabled) || (enabled != 0 && enabled != 1)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player movement setting.";
-                return false;
+                co_return false;
             }
             sceneClickToMove = enabled != 0;
         } else if (key == "player_move_speed_multiplier") {
@@ -1341,7 +1375,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 playerMoveSpeedMultiplier > PlayerController::kMaxMoveSpeedMultiplier) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player move speed multiplier.";
-                return false;
+                co_return false;
             }
         } else if (key == "player_camera_follow_distance") {
             float distance = 0.0f;
@@ -1350,7 +1384,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 distance > PlayerController::kMaxCameraFollowDistance) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player camera follow distance.";
-                return false;
+                co_return false;
             }
             playerCameraFollowDistance = distance;
         } else if (key == "player_spawn_position") {
@@ -1361,7 +1395,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 !std::isfinite(configuredPosition.z)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid player spawn position.";
-                return false;
+                co_return false;
             }
             playerSpawnPosition = configuredPosition;
         } else if (key == "skybox") {
@@ -1370,7 +1404,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 (enabled != 0 && enabled != 1)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid skybox settings.";
-                return false;
+                co_return false;
             }
             sceneHasSkybox = enabled != 0;
         } else if (key == "grass_settings") {
@@ -1380,7 +1414,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 grassHeightScale > 3.0f) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid grass settings.";
-                return false;
+                co_return false;
             }
         } else if (key == "grass_growth") {
             if (!(sceneFile >> grassGrowth.minimumTilt >> grassGrowth.maximumTilt >> grassGrowth.noiseSize) ||
@@ -1392,7 +1426,7 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 grassGrowth.noiseSize > GrassGrowthSettings::kMaxNoiseSize) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid grass growth settings.";
-                return false;
+                co_return false;
             }
         } else if (key == "grass_blade_width") {
             if (!(sceneFile >> grassGrowth.minimumBladeWidth >> grassGrowth.maximumBladeWidth) ||
@@ -1402,14 +1436,14 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
                 grassGrowth.minimumBladeWidth > grassGrowth.maximumBladeWidth) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid grass blade widths.";
-                return false;
+                co_return false;
             }
         } else if (key == "sun_present") {
             int present = 0;
             if (!(sceneFile >> present) || (present != 0 && present != 1)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has an invalid sun state.";
-                return false;
+                co_return false;
             }
             sceneHasSun = present != 0;
         } else {
@@ -1468,118 +1502,205 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
         waterPath = terrainPath / "terrain_water";
     }
 
-    std::unique_ptr<TerrainScene> terrain;
-    if (terrainReferenced) {
-        const auto terrainMap = terrainPath / "MainField.tscb";
-        if (!std::filesystem::is_regular_file(terrainMap, error)) {
-            warnResource("Terrain", terrainMap);
-        } else {
-            try {
-                terrain = TerrainScene::load(terrainMap, terrainPath, waterPath);
-            } catch (const std::exception& terrainError) {
-                warnResource("Terrain", terrainPath, terrainError.what());
+    for (auto& model : modelReferences) model.path = resolveSceneAsset(model.path);
+    playerModelPath = resolveSceneAsset(playerModelPath);
+    std::vector<std::filesystem::path> modelsToPrepare;
+    if (incremental) {
+        const auto enqueueModel = [&](const std::filesystem::path& modelPath) {
+            if (modelPath.empty() || modelResourceCache_.contains(modelPath.string())) return;
+            if (!std::filesystem::is_regular_file(modelPath, error)) return;
+            if (std::find(modelsToPrepare.begin(), modelsToPrepare.end(), modelPath) == modelsToPrepare.end()) {
+                modelsToPrepare.push_back(modelPath);
             }
-        }
+        };
+        for (const auto& model : modelReferences) enqueueModel(model.path);
+        if (sceneHasPlayer && terrainReferenced) enqueueModel(playerModelPath);
     }
 
-    clearSceneData();
+    struct PreparedAssets {
+        std::unique_ptr<TerrainScene> terrain;
+        TerrainMeshData terrainMesh;
+        TerrainMeshData waterMesh;
+        std::optional<TerrainGrassImages> grass;
+        std::string terrainError;
+        std::string grassError;
+        std::unordered_map<std::string, ModelResourceCacheEntry> models;
+    };
+    std::atomic<int> preparationProgress{4};
+    const auto prepare = [terrainPath, waterPath, models = std::move(modelsToPrepare), &preparationProgress] {
+        PreparedAssets prepared;
+        if (!terrainPath.empty()) {
+            try {
+                prepared.terrain = TerrainScene::load(terrainPath / "MainField.tscb", terrainPath, waterPath);
+                preparationProgress.store(20, std::memory_order_relaxed);
+                prepared.terrainMesh = prepared.terrain->buildMesh({});
+                prepared.waterMesh = prepared.terrain->buildWaterMesh();
+            } catch (const std::exception& terrainError) {
+                prepared.terrain.reset();
+                prepared.terrainError = terrainError.what();
+            }
+        }
+        preparationProgress.store(36, std::memory_order_relaxed);
+        for (std::size_t i = 0; i < models.size(); ++i) {
+            auto& model = prepared.models[models[i].string()];
+            try {
+                auto mesh = std::make_shared<MeshData>(loadModelMesh(models[i]));
+                if (mesh->vertices.empty() || mesh->indices.empty()) {
+                    throw std::runtime_error("the imported model contains no renderable triangles");
+                }
+                model.mesh = std::move(mesh);
+            } catch (const std::exception& modelError) {
+                model.error = modelError.what();
+            }
+            preparationProgress.store(36 + static_cast<int>(16 * (i + 1) / models.size()),
+                                      std::memory_order_relaxed);
+        }
+        preparationProgress.store(52, std::memory_order_relaxed);
+        if (prepared.terrain) {
+            try {
+                prepared.grass = decodeTerrainGrass(terrainPath);
+            } catch (const std::exception& grassError) {
+                prepared.grassError = grassError.what();
+            }
+        }
+        return prepared;
+    };
+
+    PreparedAssets assets;
+    if (incremental) {
+        auto preparation = std::async(std::launch::async, prepare);
+        while (preparation.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            co_yield preparationProgress.load(std::memory_order_relaxed);
+        }
+        assets = preparation.get();
+        co_yield 65;
+    } else {
+        assets = prepare();
+    }
+    if (!assets.terrainError.empty()) warnResource("Terrain", terrainPath, assets.terrainError);
+    if (!assets.grassError.empty()) warnResource("Terrain grass resources", terrainPath / "source", assets.grassError);
+    for (auto& [modelPath, entry] : assets.models) {
+        if (entry.mesh) discoverModelTextureResources(modelPath, entry);
+        modelResourceCache_.try_emplace(modelPath, std::move(entry));
+    }
+
+    if (incremental) sceneLoadApplying_ = true;
+    clearSceneData(false);
     playerSpawnPosition_ = playerSpawnPosition;
     playerClickToMove_ = sceneClickToMove;
-    std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max();
-    const auto markMissingMaterialSlots = [&] {
-        // Saved material overrides use positional indices. The slots owned by
-        // a missing resource cannot be reconstructed from its path alone.
-        firstUnmappedMaterial = std::min(firstUnmappedMaterial, meshData_.materials.size());
-    };
-    for (const auto& modelReference : modelReferences) {
-        const auto modelPath = resolveSceneAsset(modelReference.path);
-        if (!std::filesystem::is_regular_file(modelPath, error)) {
-            warnResource("Model", modelPath);
-        } else if (importModelResource(modelPath, modelReference.rootNodeId)) {
-            continue;
-        } else {
-            warnResource("Model", modelPath, resourceImportStatus_);
+    const auto assemble = [&] {
+        std::size_t firstUnmappedMaterial = std::numeric_limits<std::size_t>::max();
+        const auto markMissingMaterialSlots = [&] {
+            // Saved material overrides use positional indices. The slots owned by
+            // a missing resource cannot be reconstructed from its path alone.
+            firstUnmappedMaterial = std::min(firstUnmappedMaterial, meshData_.materials.size());
+        };
+        for (const auto& modelReference : modelReferences) {
+            const auto& modelPath = modelReference.path;
+            if (!std::filesystem::is_regular_file(modelPath, error)) {
+                warnResource("Model", modelPath);
+            } else if (importModelResource(modelPath, modelReference.rootNodeId, false, false)) {
+                continue;
+            } else {
+                warnResource("Model", modelPath, resourceImportStatus_);
+            }
+
+            markMissingMaterialSlots();
+            // Reserve the skipped instance's range so legacy unnumbered models
+            // keep their node IDs and cannot receive its transforms or removals.
+            if (modelReference.rootNodeId) {
+                const auto modelIndex = (*modelReference.rootNodeId - 1u) / kSceneModelNodeStride;
+                nextSceneModelInstanceIndex_ = std::max(nextSceneModelInstanceIndex_, modelIndex + 1u);
+            } else {
+                ++nextSceneModelInstanceIndex_;
+            }
         }
 
-        markMissingMaterialSlots();
-        // Reserve the skipped instance's range so legacy unnumbered models
-        // keep their node IDs and cannot receive its transforms or removals.
-        if (modelReference.rootNodeId) {
-            const auto modelIndex = (*modelReference.rootNodeId - 1u) / kSceneModelNodeStride;
-            nextSceneModelInstanceIndex_ = std::max(nextSceneModelInstanceIndex_, modelIndex + 1u);
-        } else {
-            ++nextSceneModelInstanceIndex_;
-        }
-    }
+        const bool playerModelMissing = !playerModelPath.empty() &&
+            !std::filesystem::is_regular_file(playerModelPath, error);
+        if (playerModelMissing) warnResource("Player model", playerModelPath);
+        if (terrainReferenced && !assets.terrain) markMissingMaterialSlots();
 
-    playerModelPath = resolveSceneAsset(playerModelPath);
-    const bool playerModelMissing = !playerModelPath.empty() &&
-        !std::filesystem::is_regular_file(playerModelPath, error);
-    if (playerModelMissing) warnResource("Player model", playerModelPath);
-    if (terrainReferenced && !terrain) markMissingMaterialSlots();
-
-    bool generatedGeometryChanged = false;
-    if (terrain) {
-        try {
-            appendTerrainToScene(*terrain, terrainPath);
-            if (waterSkipped) markMissingMaterialSlots();
-            appendWaterToScene(*terrain);
-            terrainScene_ = std::move(terrain);
-            roadPaint_ = std::move(savedRoadPaint);
-            ochreDirtRatio_ = savedOchreDirtRatio;
-            terrainResourcePath_ = terrainPath;
-            waterResourcePath_ = waterPath;
+        if (assets.terrain) {
             try {
-                loadTerrainGrassResources();
-            } catch (const std::exception& error) {
-                warnResource("Terrain grass resources", terrainPath / "source", error.what());
-            }
-            if (sceneHasPlayer) {
+                physicsWorld_->setTerrain(assets.terrainMesh);
+                appendTerrainToScene(assets.terrainMesh, terrainPath);
+                assets.terrainMesh = {};
+                if (waterSkipped) markMissingMaterialSlots();
+                appendWaterToScene(assets.waterMesh);
+                assets.waterMesh = {};
+                terrainScene_ = std::move(assets.terrain);
+                roadPaint_ = std::move(savedRoadPaint);
+                ochreDirtRatio_ = savedOchreDirtRatio;
+                terrainResourcePath_ = terrainPath;
+                waterResourcePath_ = waterPath;
+                if (sceneHasPlayer) {
 #ifdef VULKCORE_OHOS
-                constexpr bool useClickToMove = false;
+                    constexpr bool useClickToMove = false;
 #else
-                const bool useClickToMove = playerClickToMove_;
+                    const bool useClickToMove = playerClickToMove_;
 #endif
-                playerController_.reset(*terrainScene_, *physicsWorld_, playerSpawnPosition_, useClickToMove);
-                playerController_.setMoveSpeedMultiplier(playerMoveSpeedMultiplier);
-                if (playerCameraFollowDistance) {
-                    playerController_.setCameraFollowDistance(*playerCameraFollowDistance);
+                    playerController_.reset(*terrainScene_, *physicsWorld_, playerSpawnPosition_, useClickToMove);
+                    playerController_.setMoveSpeedMultiplier(playerMoveSpeedMultiplier);
+                    if (playerCameraFollowDistance) {
+                        playerController_.setCameraFollowDistance(*playerCameraFollowDistance);
+                    }
+                    if (playerModelPath.empty()) {
+                        appendPlayerToScene();
+                    } else if (playerModelMissing) {
+                        markMissingMaterialSlots();
+                    } else if (!importModelResource(playerModelPath, std::nullopt, true, false)) {
+                        warnResource("Player model", playerModelPath, resourceImportStatus_);
+                        markMissingMaterialSlots();
+                    }
+                    appendGrassToScene(*terrainScene_);
                 }
-                if (playerModelPath.empty()) {
-                    appendPlayerToScene();
-                } else if (playerModelMissing) {
-                    markMissingMaterialSlots();
-                } else if (!importModelResource(playerModelPath, std::nullopt, true)) {
-                    warnResource("Player model", playerModelPath, resourceImportStatus_);
-                    markMissingMaterialSlots();
-                }
-                appendGrassToScene(*terrainScene_);
+                std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
+                          << " tiles in " << terrainScene_->chunks().size()
+                          << " chunks, " << terrainScene_->waterTileCount()
+                          << " water tiles, " << terrainScene_->grassTileCount()
+                          << " grass map tiles\n";
+            } catch (const std::exception& terrainError) {
+                throw std::runtime_error("Failed to load scene terrain: " + std::string(terrainError.what()));
             }
-            generatedGeometryChanged = true;
-            std::cerr << "Loaded BOTW terrain: " << terrainScene_->tileCount()
-                      << " tiles in " << terrainScene_->chunks().size()
-                      << " chunks, " << terrainScene_->waterTileCount()
-                      << " water tiles, " << terrainScene_->grassTileCount()
-                      << " grass map tiles\n";
-        } catch (const std::exception& terrainError) {
-            sceneStatusFailed_ = true;
-            sceneStatus_ = "Failed to load scene terrain: " +
-                std::string(terrainError.what());
-            return false;
+        }
+
+        recalculateSceneBounds();
+        if (sceneHasSun) createSunMesh();
+        if (terrainScene_ && !sceneHasPlayer) {
+            // Keep the authored material indices for terrain-only scenes.
+            appendGrassToScene(*terrainScene_);
+        }
+        return firstUnmappedMaterial;
+    };
+    std::size_t firstUnmappedMaterial;
+    try {
+        if (incremental) {
+            // Only the loading UI renders while the worker owns scene geometry and physics.
+            auto assembly = std::async(std::launch::async, assemble);
+            while (assembly.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                co_yield 68;
+            }
+            firstUnmappedMaterial = assembly.get();
+        } else {
+            firstUnmappedMaterial = assemble();
+        }
+    } catch (const std::exception& error) {
+        sceneStatusFailed_ = true;
+        sceneStatus_ = error.what();
+        co_return false;
+    }
+    if (assets.grass) {
+        try {
+            auto upload = uploadTerrainGrass(std::move(*assets.grass));
+            while (upload.advance()) {
+                if (incremental) co_yield 69 + upload.progress();
+            }
+        } catch (const std::exception& error) {
+            warnResource("Terrain grass resources", terrainPath / "source", error.what());
         }
     }
-
-    if (sceneHasSun) {
-        createSunMesh();
-        generatedGeometryChanged = true;
-    }
-    if (terrainScene_ && !sceneHasPlayer) {
-        // Keep the authored material indices for terrain-only scenes.
-        appendGrassToScene(*terrainScene_);
-    }
-    if (generatedGeometryChanged) {
-        rebuildSceneGeometryResources();
-    }
+    if (incremental) co_yield 75;
 
     currentScenePath_ = resolvedScenePath;
     skyboxEnabled_ = sceneHasSkybox.value_or(resolvedScenePath.filename() == "game.scene");
@@ -1599,7 +1720,9 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     } else {
         skyboxTexture_.reset();
     }
+    if (incremental) co_yield 77;
     loadTransformSettings(firstUnmappedMaterial);
+    if (incremental) co_yield 79;
     for (auto& material : meshData_.materials) {
         bool shaderMissing = false;
         for (const auto& shaderName : material.shaderConfiguration.shaderNames) {
@@ -1639,12 +1762,26 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             animation->settingsEdited = true;
         }
     }
-    recalculateSceneBounds();
+    const auto prepareInitialView = [&] {
+        recalculateSceneBounds();
+        if (terrainScene_) {
+            if (playerController_.active()) updatePlayerCamera();
+            const glm::vec3 center = cameraPosition_ / modelScale_ + modelCenter_;
+            if (grassCoverage_.update(*terrainScene_, {center.x, center.z})) ++grassRevision_;
+        }
+    };
+    if (incremental) {
+        auto view = std::async(std::launch::async, prepareInitialView);
+        while (view.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            co_yield 79;
+        }
+        view.get();
+    } else {
+        recalculateSceneBounds();
+    }
     configureHdrComposition();
-    prepareTerrainAndGrassPipelines();
-    lastFrameElapsedSeconds_ = std::chrono::duration<float>(
-        std::chrono::steady_clock::now() - startTime_
-    ).count();
+    auto pipelines = prepareScenePipelines(incremental);
+    while (pipelines.advance()) co_yield 80;
     if (isTornadoScene) {
         createTornadoPreview();
     }
@@ -1660,7 +1797,22 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
             warnResource("Particle texture", settings.texturePath, "texture could not be loaded");
         }
     }
-    rebuildMaterialResources();
+    if (incremental) co_yield 82;
+    vertexBuffers_.clear();
+    indexBuffer_.reset();
+    auto buffers = createVertexBufferSteps();
+    while (buffers.advance()) {
+        if (incremental) co_yield 82;
+    }
+    createIndexBuffer();
+    if (incremental) co_yield 83;
+    clearMaterialResources();
+    auto materials = createMaterialTextureSteps(incremental);
+    while (materials.advance()) {
+        co_yield 83 + materials.progress() * 16 / 100;
+    }
+    createDescriptorPool();
+    createDescriptorSets();
     const auto checkTexture = [&](const char* label, const std::filesystem::path& texturePath,
                                   const EmbeddedTextureData& embedded) {
         if (!texturePath.empty() && embedded.empty() &&
@@ -1682,8 +1834,16 @@ bool Renderer::loadSceneResource(const std::filesystem::path& path) {
     selectedResourceType_ = ResourceSelectionType::Model;
     selectedResourceMaterialIndex_ = -1;
     updateBoundingBoxVertices();
+    discoverModelResources();
+    if (incremental) {
+        sceneLoadApplying_ = false;
+        co_yield 100;
+    }
+    lastFrameElapsedSeconds_ = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - startTime_
+    ).count();
     sceneStatus_ = "Loaded scene " + pathUtf8(currentScenePath_.filename()) + ".";
-    return true;
+    co_return true;
 }
 
 void Renderer::loadResourceSettings() {

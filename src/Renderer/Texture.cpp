@@ -13,113 +13,81 @@
 
 namespace VulkCore {
 
-Texture::Texture(
-    VulkanContext& context,
-    const std::filesystem::path& path,
-    VkSamplerAddressMode addressModeU,
-    VkSamplerAddressMode addressModeV,
-    TextureColorSpace colorSpace
-)
-    : context_(context),
-      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
-      addressModeU_(addressModeU),
-      addressModeV_(addressModeV) {
-    int width = 0;
-    int height = 0;
-    const std::string pathString = path.string();
+DecodedTexturePixels decodeTexturePixels(const std::filesystem::path& path) {
+    int width = 0, height = 0;
+    const auto pathString = path.string();
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
-        stbi_load(pathString.c_str(), &width, &height, nullptr, STBI_rgb_alpha),
-        &stbi_image_free
-    );
+        stbi_load(pathString.c_str(), &width, &height, nullptr, STBI_rgb_alpha), &stbi_image_free);
     if (!pixels || width <= 0 || height <= 0) {
         const char* reason = stbi_failure_reason();
-        throw std::runtime_error(
-            "failed to load texture image '" + pathString + "': " +
-            (reason == nullptr ? "unknown stb_image error" : reason)
-        );
+        throw std::runtime_error("failed to load texture image '" + pathString + "': " +
+            (reason ? reason : "unknown stb_image error"));
     }
-
-    uploadRgbaPixels(pixels.get(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    const auto bytes = static_cast<std::size_t>(width) * height * 4;
+    return {{pixels.get(), pixels.get() + bytes}, static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height), 1};
 }
 
-Texture::Texture(
-    VulkanContext& context,
-    const std::vector<std::filesystem::path>& layerPaths,
-    TextureColorSpace colorSpace
-)
-    : context_(context),
-      arrayView_(true),
-      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB) {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
-    if (layerPaths.empty() || layerPaths.size() > properties.limits.maxImageArrayLayers) {
-        throw std::runtime_error("invalid number of texture layers");
-    }
-    arrayLayers_ = static_cast<std::uint32_t>(layerPaths.size());
-    int width = 0, height = 0;
-    std::size_t layerBytes = 0;
-    std::vector<std::uint8_t> rgba;
-    for (std::size_t index = 0; index < layerPaths.size(); ++index) {
-        const auto path = layerPaths[index].string();
-        int layerWidth = 0, layerHeight = 0;
-        std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
-            stbi_load(path.c_str(), &layerWidth, &layerHeight, nullptr, STBI_rgb_alpha),
-            &stbi_image_free
-        );
-        if (!pixels || layerWidth <= 0 || layerHeight <= 0) {
-            throw std::runtime_error("failed to load texture array layer '" + path + "'");
-        }
-        if (index == 0) {
-            width = layerWidth;
-            height = layerHeight;
-            const auto bytes = 4ull * width * height;
-            if (bytes > rgba.max_size() / layerPaths.size() ||
-                static_cast<std::uint32_t>(std::max(width, height)) > properties.limits.maxImageDimension2D) {
-                throw std::runtime_error("texture array dimensions exceed device or memory limits");
-            }
-            layerBytes = static_cast<std::size_t>(bytes);
-            rgba.resize(layerBytes * layerPaths.size());
-        }
-        if (layerWidth != width || layerHeight != height) {
-            throw std::runtime_error("texture array layer has a different extent: '" + path + "'");
-        }
-        std::copy_n(pixels.get(), layerBytes, rgba.data() + index * layerBytes);
-    }
-    uploadRgbaPixels(rgba.data(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
-}
-
-Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData,
-                 TextureColorSpace colorSpace, VkSamplerAddressMode addressMode)
-    : context_(context),
-      format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
-      addressModeU_(addressMode), addressModeV_(addressMode) {
+DecodedTexturePixels decodeTexturePixels(const std::vector<std::uint8_t>& encodedData) {
     if (encodedData.empty() || encodedData.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("embedded texture data is empty or too large");
     }
-
-    int width = 0;
-    int height = 0;
+    int width = 0, height = 0;
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
-        stbi_load_from_memory(
-            encodedData.data(),
-            static_cast<int>(encodedData.size()),
-            &width,
-            &height,
-            nullptr,
-            STBI_rgb_alpha
-        ),
-        &stbi_image_free
-    );
+        stbi_load_from_memory(encodedData.data(), static_cast<int>(encodedData.size()),
+            &width, &height, nullptr, STBI_rgb_alpha), &stbi_image_free);
     if (!pixels || width <= 0 || height <= 0) {
         const char* reason = stbi_failure_reason();
-        throw std::runtime_error(
-            "failed to decode embedded texture: " +
-            std::string(reason == nullptr ? "unknown stb_image error" : reason)
-        );
+        throw std::runtime_error("failed to decode embedded texture: " +
+            std::string(reason ? reason : "unknown stb_image error"));
     }
-
-    uploadRgbaPixels(pixels.get(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+    const auto bytes = static_cast<std::size_t>(width) * height * 4;
+    return {{pixels.get(), pixels.get() + bytes}, static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height), 1};
 }
+
+DecodedTexturePixels decodeTextureLayers(const std::vector<std::filesystem::path>& paths) {
+    if (paths.empty() || paths.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("invalid number of texture layers");
+    }
+    auto image = decodeTexturePixels(paths.front());
+    if (image.rgba.size() > image.rgba.max_size() / paths.size()) {
+        throw std::runtime_error("texture array dimensions exceed memory limits");
+    }
+    image.rgba.reserve(image.rgba.size() * paths.size());
+    for (std::size_t index = 1; index < paths.size(); ++index) {
+        auto next = decodeTexturePixels(paths[index]);
+        if (next.width != image.width || next.height != image.height) {
+            throw std::runtime_error("texture array layer has a different extent: '" + paths[index].string() + "'");
+        }
+        image.rgba.insert(image.rgba.end(), next.rgba.begin(), next.rgba.end());
+    }
+    image.layers = static_cast<std::uint32_t>(paths.size());
+    return image;
+}
+
+Texture::Texture(VulkanContext& context, const std::filesystem::path& path,
+                 VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV,
+                 TextureColorSpace colorSpace)
+    : Texture(context, decodeTexturePixels(path), false, colorSpace, addressModeU, addressModeV) {}
+
+Texture::Texture(VulkanContext& context, const std::vector<std::filesystem::path>& layerPaths,
+                 TextureColorSpace colorSpace)
+    : Texture(context, decodeTextureLayers(layerPaths), true, colorSpace) {}
+
+Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& encodedData,
+                 TextureColorSpace colorSpace, VkSamplerAddressMode addressMode)
+    : Texture(context, decodeTexturePixels(encodedData), false, colorSpace, addressMode, addressMode) {}
+
+Texture::Texture(VulkanContext& context, const DecodedTexturePixels& image, bool arrayView,
+                 TextureColorSpace colorSpace, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV)
+    : Texture(context, image.rgba, image.width, image.height, arrayView, colorSpace, image.layers,
+              addressModeU, addressModeV) {}
+
+Texture::Texture(VulkanContext& context, const std::vector<std::uint8_t>& rgbaPixels,
+                 std::uint32_t width, std::uint32_t height, bool arrayView, TextureColorSpace colorSpace,
+                 std::uint32_t layers, VkSamplerAddressMode addressMode)
+    : Texture(context, rgbaPixels, width, height, arrayView, colorSpace, layers, addressMode, addressMode) {}
 
 Texture::Texture(
     VulkanContext& context,
@@ -129,11 +97,12 @@ Texture::Texture(
     bool arrayView,
     TextureColorSpace colorSpace,
     std::uint32_t layers,
-    VkSamplerAddressMode addressMode
+    VkSamplerAddressMode addressModeU,
+    VkSamplerAddressMode addressModeV
 )
     : context_(context), arrayLayers_(layers), arrayView_(arrayView),
       format_(colorSpace == TextureColorSpace::Linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB),
-      addressModeU_(addressMode), addressModeV_(addressMode) {
+      addressModeU_(addressModeU), addressModeV_(addressModeV) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(context_.physicalDevice(), &properties);
     const auto& limits = properties.limits;
@@ -198,12 +167,11 @@ void Texture::uploadRgbaPixels(
         stagingBuffer.upload(pixels, imageSize);
 
         createImage(width, height);
-        transitionImageLayout(
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-        );
-        copyBufferToImage(stagingBuffer.handle(), width, height);
-        generateMipmaps(width, height);
+        const auto commands = context_.beginSingleTimeCommands();
+        transitionImageLayout(commands, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copyBufferToImage(commands, stagingBuffer.handle(), width, height);
+        generateMipmaps(commands, width, height);
+        context_.endSingleTimeCommands(commands);
         createImageView();
         createSampler();
     } catch (...) {
@@ -321,15 +289,13 @@ void Texture::createSampler() {
     }
 }
 
-void Texture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout) {
+void Texture::transitionImageLayout(VkCommandBuffer commandBuffer, VkImageLayout oldLayout, VkImageLayout newLayout) {
     if (!((oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
            newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) ||
           (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
            newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))) {
         throw std::invalid_argument("unsupported texture image layout transition!");
     }
-
-    VkCommandBuffer commandBuffer = context_.beginSingleTimeCommands();
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -372,11 +338,9 @@ void Texture::transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLa
         1,
         &barrier
     );
-    context_.endSingleTimeCommands(commandBuffer);
 }
 
-void Texture::copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height) {
-    VkCommandBuffer commandBuffer = context_.beginSingleTimeCommands();
+void Texture::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, uint32_t width, uint32_t height) {
 
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -397,19 +361,18 @@ void Texture::copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height
         1,
         &region
     );
-    context_.endSingleTimeCommands(commandBuffer);
 }
 
-void Texture::generateMipmaps(uint32_t width, uint32_t height) {
+void Texture::generateMipmaps(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height) {
     if (mipLevels_ == 1) {
         transitionImageLayout(
+            commandBuffer,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         );
         return;
     }
 
-    VkCommandBuffer commandBuffer = context_.beginSingleTimeCommands();
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -503,7 +466,6 @@ void Texture::generateMipmaps(uint32_t width, uint32_t height) {
         1,
         &barrier
     );
-    context_.endSingleTimeCommands(commandBuffer);
 }
 
 void Texture::cleanup() {

@@ -54,6 +54,7 @@ void Renderer::initializeResourceBrowser(const std::filesystem::path& root) {
 }
 
 void Renderer::queueEditorDrop(std::vector<std::filesystem::path> paths, double x, double y) {
+    if (sceneLoad_) return;
     auto& browser = resourceBrowser_;
     if (toolUiVisible() && browser.open) {
         for (auto zone = browser.dropZones.rbegin(); zone != browser.dropZones.rend(); ++zone) {

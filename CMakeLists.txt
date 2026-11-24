@@ -338,6 +338,7 @@ else()
     target_compile_definitions(vulkcore_export PRIVATE
         VULKCORE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"
         VULKCORE_EXPORT_SHADER_DIR=\"${VULKCORE_SHADER_BINARY_DIR}\")
+    find_package(Threads REQUIRED)
     set(VULKCORE_RUNTIME_TARGET vulkcore_runtime)
     add_library(vulkcore_runtime STATIC ${VULKCORE_RUNTIME_SOURCES}
         src/Platform/DesktopWindow.cpp
@@ -395,7 +396,7 @@ else()
             target_link_libraries(vulkcore_runtime PRIVATE comdlg32 ole32 shell32 uuid)
         endif()
     endif()
-    target_link_libraries(vulkcore_runtime PRIVATE vulkcore_export)
+    target_link_libraries(vulkcore_runtime PRIVATE vulkcore_export Threads::Threads)
     add_dependencies(vulkcore_runtime VulkCoreShaders)
 
     add_executable(VulkCore src/main.cpp src/Application.cpp)

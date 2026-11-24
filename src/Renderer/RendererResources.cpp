@@ -1,8 +1,11 @@
 #include "RendererImplementation.hpp"
+#include "SceneLoadTask.hpp"
 #include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Renderer/SceneProjection.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 #include "vulkcore/Utils/SbfresLoader.hpp"
+
+#include <future>
 
 namespace VulkCore {
 namespace {
@@ -147,7 +150,8 @@ void fillCloudMist(UniformBufferObject& ubo, float time, glm::mat4 cloudClip) {
 bool Renderer::importModelResource(
     const std::filesystem::path& path,
     std::optional<std::uint32_t> preferredRootNodeId,
-    bool playerModel
+    bool playerModel,
+    bool rebuildResources
 ) {
     resourceImportFailed_ = false;
     resourceImportStatus_.clear();
@@ -230,7 +234,7 @@ bool Renderer::importModelResource(
 
     // The CPU import is complete before changing scene data. Existing models,
     // particles, and the optional Sun remain in the scene.
-    context_->waitIdle();
+    if (rebuildResources) context_->waitIdle();
     selectedModelNode_ = nullptr;
     sceneNodeTransforms_.clear();
     sceneNodeRenderEnabled_.clear();
@@ -245,13 +249,14 @@ bool Renderer::importModelResource(
         std::move(importedMesh),
         resolvedPath,
         preferredRootNodeId,
-        playerModel
+        playerModel,
+        rebuildResources
     );
-    discoverModelResources();
+    if (rebuildResources) discoverModelResources();
     if (preserveSun) {
         createSunMesh(&preservedSunNode, &preservedSunMaterial);
     }
-    rebuildSceneGeometryResources();
+    if (rebuildResources) rebuildSceneGeometryResources();
 
     boundingBoxVertices_.fill(Vertex{});
     materialNameMaterialIndex_ = -1;
@@ -265,7 +270,7 @@ bool Renderer::importModelResource(
         (playerModel ? " (" : " into the scene (") +
         std::to_string(importedVertexCount) + " vertices, " +
         std::to_string(importedTriangleCount) + " triangles).";
-    selectModelResource(resolvedPath);
+    if (rebuildResources) selectModelResource(resolvedPath);
     return true;
 }
 
@@ -490,6 +495,11 @@ void Renderer::rebuildSceneGeometryResources() {
 }
 
 void Renderer::createVertexBuffer() {
+    auto buffers = createVertexBufferSteps();
+    while (buffers.advance()) {}
+}
+
+SceneLoadTask Renderer::createVertexBufferSteps() {
     const Vertex emptyVertex{};
     const Vertex* vertexData = meshData_.vertices.empty()
         ? &emptyVertex
@@ -506,7 +516,9 @@ void Renderer::createVertexBuffer() {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         );
         vertexBuffer->upload(vertexData, bufferSize);
+        co_yield 0;
     }
+    co_return true;
 }
 
 void Renderer::createIndexBuffer() {
@@ -825,11 +837,14 @@ void Renderer::createTornadoPreview() {
         glm::translate(glm::mat4(1.0f),
             modelCenter_ - glm::vec3(0.0f, meshHeight * tornadoScale.y * 0.5f, 0.0f)) *
         glm::scale(glm::mat4(1.0f), tornadoScale);
-
-    rebuildSceneGeometryResources();
 }
 
 void Renderer::createMaterialTextures() {
+    auto task = createMaterialTextureSteps(false);
+    while (task.advance()) {}
+}
+
+SceneLoadTask Renderer::createMaterialTextureSteps(bool incremental) {
     materialTextures_.resize(meshData_.materials.size());
     normalTextures_.resize(meshData_.materials.size());
     specularTextures_.resize(meshData_.materials.size());
@@ -845,118 +860,128 @@ void Renderer::createMaterialTextures() {
                 material.shaderConfiguration.shader(ShaderStage::Fragment).starts_with("shader_terrain");
         });
     if (terrain != meshData_.materials.end()) {
-        const std::filesystem::path terrainTextureDirectory = terrain->texturePath.parent_path();
-        static constexpr std::array kLandforms = {
-            // Keep array indices stable. Grass uses the separately bound BFRES pair.
-            "dirt", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"
-        };
-        const auto loadLayers = [&](const char* suffix, TextureColorSpace colorSpace) {
+        const auto directory = terrain->texturePath.parent_path();
+        // Keep array indices stable. Grass uses the separately bound BFRES pair.
+        static constexpr std::array landforms{"dirt", "dirt", "rock", "sand", "snow", "mud", "gravel", "ash"};
+        const auto decodeLandforms = [directory](std::string_view suffix) -> std::optional<DecodedTexturePixels> {
             std::vector<std::filesystem::path> paths;
-            for (const char* landform : kLandforms) {
-                paths.push_back(terrainTextureDirectory /
-                    (std::string("terrain_") + landform + suffix + ".png"));
+            for (const char* landform : landforms) {
+                paths.push_back(directory / (std::string("terrain_") + landform + std::string(suffix) + ".png"));
             }
             // Older terrain packs only have base color and the atlas.
-            if (suffix[0] && !std::filesystem::is_regular_file(paths.front())) {
-                return std::unique_ptr<Texture>{};
-            }
-            const auto roadPath = terrainTextureDirectory / (std::string("terrain_road_dirt") + suffix + ".png");
-            if (std::filesystem::is_regular_file(roadPath)) {
-                paths.push_back(roadPath);
+            if (!suffix.empty() && !std::filesystem::is_regular_file(paths.front())) return std::nullopt;
+            const auto road = directory / (std::string("terrain_road_dirt") + std::string(suffix) + ".png");
+            if (std::filesystem::is_regular_file(road)) {
+                paths.push_back(road);
                 try {
-                    return std::make_unique<Texture>(*context_, paths, colorSpace);
+                    return decodeTextureLayers(paths);
                 } catch (const std::exception& error) {
-                    std::cerr << "warning: failed to load road layer: " << error.what() << '\n';
+                    std::cerr << "warning: failed to decode road layer: " << error.what() << '\n';
                     paths.pop_back();
                 }
             }
+            return decodeTextureLayers(paths);
+        };
+        for (int layer = 0; layer < 2; ++layer) {
+            if (layer == 1 && !terrainAlbedoLayers_) break;
+            const auto* suffix = layer == 0 ? "" : "_surface";
             try {
-                return std::make_unique<Texture>(*context_, paths, colorSpace);
+                std::optional<DecodedTexturePixels> image;
+                if (incremental) {
+                    auto decode = std::async(std::launch::async, decodeLandforms, suffix);
+                    while (decode.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                        co_yield layer * 8;
+                    }
+                    image = decode.get();
+                    co_yield layer * 8 + 4;
+                } else {
+                    image = decodeLandforms(suffix);
+                }
+                if (image) {
+                    auto& texture = layer == 0 ? terrainAlbedoLayers_ : terrainSurfaceLayers_;
+                    const auto colorSpace = layer == 0 ? TextureColorSpace::Srgb : TextureColorSpace::Linear;
+                    try {
+                        texture = std::make_unique<Texture>(*context_, *image, true, colorSpace);
+                    } catch (const std::exception& error) {
+                        if (image->layers <= landforms.size()) throw;
+                        std::cerr << "warning: failed to upload road layer: " << error.what() << '\n';
+                        image->rgba.resize(image->rgba.size() / image->layers * landforms.size());
+                        image->layers = static_cast<std::uint32_t>(landforms.size());
+                        texture = std::make_unique<Texture>(*context_, *image, true, colorSpace);
+                    }
+                }
             } catch (const std::exception& error) {
                 std::cerr << "warning: failed to load terrain layers: " << error.what() << '\n';
             }
-            return std::unique_ptr<Texture>{};
+            if (incremental) co_yield (layer + 1) * 8;
+        }
+    }
+
+    const auto materialCount = meshData_.materials.size();
+    for (std::size_t index = 0; index < materialCount; ++index) {
+        const auto& material = meshData_.materials[index];
+        const bool useTerrainMacro = terrainAlbedoLayers_ && &material == &*terrain;
+        auto basePath = material.texturePath;
+        if (useTerrainMacro) {
+            // The arrays carry the detail textures. Use the base slot for the optional map control image.
+            basePath = material.texturePath.parent_path() / "terrain_macro.png";
+            if (!std::filesystem::is_regular_file(basePath)) basePath.clear();
+        }
+        const std::array<const EmbeddedTextureData*, 4> embedded{
+            useTerrainMacro ? nullptr : &material.embeddedTexture, &material.embeddedNormalTexture,
+            &material.embeddedSpecularTexture, &material.embeddedAlphaMask
         };
-        terrainAlbedoLayers_ = loadLayers("", TextureColorSpace::Srgb);
-        if (terrainAlbedoLayers_) {
-            terrainSurfaceLayers_ = loadLayers("_surface", TextureColorSpace::Linear);
-        }
-    }
-
-    const auto loadTexture = [this](
-        const EmbeddedTextureData& embeddedTexture,
-        const std::filesystem::path& texturePath,
-        const char* textureLabel,
-        std::size_t materialIndex
-    ) -> std::unique_ptr<Texture> {
-        try {
-            if (!embeddedTexture.empty()) {
-                if (embeddedTexture.compressed) {
-                    return std::make_unique<Texture>(*context_, embeddedTexture.data);
+        const std::array<std::filesystem::path, 4> paths{
+            basePath, material.normalTexturePath, material.specularTexturePath, {}
+        };
+        const std::array slots{&materialTextures_[index], &normalTextures_[index],
+                               &specularTextures_[index], &alphaMaskTextures_[index]};
+        constexpr std::array labels{"base color", "normal", "specular", "alpha mask"};
+        for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+            const auto* source = embedded[slot];
+            if (source && source->empty()) source = nullptr;
+            if (!source && paths[slot].empty()) {
+                slots[slot]->reset();
+                continue;
+            }
+            const auto progress = 16 + static_cast<int>(80 * (index * slots.size() + slot)
+                                                       / (materialCount * slots.size()));
+            try {
+                if (source && !source->compressed) {
+                    *slots[slot] = std::make_unique<Texture>(*context_, source->data, source->width,
+                        source->height, false, source->srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear);
+                } else {
+                    const auto decodePixels = [&] {
+                        return source ? decodeTexturePixels(source->data) : decodeTexturePixels(paths[slot]);
+                    };
+                    DecodedTexturePixels image;
+                    if (incremental) {
+                        auto decode = std::async(std::launch::async, decodePixels);
+                        while (decode.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                            co_yield progress;
+                        }
+                        image = decode.get();
+                        co_yield progress;
+                    } else {
+                        image = decodePixels();
+                    }
+                    const bool macro = useTerrainMacro && slot == 0;
+                    const auto colorSpace = macro ? TextureColorSpace::Linear : TextureColorSpace::Srgb;
+                    const auto address = macro ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                    *slots[slot] = std::make_unique<Texture>(*context_, image, false, colorSpace, address, address);
                 }
-                return std::make_unique<Texture>(
-                    *context_,
-                    embeddedTexture.data,
-                    embeddedTexture.width,
-                    embeddedTexture.height,
-                    false,
-                    embeddedTexture.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear
-                );
+            } catch (const std::exception& error) {
+                slots[slot]->reset();
+                std::cerr << "warning: failed to load " << labels[slot] << " texture for material "
+                          << index << ": " << error.what() << '\n';
             }
-            if (!texturePath.empty()) {
-                return std::make_unique<Texture>(*context_, texturePath);
-            }
-        } catch (const std::exception& error) {
-            std::cerr << "warning: failed to load " << textureLabel
-                      << " texture for material " << materialIndex << ": "
-                      << error.what() << '\n';
+            if (incremental) co_yield progress;
         }
-        return nullptr;
-    };
-
-    for (std::size_t materialIndex = 0; materialIndex < meshData_.materials.size(); ++materialIndex) {
-        const MaterialData& material = meshData_.materials[materialIndex];
-        if (terrainAlbedoLayers_ && &material == &*terrain) {
-            // The texture arrays carry the detail layers. The base-color slot
-            // can carry the optional full-map control texture instead.
-            materialTextures_[materialIndex].reset();
-            const auto macroPath = material.texturePath.parent_path() / "terrain_macro.png";
-            if (std::filesystem::is_regular_file(macroPath)) {
-                try {
-                    materialTextures_[materialIndex] = std::make_unique<Texture>(
-                        *context_, macroPath, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, TextureColorSpace::Linear
-                    );
-                } catch (const std::exception& error) {
-                    std::cerr << "warning: failed to load terrain macro texture: " << error.what() << '\n';
-                }
-            }
-        } else {
-            materialTextures_[materialIndex] = loadTexture(
-                material.embeddedTexture, material.texturePath, "base color", materialIndex
-            );
-        }
-        normalTextures_[materialIndex] = loadTexture(
-            material.embeddedNormalTexture,
-            material.normalTexturePath,
-            "normal",
-            materialIndex
-        );
-        specularTextures_[materialIndex] = loadTexture(
-            material.embeddedSpecularTexture,
-            material.specularTexturePath,
-            "specular",
-            materialIndex
-        );
-        alphaMaskTextures_[materialIndex] = loadTexture(
-            material.embeddedAlphaMask, {}, "alpha mask", materialIndex
-        );
         needsWhiteFallbackTexture = needsWhiteFallbackTexture ||
-            materialTextures_[materialIndex] == nullptr ||
-            specularTextures_[materialIndex] == nullptr;
-        needsNormalFallbackTexture = needsNormalFallbackTexture ||
-            normalTextures_[materialIndex] == nullptr;
+            !materialTextures_[index] || !specularTextures_[index];
+        needsNormalFallbackTexture = needsNormalFallbackTexture || !normalTextures_[index];
     }
+    if (incremental) co_yield 96;
 
     if (needsWhiteFallbackTexture || materialTextures_.empty() || fallbackTexture_ == nullptr) {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
@@ -976,6 +1001,7 @@ void Renderer::createMaterialTextures() {
         const std::vector<std::uint8_t> whitePixel = {255, 255, 255, 255};
         fallbackTerrainLayers_ = std::make_unique<Texture>(*context_, whitePixel, 1, 1, true);
     }
+    co_return true;
 }
 
 std::filesystem::path Renderer::defaultSkyboxPath() const {
@@ -1009,12 +1035,12 @@ void Renderer::applySkyboxTexture(const std::filesystem::path& path) {
     rebuildMaterialResources();
 }
 
-void Renderer::loadTerrainGrassResources() {
-    const auto source = terrainResourcePath_ / "source";
+std::optional<Renderer::TerrainGrassImages> Renderer::decodeTerrainGrass(const std::filesystem::path& terrainRoot) {
+    const auto source = terrainRoot / "source";
     const auto model = source / "Terrain.sbfres";
     const auto textures = source / "Terrain.Tex.sbfres";
     // Legacy terrain packs still load. Only archive-backed grass is drawn.
-    if (!std::filesystem::exists(model) && !std::filesystem::exists(textures)) return;
+    if (!std::filesystem::exists(model) && !std::filesystem::exists(textures)) return std::nullopt;
     SbfresTextureArchive archive;
     // Open the model/texture pair with the existing BFRES loader. The terrain
     // grid and blade mesh use VulkCore geometry, not the source draw proxies.
@@ -1026,32 +1052,45 @@ void Renderer::loadTerrainGrassResources() {
         if (entry == entries.end()) throw std::runtime_error("missing BFRES texture " + std::string(name));
         return static_cast<std::size_t>(entry - entries.begin());
     };
-    const auto upload = [&](std::string_view name, std::uint32_t layer, std::uint32_t count,
-                            VkSamplerAddressMode addressMode) {
+    const auto decode = [&](std::string_view name, std::uint32_t count = 1) {
+        constexpr std::uint32_t layer = 0;
         const auto index = entryIndex(name);
         auto image = archive.decodeLayer(index, layer);
         for (std::uint32_t n = 1; n < count; ++n) {
             auto next = archive.decodeLayer(index, layer + n);
             image.data.insert(image.data.end(), next.data.begin(), next.data.end());
         }
-        return std::make_unique<Texture>(*context_, image.data, image.width, image.height,
-            count > 1, image.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear, count, addressMode);
+        return image;
     };
-    constexpr auto repeat = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     // The supplied pack's layer 0 is the ordinary green meadow.
-    constexpr std::uint32_t meadowLayer = 0;
-    TerrainGrassResources resources;
-    resources.groundAlbedo = upload("MaterialAlb", meadowLayer, 1, repeat);
-    resources.groundCombined = upload("MaterialCmb", meadowLayer, 1, repeat);
-    resources.bladeAlbedo = upload("GrassAlb", meadowLayer, 1, clamp);
-    resources.crossAlbedo = upload("GrassCrossAlb", 0, 2, clamp);
-    resources.specular = upload("GrassSpm", meadowLayer, 1, clamp);
+    TerrainGrassImages images;
+    images.images = {decode("MaterialAlb"), decode("MaterialCmb"), decode("GrassAlb"),
+                     decode("GrassCrossAlb", 2), decode("GrassSpm")};
     auto coverage = archive.decodeLayer(entryIndex("GrassCoverAlb"), 0);
     std::vector<std::uint8_t> red(coverage.data.size() / 4);
     for (std::size_t i = 0; i < red.size(); ++i) red[i] = coverage.data[i * 4];
-    grassCoverage_.setCoverMask(GrassCoverMask(coverage.width, coverage.height, std::move(red)));
+    images.coverMask = GrassCoverMask(coverage.width, coverage.height, std::move(red));
+    return images;
+}
+
+SceneLoadTask Renderer::uploadTerrainGrass(TerrainGrassImages images) {
+    constexpr auto repeat = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    TerrainGrassResources resources;
+    const std::array targets{&resources.groundAlbedo, &resources.groundCombined,
+                             &resources.bladeAlbedo, &resources.crossAlbedo, &resources.specular};
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        auto& image = images.images[i];
+        const std::uint32_t layers = i == 3 ? 2 : 1;
+        *targets[i] = std::make_unique<Texture>(*context_, image.data, image.width, image.height,
+            layers > 1, image.srgb ? TextureColorSpace::Srgb : TextureColorSpace::Linear,
+            layers, i < 2 ? repeat : clamp);
+        image = {};
+        co_yield static_cast<int>(i + 1);
+    }
+    grassCoverage_.setCoverMask(std::move(images.coverMask));
     terrainGrass_ = std::move(resources);
+    co_return true;
 }
 
 void Renderer::createParticleTextures() {
@@ -1096,7 +1135,7 @@ void Renderer::loadParticleTexture(std::uint32_t nodeId) {
     updateParticleTextureDescriptors(nodeId);
 }
 
-void Renderer::rebuildMaterialResources() {
+void Renderer::clearMaterialResources() {
     context_->waitIdle();
     materialTextures_.clear();
     normalTextures_.clear();
@@ -1111,6 +1150,10 @@ void Renderer::rebuildMaterialResources() {
         vkDestroyDescriptorPool(context_->device(), descriptorPool_, nullptr);
         descriptorPool_ = VK_NULL_HANDLE;
     }
+}
+
+void Renderer::rebuildMaterialResources() {
+    clearMaterialResources();
     createMaterialTextures();
     createDescriptorPool();
     createDescriptorSets();

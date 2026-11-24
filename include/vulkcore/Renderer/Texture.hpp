@@ -12,6 +12,15 @@ class VulkanContext;
 
 enum class TextureColorSpace { Srgb, Linear };
 
+struct DecodedTexturePixels {
+    std::vector<std::uint8_t> rgba;
+    std::uint32_t width = 0, height = 0, layers = 1;
+};
+
+DecodedTexturePixels decodeTexturePixels(const std::filesystem::path& path);
+DecodedTexturePixels decodeTexturePixels(const std::vector<std::uint8_t>& encodedData);
+DecodedTexturePixels decodeTextureLayers(const std::vector<std::filesystem::path>& paths);
+
 class Texture {
 public:
     Texture(
@@ -40,6 +49,10 @@ public:
         std::uint32_t layers = 1,
         VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT
     );
+    Texture(VulkanContext& context, const DecodedTexturePixels& image, bool arrayView,
+        TextureColorSpace colorSpace = TextureColorSpace::Srgb,
+        VkSamplerAddressMode addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        VkSamplerAddressMode addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT);
     ~Texture();
 
     Texture(const Texture&) = delete;
@@ -49,13 +62,16 @@ public:
     VkSampler sampler() const;
 
 private:
+    Texture(VulkanContext& context, const std::vector<std::uint8_t>& rgbaPixels,
+        std::uint32_t width, std::uint32_t height, bool arrayView, TextureColorSpace colorSpace,
+        std::uint32_t layers, VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV);
     void uploadRgbaPixels(const std::uint8_t* pixels, std::uint32_t width, std::uint32_t height);
     void createImage(uint32_t width, uint32_t height);
     void createImageView();
     void createSampler();
-    void transitionImageLayout(VkImageLayout oldLayout, VkImageLayout newLayout);
-    void copyBufferToImage(VkBuffer buffer, uint32_t width, uint32_t height);
-    void generateMipmaps(uint32_t width, uint32_t height);
+    void transitionImageLayout(VkCommandBuffer commandBuffer, VkImageLayout oldLayout, VkImageLayout newLayout);
+    void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, uint32_t width, uint32_t height);
+    void generateMipmaps(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height);
     void cleanup();
 
     VulkanContext& context_;

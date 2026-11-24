@@ -1,4 +1,5 @@
 #include "RendererImplementation.hpp"
+#include "SceneLoadTask.hpp"
 
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
 #include "../Platform/EffectEditorView.hpp"
@@ -486,6 +487,39 @@ bool Renderer::drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& vie
     ImGui::End();
     ImGui::PopStyleVar(2);
     return hovered;
+}
+
+void Renderer::buildSceneLoadingFrame() {
+    ImGui_ImplVulkan_NewFrame();
+    newWindowImGuiFrame(context_->window(), swapChain_->extent());
+    ImGui::NewFrame();
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+    if (effectEditorView_) effectEditorView_->hide();
+#endif
+    const int progress = sceneLoad_->progress();
+    const auto* viewport = ImGui::GetMainViewport();
+    const float width = std::clamp(viewport->WorkSize.x * 0.72f, 1.0f, 460.0f);
+    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("##SceneLoading", nullptr, flags)) {
+        const auto name = pathUtf8(loadingScenePath_.filename());
+        ImGui::TextWrapped("Loading %s", name.c_str());
+        ImGui::ProgressBar(static_cast<float>(progress) / 100.0f, ImVec2(-1.0f, 0.0f));
+        const char* stage = "Reading scene";
+        if (progress >= 83) stage = "Preparing material textures";
+        else if (progress >= 75) stage = "Preparing scene settings and shaders";
+        else if (progress >= 69) stage = "Uploading terrain textures";
+        else if (progress >= 68) stage = "Building terrain collision";
+        else if (progress >= 65) stage = "Assembling scene";
+        else if (progress >= 52) stage = "Decoding terrain textures";
+        else if (progress >= 36) stage = "Loading models";
+        else if (progress >= 20) stage = "Building terrain geometry";
+        else if (progress >= 4) stage = "Reading terrain and water";
+        ImGui::TextUnformatted(stage);
+    }
+    ImGui::End();
 }
 
 bool Renderer::buildImGuiFrame() {
