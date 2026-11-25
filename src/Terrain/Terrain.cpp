@@ -1314,19 +1314,157 @@ TerrainMaterialLayers TerrainScene::buildMaterialLayers(const std::array<int, 25
             }
         }
         if (!complete) continue;
-        result.layerForTile[tileIndex] = static_cast<int>(result.count++);
-        for (const auto& sample : samples) {
-            // Ignore IDs with zero influence. Active IDs are compact array layers.
-            result.pixels.push_back(sample.firstWeight == 0 ? 0 : static_cast<std::uint8_t>(albedoLayers[sample.firstId]));
-            result.pixels.push_back(sample.firstWeight == 255 ? 0 : static_cast<std::uint8_t>(albedoLayers[sample.secondId]));
-            result.pixels.push_back(sample.firstWeight);
-            result.pixels.push_back(sample.unknown);
+        const auto layer = result.count++;
+        result.layerForTile[tileIndex] = static_cast<int>(layer);
+        constexpr int size = kTerrainMaterialResolution;
+        constexpr int padded = kTerrainMaterialPaddedResolution;
+        result.pixels.resize(static_cast<std::size_t>(result.count) * padded * padded * 4);
+        for (int z = 0; z < size; ++z) {
+            for (int x = 0; x < size; ++x) {
+                const auto& sample = samples[z * size + x];
+                const auto offset = (static_cast<std::size_t>(layer) * padded * padded +
+                    (z + 1) * padded + x + 1) * 4;
+                // Ignore IDs with zero influence. Active IDs are compact array layers.
+                result.pixels[offset] = sample.firstWeight == 0 ? 0 :
+                    static_cast<std::uint8_t>(albedoLayers[sample.firstId]);
+                result.pixels[offset + 1] = sample.firstWeight == 255 ? 0 :
+                    static_cast<std::uint8_t>(albedoLayers[sample.secondId]);
+                result.pixels[offset + 2] = sample.firstWeight;
+                result.pixels[offset + 3] = sample.unknown;
+            }
+        }
+    }
+
+    // Copy categorical samples into a one-texel gutter. Equal-size tiles
+    // share a texel-center grid, including the diagonal sample at corners.
+    using TileKey = std::tuple<float, float, float>;
+    std::map<TileKey, int> layersByPosition;
+    for (const auto& chunk : chunks_) {
+        for (const auto& tile : chunk.tiles()) {
+            const auto& meta = tile.metadata();
+            if (meta.materialTile < 0) continue;
+            const auto layer = result.layerForTile[meta.materialTile];
+            if (layer >= 0) layersByPosition[{meta.areaSize, meta.gridPosition.x, meta.gridPosition.y}] = layer;
+        }
+    }
+    constexpr int size = kTerrainMaterialResolution;
+    constexpr int padded = kTerrainMaterialPaddedResolution;
+    const auto pixel = [&](int layer, int x, int z) {
+        const auto offset = (static_cast<std::size_t>(layer) * padded * padded + (z + 1) * padded + x + 1) * 4;
+        return result.pixels.data() + offset;
+    };
+    for (const auto& [position, layer] : layersByPosition) {
+        const auto [span, centerX, centerZ] = position;
+        const auto writeGutter = [&](int x, int z) {
+            const int dx = x < 0 ? -1 : (x == size ? 1 : 0);
+            const int dz = z < 0 ? -1 : (z == size ? 1 : 0);
+            const float neighborX = centerX + dx * span;
+            const float neighborZ = centerZ + dz * span;
+            int sourceX = x - dx * size;
+            int sourceZ = z - dz * size;
+            auto neighbor = layersByPosition.find({span, neighborX, neighborZ});
+            // At a missing corner choose the same available axial tile from
+            // either side. Outer edges fall through to their nearest sample.
+            if (neighbor == layersByPosition.end() && (sourceX == 0 || sourceX == size - 1)) {
+                const float edge = sourceX == 0 ? -span : span;
+                neighbor = layersByPosition.find({span, neighborX + edge, neighborZ});
+                if (neighbor != layersByPosition.end()) sourceX = size - 1 - sourceX;
+            }
+            if (neighbor == layersByPosition.end() && (sourceZ == 0 || sourceZ == size - 1)) {
+                const float edge = sourceZ == 0 ? -span : span;
+                neighbor = layersByPosition.find({span, neighborX, neighborZ + edge});
+                if (neighbor != layersByPosition.end()) sourceZ = size - 1 - sourceZ;
+            }
+            const auto* sample = neighbor != layersByPosition.end() ? pixel(neighbor->second, sourceX, sourceZ) :
+                pixel(layer, std::clamp(x, 0, size - 1), std::clamp(z, 0, size - 1));
+            std::copy_n(sample, 4, pixel(layer, x, z));
+        };
+        for (int z = 0; z < size; ++z) {
+            writeGutter(-1, z);
+            writeGutter(size, z);
+        }
+        for (int x = -1; x <= size; ++x) {
+            writeGutter(x, -1);
+            writeGutter(x, size);
         }
     }
     for (std::size_t id = 0; id < missing.size(); ++id) {
         if (missing.test(id)) result.missingIds.push_back(static_cast<std::uint8_t>(id));
     }
     return result;
+}
+
+TerrainMacroAlbedo TerrainScene::bakeMacroAlbedo(const TerrainMaterialLayers& layers,
+    const std::array<glm::vec4, 256>& palette, const std::atomic<bool>* cancelled) const {
+    if (layers.count == 0 || loadCancelled(cancelled)) return {};
+
+    constexpr float targetTexelSize = 4.0f;
+    constexpr int maxResolution = 2048;
+    const glm::vec2 minimum(boundsMinimum_.x, boundsMinimum_.z);
+    const glm::vec2 extent = glm::max(glm::vec2(boundsMaximum_.x, boundsMaximum_.z) - minimum,
+        glm::vec2(0.0001f));
+    const float texelSize = std::max(targetTexelSize, std::max(extent.x, extent.y) / maxResolution);
+    const glm::ivec2 dims = glm::clamp(glm::ivec2(glm::ceil(extent / texelSize)),
+        glm::ivec2(2), glm::ivec2(maxResolution));
+    const glm::vec2 worldPerPixel = extent / glm::vec2(dims);
+
+    TerrainMacroAlbedo map;
+    map.width = dims.x;
+    map.height = dims.y;
+    map.pixels.resize(static_cast<std::size_t>(map.width) * map.height * 4);
+    if (std::ranges::any_of(palette, [](glm::vec4 material) { return material.w > 0.0f; })) {
+        map.rockCoverage.resize(map.pixels.size());
+    }
+    constexpr int padded = kTerrainMaterialPaddedResolution;
+    const auto sample = [&](int layer, int x, int z) {
+        const auto offset = (static_cast<std::size_t>(layer) * padded * padded + z * padded + x) * 4;
+        const auto* pixel = layers.pixels.data() + offset;
+        return glm::mix(palette[pixel[1]], palette[pixel[0]], pixel[2] / 255.0f);
+    };
+    for (const auto& chunk : chunks_) {
+        if (loadCancelled(cancelled)) return {};
+        for (const auto& tile : chunk.tiles()) {
+            const auto& meta = tile.metadata();
+            if (meta.materialTile < 0) continue;
+            const int layer = layers.layerForTile[meta.materialTile];
+            if (layer < 0) continue;
+            const auto [tileMin, tileMax] = surfaceArea(meta, header_.worldScale);
+            const glm::vec2 tileSize = tileMax - tileMin;
+            if (tileSize.x <= 0.0f || tileSize.y <= 0.0f) continue;
+            const auto pixelBoundary = [&](glm::vec2 world) {
+                return glm::clamp(glm::ivec2(glm::ceil((world - minimum) / worldPerPixel - 0.5f)),
+                    glm::ivec2(0), dims);
+            };
+            const auto first = pixelBoundary(tileMin);
+            const auto end = pixelBoundary(tileMax);
+            for (int z = first.y; z < end.y; ++z) {
+                for (int x = first.x; x < end.x; ++x) {
+                    const glm::vec2 world = minimum + (glm::vec2(x, z) + 0.5f) * worldPerPixel;
+                    const glm::vec2 grid = glm::clamp((world - tileMin) / tileSize, 0.0f, 1.0f) *
+                        static_cast<float>(kTerrainMaterialResolution) + 0.5f;
+                    const glm::ivec2 low(grid);
+                    const glm::vec2 fraction = glm::fract(grid);
+                    const auto upper = glm::mix(sample(layer, low.x, low.y),
+                        sample(layer, low.x + 1, low.y), fraction.x);
+                    const auto lower = glm::mix(sample(layer, low.x, low.y + 1),
+                        sample(layer, low.x + 1, low.y + 1), fraction.x);
+                    const auto material = glm::mix(upper, lower, fraction.y);
+                    const auto offset = (static_cast<std::size_t>(z) * map.width + x) * 4;
+                    for (int c = 0; c < 3; ++c) {
+                        map.pixels[offset + c] = static_cast<std::uint8_t>(
+                            std::round(glm::clamp(material[c], 0.0f, 1.0f) * 255.0f));
+                    }
+                    map.pixels[offset + 3] = 255;
+                    if (!map.rockCoverage.empty()) {
+                        map.rockCoverage[offset] = static_cast<std::uint8_t>(
+                            std::round(glm::clamp(material.w, 0.0f, 1.0f) * 255.0f));
+                        map.rockCoverage[offset + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+    return map;
 }
 
 std::size_t TerrainMeshData::selectMaterialTiles(std::span<const int> textureLayers) {

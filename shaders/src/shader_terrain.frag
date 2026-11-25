@@ -4,14 +4,18 @@
 #include "scene_fog.glsl"
 #include "effect_lighting.glsl"
 #include "sun_shadow.glsl"
+#include "terrain_rock.glsl"
 
 layout(location = 0) in vec2 fragMapUv;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 3) in vec3 fragWorldPosition;
-layout(location = 4) in vec2 fragDetailUv;
+layout(location = 4) in vec3 fragTerrainPosition;
 layout(location = 5) flat in int fragMapLayer;
+layout(location = 6) in vec2 fragMacroUv;
 layout(location = 0) out vec4 outColor;
 
+layout(set = 0, binding = 1) uniform sampler2D macroAlbedo;
+layout(set = 0, binding = 3) uniform sampler2D rockCoverage;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
 layout(set = 0, binding = 7) uniform sampler2DArray materialMaps;
 layout(push_constant) uniform MaterialPushConstants {
@@ -25,38 +29,114 @@ layout(push_constant) uniform MaterialPushConstants {
     vec4 waterSurface;
 } material;
 
-vec3 sampleAlbedo(uint layer, vec2 dx, vec2 dy) {
-    return textureGrad(albedoLayers, vec3(fragDetailUv, float(layer)), dx, dy).rgb;
+const float detailTileSize = 4.0;
+
+struct TerrainProjection {
+    vec3 uv;
+    vec3 dx;
+    vec3 dy;
+    vec3 weights;
+};
+
+vec3 sampleAlbedo(uint layer, TerrainProjection projection) {
+    float slice = float(layer);
+    vec3 color = vec3(0.0);
+    if (projection.weights.x > 0.0) {
+        color += projection.weights.x *
+            textureGrad(albedoLayers, vec3(projection.uv.yz, slice), projection.dx.yz, projection.dy.yz).rgb;
+    }
+    if (projection.weights.y > 0.0) {
+        color += projection.weights.y *
+            textureGrad(albedoLayers, vec3(projection.uv.xz, slice), projection.dx.xz, projection.dy.xz).rgb;
+    }
+    if (projection.weights.z > 0.0) {
+        color += projection.weights.z *
+            textureGrad(albedoLayers, vec3(projection.uv.xy, slice), projection.dx.xy, projection.dy.xy).rgb;
+    }
+    return color;
 }
 
-vec3 sampleMaterial(ivec2 coordinate, vec2 dx, vec2 dy) {
+vec3 sampleMaterial(ivec2 coordinate, TerrainProjection projection) {
     uvec3 sampleBytes = uvec3(round(texelFetch(materialMaps, ivec3(coordinate, fragMapLayer), 0).rgb * 255.0));
-    if (sampleBytes.z == 255u || sampleBytes.x == sampleBytes.y) return sampleAlbedo(sampleBytes.x, dx, dy);
-    if (sampleBytes.z == 0u) return sampleAlbedo(sampleBytes.y, dx, dy);
-    vec3 first = sampleAlbedo(sampleBytes.x, dx, dy);
-    vec3 second = sampleAlbedo(sampleBytes.y, dx, dy);
+    if (sampleBytes.z == 255u || sampleBytes.x == sampleBytes.y) return sampleAlbedo(sampleBytes.x, projection);
+    if (sampleBytes.z == 0u) return sampleAlbedo(sampleBytes.y, projection);
+    vec3 first = sampleAlbedo(sampleBytes.x, projection);
+    vec3 second = sampleAlbedo(sampleBytes.y, projection);
     return mix(second, first, float(sampleBytes.z) / 255.0);
 }
 
-void main() {
-    vec2 dx = dFdx(fragDetailUv);
-    vec2 dy = dFdy(fragDetailUv);
-    ivec2 last = textureSize(materialMaps, 0).xy - 1;
-    vec2 grid = clamp(fragMapUv, 0.0, 1.0) * vec2(last);
+vec3 sampleDetail(TerrainProjection projection) {
+    ivec2 interior = textureSize(materialMaps, 0).xy - 2;
+    // Base samples are texel centers. At a shared edge both sides interpolate
+    // the same two columns, one of which lives in the neighbor gutter.
+    vec2 grid = clamp(fragMapUv, 0.0, 1.0) * vec2(interior) + 0.5;
     ivec2 low = ivec2(grid);
-    ivec2 high = min(low + 1, last);
+    ivec2 high = low + 1;
     vec2 fraction = fract(grid);
 
     // Blend each categorical sample before applying spatial interpolation.
-    vec3 row0 = mix(sampleMaterial(low, dx, dy), sampleMaterial(ivec2(high.x, low.y), dx, dy), fraction.x);
-    vec3 row1 = mix(sampleMaterial(ivec2(low.x, high.y), dx, dy), sampleMaterial(high, dx, dy), fraction.x);
-    vec3 albedo = mix(row0, row1, fraction.y);
+    vec3 row0 = mix(sampleMaterial(low, projection), sampleMaterial(ivec2(high.x, low.y), projection), fraction.x);
+    vec3 row1 = mix(sampleMaterial(ivec2(low.x, high.y), projection), sampleMaterial(high, projection), fraction.x);
+    return mix(row0, row1, fraction.y);
+}
 
-    vec3 normal = normalize(fragNormal);
+void main() {
+    vec3 dx = dFdx(fragTerrainPosition);
+    vec3 dy = dFdy(fragTerrainPosition);
+    vec2 macroDx = dFdx(fragMacroUv);
+    vec2 macroDy = dFdy(fragMacroUv);
+    float worldDistance = distance(fragWorldPosition, ubo.cameraPosition.xyz) / ubo.cameraPosition.w;
+    float footprint = max(length(dx.xz), length(dy.xz));
+    float macroBlend = max(smoothstep(95.0, 340.0, worldDistance), smoothstep(2.5, 8.0, footprint));
+    // A 1x1 white texture marks an unavailable macro map. Coverage is kept
+    // in alpha so gaps in a terrain pack do not bleed black through the mips.
+    vec4 macro = texture(macroAlbedo, fragMacroUv);
+    if (textureSize(macroAlbedo, 0).x < 2 || macro.a < 1.0 / 255.0) macroBlend = 0.0;
+    vec3 albedo = macro.rgb / max(macro.a, 1.0 / 255.0);
+
+    float nearBlend = 1.0 - macroBlend;
+    float middleBlend = smoothstep(0.2, 0.95, macroBlend);
+    float strata = middleBlend * rockBandFade(rockStrataFrequency, dx, dy);
+    float chips = middleBlend * rockBandFade(rockChipsFrequency, dx, dy);
+    float rock = 0.0;
+    if (max(nearBlend, max(strata, chips)) > 0.0 && textureSize(rockCoverage, 0).x >= 2) {
+        vec4 coverage = textureGrad(rockCoverage, fragMacroUv, macroDx, macroDy);
+        rock = clamp(coverage.r / max(coverage.a, 1.0 / 255.0), 0.0, 1.0);
+    }
+
+    vec3 geometricNormal = normalize(fragNormal);
+    if (nearBlend > 0.0) {
+        TerrainProjection projection = TerrainProjection(
+            fragTerrainPosition / detailTileSize, dx / detailTileSize, dy / detailTileSize,
+            rockProjectionWeights(geometricNormal, rock));
+        albedo = mix(albedo, sampleDetail(projection), nearBlend);
+    }
+
+    vec3 gradient = vec3(0.0);
+    float ambientVisibility = 1.0;
+    if (rock > 0.0) {
+        float grain = nearBlend * rockBandFade(vec3(rockGrainFrequency), dx, dy);
+        if (grain > 0.0) {
+            gradient += 0.32 * grain * rock * rockGrainGradient(fragTerrainPosition * rockGrainFrequency,
+                rockProjectionWeights(geometricNormal, 1.0));
+        }
+        if (strata > 0.0) {
+            applyRockBand(rockNoise3D(fragTerrainPosition * rockStrataFrequency),
+                rockStrataFrequency, rock * strata, vec3(1.25, 0.34, 0.18), gradient, albedo, ambientVisibility);
+        }
+        if (chips > 0.0) {
+            applyRockBand(rockNoise3D(fragTerrainPosition * rockChipsFrequency + vec3(36.2, -9.3, 15.8)),
+                rockChipsFrequency, rock * chips, vec3(0.55, 0.39, 0.10), gradient, albedo, ambientVisibility);
+        }
+    }
+
+    // Apply the height gradients along the surface. Shadow sampling uses
+    // the mesh normal so fine detail cannot displace or bias the shadow.
+    vec3 normal = normalize(geometricNormal - (gradient - geometricNormal * dot(gradient, geometricNormal)));
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float diffuse = max(dot(normal, lightDirection), 0.0);
-    float visibility = sunVisibility(fragWorldPosition, normal);
-    vec3 lighting = ubo.ambientLight.rgb * ubo.ambientLight.a +
+    float visibility = sunVisibility(fragWorldPosition, geometricNormal);
+    vec3 lighting = ubo.ambientLight.rgb * ubo.ambientLight.a * ambientVisibility +
         ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse * visibility +
         effectPointLighting(fragWorldPosition, normal);
     outColor = vec4(applySceneFog(albedo * lighting * material.baseColor.rgb,

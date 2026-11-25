@@ -223,8 +223,14 @@ void checkArchiveMaterialLayers() {
             return texture.name == name;
         });
         require(entry != entries.end() && entry->layers == 83, "expected 83 terrain texture layers");
-        const auto layers = archive.readMaterialLayerIndices(static_cast<std::size_t>(entry - entries.begin()));
+        const auto index = static_cast<std::size_t>(entry - entries.begin());
+        const auto layers = archive.readMaterialLayerIndices(index);
         require(std::ranges::equal(layers, expected), "terrain archive material IDs must use array_index");
+        const auto files = archive.readMaterialFileNames(index);
+        require(files.size() == layers.size() && files[0] == "Plant_GreenGrassField_A" &&
+            files[17] == "Rock_LargeCliff_A" && files[17] == files[29] &&
+            files[87] == "Rock_RockBeachCoral_A",
+            "terrain archive rock classification must follow file metadata in material ID order");
     }
 }
 
@@ -260,10 +266,44 @@ void checkMaterialMaps() {
         "missing active IDs must hide their tiles, while zero-weight IDs have no effect");
     albedos[73] = 1;
     const auto complete = scene->buildMaterialLayers(albedos);
-    const std::array<std::uint8_t, 4> expected{1, 0, 64, 17};
+    constexpr std::size_t padded = kTerrainMaterialPaddedResolution;
+    const auto sample = [&](std::size_t layer, std::size_t x, std::size_t z) {
+        return complete.pixels.begin() + (layer * padded * padded + z * padded + x) * 4;
+    };
+    const std::array<std::uint8_t, 4> firstSample{1, 0, 64, 17};
+    const std::array<std::uint8_t, 4> secondSample{0, 0, 0, 0};
     require(complete.count == 2 && complete.missingIds.empty() &&
-        std::equal(expected.begin(), expected.end(), complete.pixels.begin()),
+        std::equal(firstSample.begin(), firstSample.end(), sample(0, 1, 1)),
         "material data must preserve arbitrary IDs, blend weights and the unknown channel");
+    require(std::equal(secondSample.begin(), secondSample.end(), sample(0, padded - 1, padded / 2)) &&
+        std::equal(firstSample.begin(), firstSample.end(), sample(1, 0, padded / 2)),
+        "both sides of a shared edge must include the neighboring sample");
+    require(std::equal(firstSample.begin(), firstSample.end(), sample(0, 0, padded / 2)),
+        "an outer edge must clamp to its nearest sample");
+
+    std::array<glm::vec4, 256> palette;
+    palette.fill(glm::vec4(0.0f));
+    palette[0] = {0.0f, 0.0f, 1.0f, 0.0f};
+    palette[1] = {1.0f, 0.0f, 0.0f, 1.0f};
+    const auto macro = scene->bakeMacroAlbedo(complete, palette);
+    const auto macroPixel = [&](std::uint32_t x, std::uint32_t z) {
+        return macro.pixels.data() + (static_cast<std::size_t>(z) * macro.width + x) * 4;
+    };
+    require(macro.width == 313 && macro.height == 313, "macro map must cover the entire world extent");
+    const auto* boundary = macroPixel(macro.width / 2, macro.height / 4);
+    require(boundary[0] == 32 && boundary[2] == 223 && boundary[3] == 255,
+        "global macro albedo must filter neighboring tiles in linear color");
+    const auto* gap = macroPixel(macro.width / 4, 3 * macro.height / 4);
+    require(gap[3] == 0, "missing tiles must have zero macro coverage");
+    require(macro.rockCoverage.size() == macro.pixels.size(),
+        "rock coverage must use the same grid as macro albedo");
+    const auto edgeOffset = boundary - macro.pixels.data();
+    const auto gapOffset = gap - macro.pixels.data();
+    const auto plainOffset = macroPixel(3 * macro.width / 4, macro.height / 4) - macro.pixels.data();
+    require(macro.rockCoverage[edgeOffset] == 32 && macro.rockCoverage[edgeOffset + 3] == 255 &&
+        macro.rockCoverage[plainOffset] == 0 && macro.rockCoverage[plainOffset + 3] == 255 &&
+        macro.rockCoverage[gapOffset] == 0 && macro.rockCoverage[gapOffset + 3] == 0,
+        "rock coverage must filter material weights across tiles and retain distinct hole coverage");
 
     auto mesh = scene->buildMesh({8});
     const auto heightIndexCount = mesh.indices.size();

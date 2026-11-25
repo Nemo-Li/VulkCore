@@ -22,6 +22,7 @@ inline constexpr std::uint32_t kTerrainHeightmapResolution = 256;
 inline constexpr std::uint32_t kTerrainWaterResolution = 64;
 inline constexpr std::uint32_t kTerrainGrassResolution = 64;
 inline constexpr std::uint32_t kTerrainMaterialResolution = 256;
+inline constexpr std::uint32_t kTerrainMaterialPaddedResolution = kTerrainMaterialResolution + 2;
 inline constexpr std::uint32_t kTerrainRenderSampleStride = 2;
 
 struct TerrainMaterialInfo {
@@ -137,6 +138,13 @@ struct TerrainMaterialLayers {
     std::uint32_t count = 0;
 };
 
+struct TerrainMacroAlbedo {
+    std::vector<std::uint8_t> pixels;
+    std::vector<std::uint8_t> rockCoverage; // Optional RGBA mask, with the weight in R.
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 struct WaterMeshOptions {
     // The .water.extm files are native 64x64 flow/height grids. Keeping the
     // source resolution preserves narrow rivers and shoreline boundaries.
@@ -219,6 +227,8 @@ public:
     std::size_t grassTileCount() const { return grassTiles_.size(); }
     std::size_t materialTileCount() const { return materialTiles_.size(); }
     TerrainMaterialLayers buildMaterialLayers(const std::array<int, 256>& albedoLayers) const;
+    TerrainMacroAlbedo bakeMacroAlbedo(const TerrainMaterialLayers& layers,
+        const std::array<glm::vec4, 256>& palette, const std::atomic<bool>* cancelled = nullptr) const;
     std::optional<GrassSample> grassAtWorld(const glm::vec2& worldPosition) const;
     std::optional<float> waterHeightAtWorld(const glm::vec2& worldPosition) const;
 

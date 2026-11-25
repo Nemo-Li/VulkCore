@@ -23,8 +23,9 @@ layout(location = 0) out vec2 fragMapUv;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec4 vertexColor;
 layout(location = 3) out vec3 fragWorldPosition;
-layout(location = 4) out vec2 fragDetailUv;
+layout(location = 4) out vec3 fragTerrainPosition;
 layout(location = 5) flat out int fragMapLayer;
+layout(location = 6) out vec2 fragMacroUv;
 
 void main() {
     mat4 model = ubo.model * material.nodeTransform;
@@ -32,7 +33,8 @@ void main() {
     gl_Position = ubo.projection * ubo.view * vec4(fragWorldPosition, 1.0);
     fragNormal = normalize(transpose(inverse(mat3(model))) * inNormal);
     fragMapUv = inTexCoord;
-    fragDetailUv = inPosition.xz / 4.0;
+    fragMacroUv = inTerrainMapping.zw;
+    fragTerrainPosition = inPosition;
     fragMapLayer = int(inTerrainMapping.x);
     vertexColor = vec4(1.0);
 }

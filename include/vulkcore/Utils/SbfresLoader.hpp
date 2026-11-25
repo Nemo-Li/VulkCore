@@ -28,6 +28,8 @@ public:
     std::span<const SbfresTextureInfo> entries() const;
     // Reads BNTX array_index in material ID order. Empty if the mapping is absent.
     std::vector<std::uint32_t> readMaterialLayerIndices(std::size_t index) const;
+    // Reads BNTX file names in the same material ID order.
+    std::vector<std::string> readMaterialFileNames(std::size_t index) const;
     EmbeddedTextureData decodeLayer(std::size_t index, std::uint32_t layer) const;
 
 private:

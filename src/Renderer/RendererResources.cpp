@@ -993,7 +993,7 @@ std::map<unsigned, unsigned> readTerrainAlbedoBindings(const std::filesystem::pa
 
 void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
     const std::filesystem::path& tablePath, std::array<int, 256>& albedoLayers,
-    DecodedTexturePixels& albedo, TextureColorSpace& colorSpace) {
+    DecodedTexturePixels& albedo, TextureColorSpace& colorSpace, std::array<bool, 256>& rockLayers) {
     const SbfresTextureArchive archive(archivePath);
     const auto entries = archive.entries();
     const auto entry = std::find_if(entries.begin(), entries.end(), [](const SbfresTextureInfo& info) {
@@ -1005,6 +1005,17 @@ void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
     const auto index = static_cast<std::size_t>(entry - entries.begin());
 
     const auto materialLayers = archive.readMaterialLayerIndices(index);
+    std::vector<bool> rockSourceLayers(entry->layers);
+    try {
+        const auto materialFiles = archive.readMaterialFileNames(index);
+        if (materialFiles.size() == materialLayers.size()) {
+            for (std::size_t id = 0; id < materialFiles.size(); ++id) {
+                if (materialFiles[id].starts_with("Rock_")) rockSourceLayers[materialLayers[id]] = true;
+            }
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "warning: skipped rock classification for " << archivePath << ": " << error.what() << '\n';
+    }
     std::map<unsigned, unsigned> sourceLayers;
     for (unsigned id = 0; id < materialLayers.size(); ++id) {
         sourceLayers.emplace(id, materialLayers[id]);
@@ -1040,6 +1051,7 @@ void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
         }
         albedo.rgba.insert(albedo.rgba.end(), pixels.data.begin(), pixels.data.end());
         arrayIndex = albedo.layers++;
+        rockLayers[arrayIndex] = rockSourceLayers[layer];
     }
     for (const auto& [id, layer] : sourceLayers) {
         albedoLayers[id] = static_cast<int>(uploadedLayers.at(layer));
@@ -1082,26 +1094,56 @@ void decodeTerrainAlbedoPng(const std::filesystem::path& directory, std::array<i
     }
 }
 
+std::array<glm::vec4, 256> buildTerrainPalette(const DecodedTexturePixels& albedo,
+    TextureColorSpace colorSpace, const std::array<bool, 256>& rockLayers) {
+    std::array<glm::vec4, 256> palette{};
+    palette.fill(glm::vec4(0.0f));
+    std::array<double, 256> linear{};
+    for (std::size_t i = 0; i < linear.size(); ++i) {
+        const double value = static_cast<double>(i) / 255.0;
+        linear[i] = colorSpace == TextureColorSpace::Linear ? value :
+            (value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4));
+    }
+    const auto pixelCount = static_cast<std::size_t>(albedo.width) * albedo.height;
+    for (std::size_t layer = 0; layer < albedo.layers; ++layer) {
+        const auto* bytes = albedo.rgba.data() + layer * pixelCount * 4;
+        glm::dvec3 sum(0.0);
+        for (std::size_t i = 0; i < pixelCount; ++i) {
+            sum += glm::dvec3(linear[bytes[4 * i]], linear[bytes[4 * i + 1]], linear[bytes[4 * i + 2]]);
+        }
+        palette[layer] = glm::vec4(glm::vec3(sum / static_cast<double>(pixelCount)), rockLayers[layer] ? 1.0f : 0.0f);
+    }
+    return palette;
+}
+
 } // namespace
 
 Renderer::TerrainMaterialImages Renderer::decodeTerrainMaterials(const TerrainScene& terrain,
-    const std::filesystem::path& terrainRoot) {
+    const std::filesystem::path& terrainRoot, const std::atomic<bool>* cancelled) {
     std::array<int, 256> albedoLayers;
     albedoLayers.fill(-1);
     TerrainMaterialImages images;
     images.albedo.layers = 0;
+    std::array<bool, 256> rockLayers{};
     if (terrain.materialTileCount() != 0) {
         const auto source = terrainRoot / "source";
         const auto archive = source / "Terrain.Tex.sbfres";
         const auto table = source / "material-albedo-layers.txt";
         if (std::filesystem::exists(archive) || std::filesystem::exists(table)) {
-            decodeTerrainAlbedoArchive(archive, table, albedoLayers, images.albedo, images.albedoColorSpace);
+            decodeTerrainAlbedoArchive(archive, table, albedoLayers, images.albedo, images.albedoColorSpace, rockLayers);
         } else {
             decodeTerrainAlbedoPng(terrainRoot / "materials", albedoLayers, images.albedo);
         }
     }
     auto layers = terrain.buildMaterialLayers(albedoLayers);
-    images.maps = {std::move(layers.pixels), kTerrainMaterialResolution, kTerrainMaterialResolution, layers.count};
+    if (layers.count != 0 && (!cancelled || !cancelled->load(std::memory_order_relaxed))) {
+        auto macro = terrain.bakeMacroAlbedo(layers,
+            buildTerrainPalette(images.albedo, images.albedoColorSpace, rockLayers), cancelled);
+        images.macroAlbedo = {std::move(macro.pixels), macro.width, macro.height, 1};
+        images.rockCoverage = {std::move(macro.rockCoverage), macro.width, macro.height, 1};
+    }
+    images.maps = {std::move(layers.pixels), kTerrainMaterialPaddedResolution,
+        kTerrainMaterialPaddedResolution, layers.count};
     images.layerForTile = std::move(layers.layerForTile);
     images.missingIds = std::move(layers.missingIds);
     return images;
@@ -1326,6 +1368,11 @@ void Renderer::createDescriptorSets() {
             const auto& fragment = meshData_.materials[materialIndex].shaderConfiguration.shader(ShaderStage::Fragment);
             const bool terrainMaterial = fragment == "shader_terrain.frag";
             const bool grassMaterial = fragment == "shader_grass.frag";
+            // Terrain uses the albedo and normal slots for macro albedo and rock coverage.
+            if (terrainMaterial) {
+                texture = terrainMacroAlbedo_ ? terrainMacroAlbedo_.get() : fallbackTexture_.get();
+                normalTexture = terrainRockCoverage_ ? terrainRockCoverage_.get() : fallbackTexture_.get();
+            }
             if (grassMaterial && terrainGrass_.specular) specularTexture = terrainGrass_.specular.get();
 
             const Texture* mask = alphaMaskTextures_[materialIndex].get();

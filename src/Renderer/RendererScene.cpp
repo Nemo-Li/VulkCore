@@ -237,6 +237,8 @@ void Renderer::initializeEmptyScene() {
     terrainGrass_ = {};
     terrainAlbedoLayers_.reset();
     terrainMaterialMaps_.reset();
+    terrainMacroAlbedo_.reset();
+    terrainRockCoverage_.reset();
     terrainResourcePath_.clear();
     waterResourcePath_.clear();
     playerController_.clear();
@@ -1547,7 +1549,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 prepared.waterMesh = prepared.terrain->buildWaterMesh({}, cancelled);
                 if (!stopping()) {
                     try {
-                        prepared.terrainMaterials = decodeTerrainMaterials(*prepared.terrain, terrainPath);
+                        prepared.terrainMaterials = decodeTerrainMaterials(*prepared.terrain, terrainPath, cancelled);
                     } catch (const std::exception& materialError) {
                         prepared.terrainMaterialError = materialError.what();
                     }
@@ -1623,6 +1625,26 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 terrainMaterialMaps_ = std::move(maps);
             } catch (const std::exception& error) {
                 warnResource("Terrain material textures", terrainPath, error.what());
+            }
+        }
+        if (terrainMaterialMaps_ && !images.macroAlbedo.rgba.empty()) {
+            try {
+                constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                terrainMacroAlbedo_ = std::make_unique<Texture>(*context_, images.macroAlbedo, false,
+                    TextureColorSpace::Linear, clamp, clamp);
+                std::cerr << "Terrain macro albedo: " << images.macroAlbedo.width
+                          << 'x' << images.macroAlbedo.height << '\n';
+            } catch (const std::exception& error) {
+                warnResource("Terrain macro albedo", terrainPath, error.what());
+            }
+        }
+        if (terrainMacroAlbedo_ && !images.rockCoverage.rgba.empty()) {
+            try {
+                constexpr auto clamp = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                terrainRockCoverage_ = std::make_unique<Texture>(*context_, images.rockCoverage, false,
+                    TextureColorSpace::Linear, clamp, clamp);
+            } catch (const std::exception& error) {
+                warnResource("Terrain rock coverage", terrainPath, error.what());
             }
         }
         std::cerr << "Terrain material maps: " << assets.terrain->materialTileCount() << " valid, "

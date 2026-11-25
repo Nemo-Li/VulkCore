@@ -229,11 +229,13 @@ private:
         DecodedTexturePixels albedo;
         TextureColorSpace albedoColorSpace = TextureColorSpace::Srgb;
         DecodedTexturePixels maps;
+        DecodedTexturePixels macroAlbedo;
+        DecodedTexturePixels rockCoverage;
         std::vector<int> layerForTile;
         std::vector<std::uint8_t> missingIds;
     };
     static TerrainMaterialImages decodeTerrainMaterials(const TerrainScene& terrain,
-        const std::filesystem::path& terrainRoot);
+        const std::filesystem::path& terrainRoot, const std::atomic<bool>* cancelled);
     struct TerrainGrassImages {
         std::array<EmbeddedTextureData, 3> images;
         GrassCoverMask coverMask;
@@ -589,6 +591,8 @@ private:
     std::vector<std::unique_ptr<Texture>> alphaMaskTextures_;
     std::unique_ptr<Texture> terrainAlbedoLayers_;
     std::unique_ptr<Texture> terrainMaterialMaps_;
+    std::unique_ptr<Texture> terrainMacroAlbedo_;
+    std::unique_ptr<Texture> terrainRockCoverage_;
     std::unique_ptr<Texture> fallbackTerrainLayers_;
     std::unordered_map<std::uint32_t, std::unique_ptr<Texture>> particleTextures_;
     std::unique_ptr<Texture> skyboxTexture_;
