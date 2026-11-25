@@ -43,11 +43,16 @@ int main() {
         write(source / "third_party/stb/stb_image.h", "// dependency");
         write(source / "shaders/src/shader_base.vert", "// shader");
         write(source / "shaders/src/shader_particle.frag", "// shader with a sun coverage variant");
+        write(source / "shaders/src/shader_terrain.frag", "// shader with a HarmonyOS variant");
         write(source / "CMakeLists.txt", "# runtime build");
         write(source / "cmake/OhosPhysX.cmake", "# platform compatibility");
         write(root / "spirv/shader_base.vert.spv", std::string("\x03\x02\x23\x07", 4));
         write(root / "spirv/shader_particle.frag.spv", std::string("\x03\x02\x23\x07", 4));
         write(root / "spirv/sun_caster_particle.frag.spv", std::string("\x03\x02\x23\x07", 4));
+        const auto spirvMagic = std::string("\x03\x02\x23\x07", 4);
+        const auto mobileTerrain = spirvMagic + "mobile terrain";
+        write(root / "spirv/shader_terrain.frag.spv", spirvMagic + "desktop terrain");
+        write(root / "spirv/ohos/shader_terrain.frag.spv", mobileTerrain);
         fs::create_directories(source / "platform/ohos");
         fs::copy(fs::path(__FILE__).parent_path().parent_path() / "platform/ohos/template",
             source / "platform/ohos/template", fs::copy_options::recursive);
@@ -65,7 +70,10 @@ int main() {
             "particle_system_object 98 1 \"" + atlas.generic_string() + "\" flipbook 2 2 4 192 4 2\n"
             "realtime_effect 100 \"" + effect.generic_string() + "\" 1 0\n"
             "camera_position 1 2 3\n";
-        write(scene, original);
+        const std::string roads = "terrain_road_ochre_ratio 0.8\n"
+            "  terrain_road 1 3.75 2 0 0 1 1\n"
+            "terrain_road 0 3.75 1 1 0\n";
+        write(scene, original + roads);
         VulkCore::OhosExportOptions options;
         options.sourceDirectory = source;
         options.shaderDirectory = root / "spirv";
@@ -84,7 +92,10 @@ int main() {
         const auto payload = options.outputDirectory / "entry/src/main/resources/rawfile/vulkcore";
         require(fs::is_regular_file(payload / "shaders/sun_caster_particle.frag.spv"),
             "Sun shadow coverage shader is missing from the export");
+        require(read(payload / "shaders/shader_terrain.frag.spv") == mobileTerrain,
+            "Export did not select the HarmonyOS terrain shader");
         const auto exported = read(payload / "scenes/tornado.scene");
+        require(exported.ends_with(roads), "Road records were removed from a scene other than game.scene");
         require(exported.find(root.generic_string()) == std::string::npos, "Host absolute paths leaked into scene");
         require(exported.find("../assets/external/0/external model/mesh.gltf\" 42") != std::string::npos, "Model IDs/path were not preserved");
         require(exported.find("\"Named material\"") != std::string::npos, "Material name was changed");
@@ -109,7 +120,16 @@ int main() {
         }
         bool failed = false;
         try { VulkCore::exportOhosProject(options); } catch (...) { failed = true; }
-        require(failed && read(scene) == original, "Existing export or source scene was overwritten");
+        require(failed && read(scene) == original + roads, "Existing export or source scene was overwritten");
+        auto gameOptions = options;
+        gameOptions.scene = scene.parent_path() / "game.scene";
+        gameOptions.outputDirectory = root / "exported game";
+        write(gameOptions.scene, original + roads);
+        VulkCore::exportOhosProject(gameOptions);
+        const auto gamePayload = gameOptions.outputDirectory / "entry/src/main/resources/rawfile/vulkcore";
+        require(read(gamePayload / "scenes/game.scene") == exported.substr(0, exported.size() - roads.size()),
+            "game.scene should omit road records and preserve other settings");
+        require(read(gameOptions.scene) == original + roads, "Original game.scene was modified");
         options.outputDirectory = root / "broken";
         write(scene, "model_resource_path \"missing.fbx\" 42\n");
         failed = false;

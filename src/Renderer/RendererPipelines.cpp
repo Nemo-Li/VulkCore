@@ -544,11 +544,6 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     };
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     shaderStages.reserve(graphicsStages.size());
-#ifdef VULKCORE_OHOS
-    constexpr VkBool32 mobileTerrain = VK_TRUE;
-    constexpr VkSpecializationMapEntry mobileTerrainEntry{0, 0, sizeof(mobileTerrain)};
-    const VkSpecializationInfo mobileTerrainInfo{1, &mobileTerrainEntry, sizeof(mobileTerrain), &mobileTerrain};
-#endif
     for (const ShaderStage stage : graphicsStages) {
         const bool casterStage = shadow && stage == ShaderStage::Fragment;
         std::string shaderName = casterStage ? casterFragment() : configuration.shader(stage);
@@ -571,11 +566,6 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         stageInfo.stage = vkShaderStage(stage);
         stageInfo.module = shaderModule(shaderName);
         stageInfo.pName = "main";
-#ifdef VULKCORE_OHOS
-        if (stage == ShaderStage::Fragment && shaderName == "shader_terrain.frag") {
-            stageInfo.pSpecializationInfo = &mobileTerrainInfo;
-        }
-#endif
         shaderStages.push_back(stageInfo);
     }
 

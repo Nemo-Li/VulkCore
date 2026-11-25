@@ -122,6 +122,19 @@ foreach(SHADER_SOURCE IN LISTS VULKCORE_SHADER_SOURCES)
     list(APPEND VULKCORE_SHADER_BINARIES "${SHADER_BINARY}")
 endforeach()
 
+# The mobile terrain shader omits the road buffer and fragment queries.
+set(OHOS_TERRAIN_SOURCE "${VULKCORE_SHADER_SOURCE_DIR}/shader_terrain.frag")
+set(OHOS_TERRAIN_BINARY "${VULKCORE_SHADER_BINARY_DIR}/ohos/shader_terrain.frag.spv")
+add_custom_command(
+    OUTPUT "${OHOS_TERRAIN_BINARY}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VULKCORE_SHADER_BINARY_DIR}/ohos"
+    COMMAND "${VULKCORE_GLSLC_EXECUTABLE}" -O -DVULKCORE_OHOS=1 "${OHOS_TERRAIN_SOURCE}" -o "${OHOS_TERRAIN_BINARY}"
+    DEPENDS "${OHOS_TERRAIN_SOURCE}" ${VULKCORE_SHADER_INCLUDES}
+    COMMENT "Compiling HarmonyOS terrain shader"
+    VERBATIM
+)
+list(APPEND VULKCORE_SHADER_BINARIES "${OHOS_TERRAIN_BINARY}")
+
 # Compile depth-only forms of materials whose coverage is procedural. They reuse the
 # visible shader's discard and alpha rules without accessing the receiving shadow map.
 foreach(SHADOW_MATERIAL IN ITEMS grass grid particle surface_wipe tornado uv_ribbon)

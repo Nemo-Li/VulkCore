@@ -6,7 +6,9 @@
 #include "sun_shadow.glsl"
 #include "terrain_rock.glsl"
 #include "meadow_shading.glsl"
+#ifndef VULKCORE_OHOS
 #include "terrain_road_weights.glsl"
+#endif
 
 layout(location = 0) in vec2 fragMapUv;
 layout(location = 1) in vec3 fragNormal;
@@ -32,7 +34,11 @@ layout(push_constant) uniform MaterialPushConstants {
     vec4 waterSurface;
 } material;
 
-layout(constant_id = 0) const bool mobileTerrain = false;
+#ifdef VULKCORE_OHOS
+const bool mobileTerrain = true;
+#else
+const bool mobileTerrain = false;
+#endif
 
 const float detailTileSize = 4.0;
 
@@ -154,11 +160,11 @@ void main() {
         float farBlend = smoothstep(material.waterFlow.w, material.waterFlow.w * 2.8, worldDistance);
         float rockMask = smoothstep(0.15, 0.75, rock);
         float canopy = mix(mix(0.20, 0.90, distanceBlend), 0.08, farBlend) * (1.0 - rockMask);
-        if (!mobileTerrain) {
-            vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
-            float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
-            canopy *= 1.0 - roadMask;
-        }
+#ifndef VULKCORE_OHOS
+        vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
+        float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
+        canopy *= 1.0 - roadMask;
+#endif
         vec3 canopyLight = ambient + sunlight * meadowCanopyDiffuse(geometricNormal, lightDirection) + pointLight;
         groundColor = groundColor * (1.0 - canopy * grass.a) +
             meadowCanopyAlbedo(grass.rgb) * canopyLight * canopy;

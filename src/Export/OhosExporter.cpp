@@ -154,7 +154,7 @@ private:
     std::vector<std::pair<fs::path, fs::path>> external_;
 };
 
-std::string rewriteScene(const std::string& input, ResourceCollector& collector) {
+std::string rewriteScene(const std::string& input, ResourceCollector& collector, bool omitRoads) {
     std::istringstream stream(input);
     std::ostringstream result;
     std::string line;
@@ -162,6 +162,7 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector)
         std::istringstream tokens(line);
         std::string key;
         tokens >> key;
+        if (omitRoads && (key == "terrain_road" || key == "terrain_road_ochre_ratio")) continue;
         const bool model = key == "model_resource_path" || key == "player_model_resource";
         const bool reference = model || key == "terrain_resource" || key == "water_resource" ||
             key == "realtime_effect";
@@ -252,7 +253,9 @@ std::filesystem::path exportOhosProject(const OhosExportOptions& options) {
         for (const auto& item : fs::directory_iterator(source / "shaders/src")) {
             const auto ext = item.path().extension();
             if (ext != ".vert" && ext != ".frag" && ext != ".tesc" && ext != ".tese" && ext != ".geom" && ext != ".comp") continue;
-            copyShader(shaders / (item.path().filename().string() + ".spv"));
+            const auto filename = item.path().filename();
+            const auto directory = filename == "shader_terrain.frag" ? shaders / "ohos" : shaders;
+            copyShader(directory / (filename.string() + ".spv"));
         }
         // These coverage variants are created by CMake from the visible materials.
         for (const std::string name : {"grass", "grid", "particle", "surface_wipe", "tornado", "uv_ribbon"}) {
@@ -262,7 +265,8 @@ std::filesystem::path exportOhosProject(const OhosExportOptions& options) {
         }
         if (shaderCount == 0) throw std::runtime_error("No runtime shaders were found.");
         ResourceCollector collector(source, scene, payload, staging);
-        writeText(payload / "scenes" / scene.filename(), rewriteScene(readText(scene), collector));
+        writeText(payload / "scenes" / scene.filename(),
+            rewriteScene(readText(scene), collector, scene.filename() == "game.scene"));
         writeText(payload / "startup.txt", (fs::path("scenes") / scene.filename()).generic_string() + "\n");
         std::vector<std::string> files;
         for (const auto& item : fs::recursive_directory_iterator(payload)) {
