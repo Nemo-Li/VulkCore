@@ -1,6 +1,7 @@
 #include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
+#include "vulkcore/Utils/SbfresLoader.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -16,6 +17,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -200,6 +202,29 @@ void checkStitchedChunkBounds() {
                 glm::all(glm::lessThanEqual(position, chunk.boundsMaximum)),
                 "chunk bounds omit a stitched mesh vertex");
         }
+    }
+}
+
+void checkArchiveMaterialLayers() {
+    const auto archivePath = std::filesystem::path(__FILE__).parent_path().parent_path() /
+        "assets/terrain/source/Terrain.Tex.sbfres";
+    const VulkCore::SbfresTextureArchive archive(archivePath);
+    const auto entries = archive.entries();
+    constexpr std::array<std::uint32_t, 88> expected{
+         0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 17, 18,  0,
+        29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+        45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,  7,
+        60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,  0, 72, 73, 74,
+        75, 76, 77, 78, 79, 80, 81, 82,
+    };
+    for (const std::string_view name : {"MaterialAlb", "MaterialCmb"}) {
+        const auto entry = std::find_if(entries.begin(), entries.end(), [name](const auto& texture) {
+            return texture.name == name;
+        });
+        require(entry != entries.end() && entry->layers == 83, "expected 83 terrain texture layers");
+        const auto layers = archive.readMaterialLayerIndices(static_cast<std::size_t>(entry - entries.begin()));
+        require(std::ranges::equal(layers, expected), "terrain archive material IDs must use array_index");
     }
 }
 
@@ -471,6 +496,7 @@ int main() {
         checkFixture(true);
         checkStitchedChunkBounds();
         checkMaterialMaps();
+        checkArchiveMaterialLayers();
         checkGrassCoverage();
         checkFrustum();
     } catch (const std::exception& error) {

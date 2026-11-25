@@ -1270,6 +1270,38 @@ std::span<const SbfresTextureInfo> SbfresTextureArchive::entries() const {
     return data_->entries;
 }
 
+std::vector<std::uint32_t> SbfresTextureArchive::readMaterialLayerIndices(std::size_t index) const {
+    if (index >= entries().size()) throw std::runtime_error("BNTX texture index out of range");
+    const auto& [pack, header] = data_->sources[index];
+
+    // The BRTI user data entries follow the key order in the user data dictionary.
+    const auto keys = pack.dictionary(header + 0x98);
+    constexpr std::string_view key = "array_index";
+    const auto found = std::find(keys.begin(), keys.end(), key);
+    if (found == keys.end()) return {};
+
+    constexpr std::size_t entrySize = 0x40;
+    const auto userData = pack.table(header + 0x78, keys.size(), entrySize);
+    const auto entry = userData + static_cast<std::size_t>(found - keys.begin()) * entrySize;
+    const auto count = pack.u32(entry + 0x10);
+    if (pack.string(entry) != key || pack.u8(entry + 0x14) != 0 || count == 0 || count > 256) {
+        pack.fail("invalid material array_index user data");
+    }
+
+    const auto values = pack.table(entry + 0x08, count, sizeof(std::uint32_t));
+    const auto layerCount = entries()[index].layers;
+    std::vector<std::uint32_t> layers;
+    layers.reserve(count);
+    for (std::size_t id = 0; id < count; ++id) {
+        const auto layer = pack.u32(values + id * sizeof(std::uint32_t));
+        if (layer >= layerCount) {
+            pack.fail("array_index layer out of range for material ID " + std::to_string(id));
+        }
+        layers.push_back(layer);
+    }
+    return layers;
+}
+
 EmbeddedTextureData SbfresTextureArchive::decodeLayer(std::size_t index, std::uint32_t layer) const {
     if (index >= entries().size()) throw std::runtime_error("BNTX texture index out of range");
     const auto& [pack, header] = data_->sources[index];

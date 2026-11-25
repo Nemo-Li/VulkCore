@@ -14,6 +14,7 @@
 7. [Switch SBFRES 模型导入](09-sbfres-import.md) 记录模型与贴图格式、管线改动和苹果树场景的运行方法。
 8. 了解敌人行为的常见编辑机制、引擎支持以及 VulkCore 的巡逻配置。[敌人行为编辑与巡逻](10-enemy-behavior.md)
 9. 地形纹理数组、分距离渲染以及 Switch 样本中的 `MaterialAlb` 与 `MaterialCmb`。[地形材质与分距离渲染](06-botw-terrain-textures.md)
+10. 仓库所附资源的 88 个地形材质 ID、实际纹理层和资源名。[地形材质 ID 与纹理层对照表](11-botw-terrain-material-mapping.md)
 
 ## 状态约定
 

@@ -1004,11 +1004,11 @@ void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
     }
     const auto index = static_cast<std::size_t>(entry - entries.begin());
 
-    // Until the source material table is verified, use the layer with the same
-    // number as the material ID and layer 0 for IDs beyond the end of the array.
-    std::array<unsigned, 256> sourceLayers{};
-    const auto directCount = std::min<std::size_t>(entry->layers, sourceLayers.size());
-    for (std::size_t id = 0; id < directCount; ++id) sourceLayers[id] = static_cast<unsigned>(id);
+    const auto materialLayers = archive.readMaterialLayerIndices(index);
+    std::map<unsigned, unsigned> sourceLayers;
+    for (unsigned id = 0; id < materialLayers.size(); ++id) {
+        sourceLayers.emplace(id, materialLayers[id]);
+    }
     if (std::filesystem::exists(tablePath)) {
         for (const auto& [id, layer] : readTerrainAlbedoBindings(tablePath)) {
             if (layer >= entry->layers) {
@@ -1019,8 +1019,13 @@ void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
         }
     }
 
+    if (sourceLayers.empty()) {
+        throw std::runtime_error("missing MaterialAlb array_index and explicit material layer bindings in " +
+            archivePath.string());
+    }
+
     std::map<unsigned, unsigned> uploadedLayers;
-    for (const auto layer : sourceLayers) uploadedLayers.try_emplace(layer, 0);
+    for (const auto& [id, layer] : sourceLayers) uploadedLayers.try_emplace(layer, 0);
     albedo.width = entry->width;
     albedo.height = entry->height;
     for (auto& [layer, arrayIndex] : uploadedLayers) {
@@ -1036,8 +1041,8 @@ void decodeTerrainAlbedoArchive(const std::filesystem::path& archivePath,
         albedo.rgba.insert(albedo.rgba.end(), pixels.data.begin(), pixels.data.end());
         arrayIndex = albedo.layers++;
     }
-    for (std::size_t id = 0; id < sourceLayers.size(); ++id) {
-        albedoLayers[id] = static_cast<int>(uploadedLayers.at(sourceLayers[id]));
+    for (const auto& [id, layer] : sourceLayers) {
+        albedoLayers[id] = static_cast<int>(uploadedLayers.at(layer));
     }
     std::cerr << "Terrain albedo: " << albedo.layers << '/' << entry->layers << " MaterialAlb layers from "
               << archivePath.string() << '\n';

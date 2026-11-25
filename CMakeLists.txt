@@ -494,6 +494,7 @@ if(BUILD_TESTING AND NOT VULKCORE_OHOS)
         src/Terrain/Grass.cpp
         src/Terrain/Terrain.cpp
         src/Utils/FileUtils.cpp
+        src/Utils/SbfresLoader.cpp
     )
     target_include_directories(vulkcore_terrain_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vulkcore_terrain_smoke PRIVATE Vulkan::Headers ${VULKCORE_GLM_TARGET})

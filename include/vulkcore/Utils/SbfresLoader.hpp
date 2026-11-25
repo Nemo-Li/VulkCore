@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "vulkcore/Renderer/Mesh.hpp"
 
@@ -25,6 +26,8 @@ public:
     SbfresTextureArchive() = default;
     explicit SbfresTextureArchive(const std::filesystem::path& path);
     std::span<const SbfresTextureInfo> entries() const;
+    // Reads BNTX array_index in material ID order. Empty if the mapping is absent.
+    std::vector<std::uint32_t> readMaterialLayerIndices(std::size_t index) const;
     EmbeddedTextureData decodeLayer(std::size_t index, std::uint32_t layer) const;
 
 private:

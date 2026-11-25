@@ -4,7 +4,7 @@
 
 地形从 `terrain/<分组>.mate/<瓦片>.mate` 读取材质，也支持放在 `terrain/` 下的单个 `.mate`。每个文件是 256 × 256 的四字节网格，前两字节为材质 ID，第三字节按第一材质的归一化权重解释，第四字节随样本保留。GPU 先按权重混合每个样本的两张底色，再对相邻样本的颜色做双线性插值。
 
-地表底色从 `source/Terrain.Tex.sbfres` 的 `MaterialAlb` 数组解码，并保留底色的色彩空间。材质 ID 暂按同号层采样，当前档案的 ID `0–82` 对应第 `0–82` 层，更大的 ID 使用第 `0` 层。可通过 `source/material-albedo-layers.txt` 覆盖个别 ID，每行填写十进制材质 ID 和从零开始的数组层号，支持 `#` 注释。没有档案的材质包可在 `materials/` 下按材质 ID 提供同尺寸的原创底色 PNG。
+地表底色从 `source/Terrain.Tex.sbfres` 的 `MaterialAlb` 数组解码，并保留底色的色彩空间。`.mate` 材质 ID 用作 BNTX 用户数据 `array_index` 的行号，表值是实际的纹理层号。`source/material-albedo-layers.txt` 可显式覆盖或补充映射，每行填写十进制材质 ID 和从零开始的数组层号，支持 `#` 注释。若启用的材质 ID 缺少映射，瓦片会被跳过。没有档案的材质包可在 `materials/` 下按材质 ID 提供同尺寸的原创底色 PNG。仓库所附资源的完整映射见[地形材质 ID 与纹理层对照表](11-botw-terrain-material-mapping.md)。
 
 贴图沿世界 XZ 每 4 个单位重复一次，并在线性空间混合。缺少有效 `.mate` 的瓦片从绘制和阴影投射中剔除。使用 PNG 时，有效材质 ID 对应纹理缺失也会跳过瓦片。高度查询和碰撞仍使用 `.hght`。启动日志列出可绘制瓦片数和缺失的 PNG 材质 ID。
 
@@ -66,7 +66,7 @@
 
 形状通过 `FSHP.materialIndex` 选择 `FMAT`，材质按槽位记录采样器和贴图名，再从 BNTX 的同名记录取图。样本中的 `TeraTerrain / NormalNear` 选用 `OpaqueNear`，由 `_a0` 读取 `MaterialAlb`，由 `_n0` 读取 `MaterialCmb`。 [SBFRES 材质解析](09-sbfres-import.md)
 
-`TeraTerrain` 的 7 个形状各含 3 个顶点，只有位置属性。近、中、远形状共用三角形坐标，分别对应 `OpaqueNear`、`OpaqueMiddle` 和 `OpaqueFar`。实际地图网格依赖瓦片布局和 `.hght` 高度数据，地表材质分布依赖 `.mate`。现有 `MainField.tscb` 有 88 条材质记录，素材中的两个纹理数组各有 83 层。材质记录和纹理层之间的对应关系需要单独核对。 [地形文件结构](https://zeldamods.org/wiki/Terrain) · [VulkCore 地图加载](../src/Terrain/Terrain.cpp)
+`TeraTerrain` 的 7 个形状各含 3 个顶点，只有位置属性。近、中、远形状共用三角形坐标，分别对应 `OpaqueNear`、`OpaqueMiddle` 和 `OpaqueFar`。实际地图网格依赖瓦片布局和 `.hght` 高度数据，地表材质分布依赖 `.mate`。现有 `MainField.tscb` 有 88 条材质记录，两个纹理数组各有 83 层，并包含相同的 `array_index` 映射。 [地形文件结构](https://zeldamods.org/wiki/Terrain) · [VulkCore 地图加载](../src/Terrain/Terrain.cpp)
 
 ### 本地导出与 VulkCore 支持
 
