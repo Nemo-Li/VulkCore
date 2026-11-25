@@ -20,14 +20,14 @@ constexpr float kDebugMovementSpeedMultiplier = 4.0f;
 constexpr float kDebugAscentSpeed = 6.0f;
 constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
-constexpr float kCameraTargetHeight = 0.92f;
+constexpr float kDefaultOrbitCameraHeight = 0.92f;
 constexpr float kCameraCollisionRadius = 0.25f;
 // Negative orbit elevation lets the player tilt up toward the sky. The terrain sweep still limits the camera arm.
 constexpr float kMinCameraElevation = -35.0f * kPi / 180.0f;
 constexpr float kMaxCameraElevation = 65.0f * kPi / 180.0f;
 constexpr float kInitialCameraElevation = 15.0f * kPi / 180.0f;
 constexpr float kFollowCameraElevation = 18.0f * kPi / 180.0f;
-constexpr glm::vec3 kFollowCameraOffset(0.0f, 3.0f, 0.0f); // Measured from the player's feet.
+constexpr float kDefaultFollowCameraHeight = 3.0f;
 constexpr float kFollowCameraTurnSpeed = 3.0f; // Radians per second.
 constexpr float kFollowCameraTurnResponse = 8.0f;
 constexpr float kFollowCameraArmResponse = 7.0f;
@@ -180,6 +180,7 @@ void PlayerController::clear() {
     clickToMove_ = false;
     moveSpeedMultiplier_ = kDefaultMoveSpeedMultiplier;
     cameraFollowDistance_.reset();
+    cameraHeight_.reset();
     followCameraPose_.reset();
     cameraOrbitOverridden_ = false;
     cancelMove();
@@ -312,6 +313,16 @@ void PlayerController::setMoveSpeedMultiplier(float multiplier) {
 void PlayerController::setCameraFollowDistance(float distance) {
     if (std::isfinite(distance)) {
         cameraFollowDistance_ = std::clamp(distance, kMinCameraFollowDistance, kMaxCameraFollowDistance);
+    }
+}
+
+float PlayerController::cameraHeight() const {
+    return cameraHeight_.value_or(cameraFollowDistance_ ? kDefaultFollowCameraHeight : kDefaultOrbitCameraHeight);
+}
+
+void PlayerController::setCameraHeight(float height) {
+    if (std::isfinite(height)) {
+        cameraHeight_ = std::clamp(height, kMinCameraHeight, kMaxCameraHeight);
     }
 }
 
@@ -556,7 +567,7 @@ PlayerController::FollowCameraPose PlayerController::desiredFollowCameraPose() c
 
 float PlayerController::followCameraClearance(const PhysicsWorld& physics, float yaw, float distance) const {
     return physics.terrainSweepDistance(
-        position_ + kFollowCameraOffset, -forwardFromYaw(yaw), distance, kCameraCollisionRadius
+        position_ + glm::vec3(0.0f, cameraHeight(), 0.0f), -forwardFromYaw(yaw), distance, kCameraCollisionRadius
     );
 }
 
@@ -595,17 +606,17 @@ void PlayerController::updateFollowCamera(const PhysicsWorld& physics, float del
 }
 
 PlayerCameraView PlayerController::cameraView(const PhysicsWorld& physics) const {
+    const glm::vec3 pivot = position_ + glm::vec3(0.0f, cameraHeight(), 0.0f);
     if (cameraFollowDistance_) {
         auto pose = followCameraPose_.value_or(desiredFollowCameraPose());
         if (!followCameraPose_) pose.distance = followCameraClearance(physics, pose.yaw, pose.distance);
         const glm::vec3 forward = forwardFromYaw(pose.yaw);
-        const glm::vec3 eye = position_ + kFollowCameraOffset - forward * pose.distance;
+        const glm::vec3 eye = pivot - forward * pose.distance;
         const glm::vec3 look = forward * std::cos(pose.elevation) -
             glm::vec3(0.0f, std::sin(pose.elevation), 0.0f);
         return {eye, eye + look};
     }
 
-    const glm::vec3 pivot = position_ + glm::vec3(0.0f, kCameraTargetHeight, 0.0f);
     const glm::vec3 orbitDirection =
         -horizontalForward() * std::cos(cameraElevationRadians_) +
         glm::vec3(0.0f, std::sin(cameraElevationRadians_), 0.0f);

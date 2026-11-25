@@ -900,6 +900,13 @@ void Renderer::drawGameInspector() {
                 playerController_.setCameraFollowDistance(cameraDistance);
                 editorDirty_ = true;
             }
+            float cameraHeight = playerController_.cameraHeight();
+            if (ImGui::SliderFloat("Camera Height", &cameraHeight,
+                PlayerController::kMinCameraHeight, PlayerController::kMaxCameraHeight,
+                "%.2f m", ImGuiSliderFlags_AlwaysClamp)) {
+                playerController_.setCameraHeight(cameraHeight);
+                editorDirty_ = true;
+            }
             return;
         }
         if (!selectedModelNode_) {

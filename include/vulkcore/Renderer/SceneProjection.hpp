@@ -9,11 +9,14 @@
 
 namespace VulkCore {
 
-inline glm::mat4 sceneProjection(float aspectRatio, float nearPlane, float farPlane, bool coverReferenceViewport) {
+inline constexpr float kDefaultSceneVerticalFov = 45.0f;
+
+inline glm::mat4 sceneProjection(float aspectRatio, float nearPlane, float farPlane, bool coverReferenceViewport,
+                                 float verticalFovDegrees = kDefaultSceneVerticalFov) {
     if (!std::isfinite(aspectRatio) || aspectRatio <= 0) {
         throw std::invalid_argument("Scene viewport requires a positive aspect ratio.");
     }
-    float verticalFov = glm::radians(45.0f);
+    float verticalFov = glm::radians(verticalFovDegrees);
     if (coverReferenceViewport) {
         constexpr float referenceAspect = static_cast<float>(kWindowWidth) / kWindowHeight;
         // Cover the screen with the original viewport at one uniform scale.

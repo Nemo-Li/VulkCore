@@ -45,6 +45,8 @@ public:
     static constexpr float kDefaultCameraFollowDistance = 2.0f;
     static constexpr float kMinCameraFollowDistance = 0.75f;
     static constexpr float kMaxCameraFollowDistance = 20.0f;
+    static constexpr float kMinCameraHeight = 0.5f;
+    static constexpr float kMaxCameraHeight = 20.0f;
     static constexpr float kDefaultMoveSpeedMultiplier = 1.0f;
     static constexpr float kMinMoveSpeedMultiplier = 0.1f;
     static constexpr float kMaxMoveSpeedMultiplier = 5.0f;
@@ -83,6 +85,9 @@ public:
     void setMoveSpeedMultiplier(float multiplier);
     std::optional<float> cameraFollowDistance() const { return cameraFollowDistance_; }
     void setCameraFollowDistance(float distance);
+    float cameraHeight() const;
+    std::optional<float> configuredCameraHeight() const { return cameraHeight_; }
+    void setCameraHeight(float height);
     void recenterFollowCamera();
     void setMoveDestination(const glm::vec2& destination) { moveDestination_ = destination; }
     void cancelMove() { moveDestination_.reset(); }
@@ -142,6 +147,7 @@ private:
     std::array<float, kPlayerSkillCount> skillAnimationSeconds_ = kDefaultSkillAnimationSeconds;
     std::vector<float> footTractionSamples_;
     std::optional<float> cameraFollowDistance_;
+    std::optional<float> cameraHeight_;
     std::optional<FollowCameraPose> followCameraPose_;
     float yawRadians_ = 0.0f;
     float cameraElevationRadians_ = 0.0f;

@@ -1246,6 +1246,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     bool sceneClickToMove = false;
     float playerMoveSpeedMultiplier = PlayerController::kDefaultMoveSpeedMultiplier;
     std::optional<float> playerCameraFollowDistance;
+    std::optional<float> playerCameraHeight;
     RoadPaint savedRoadPaint;
     float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
@@ -1396,6 +1397,15 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 co_return false;
             }
             playerCameraFollowDistance = distance;
+        } else if (key == "player_camera_height") {
+            float height = 0.0f;
+            if (!(sceneFile >> height) || !std::isfinite(height) ||
+                height < PlayerController::kMinCameraHeight || height > PlayerController::kMaxCameraHeight) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid player camera height.";
+                co_return false;
+            }
+            playerCameraHeight = height;
         } else if (key == "player_spawn_position") {
             glm::vec3 configuredPosition(0.0f);
             if (!(sceneFile >> configuredPosition.x >> configuredPosition.y >> configuredPosition.z) ||
@@ -1721,6 +1731,9 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                     playerController_.setMoveSpeedMultiplier(playerMoveSpeedMultiplier);
                     if (playerCameraFollowDistance) {
                         playerController_.setCameraFollowDistance(*playerCameraFollowDistance);
+                    }
+                    if (playerCameraHeight) {
+                        playerController_.setCameraHeight(*playerCameraHeight);
                     }
                     if (playerModelPath.empty()) {
                         appendPlayerToScene();
@@ -2917,6 +2930,9 @@ bool Renderer::saveTransformSettings() const {
             file << "player_move_speed_multiplier " << playerController_.moveSpeedMultiplier() << '\n';
             if (const auto distance = playerController_.cameraFollowDistance()) {
                 file << "player_camera_follow_distance " << *distance << '\n';
+            }
+            if (const auto height = playerController_.configuredCameraHeight()) {
+                file << "player_camera_height " << *height << '\n';
             }
         }
         if (playerSpawnPosition_.has_value()) {

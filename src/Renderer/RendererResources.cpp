@@ -1787,12 +1787,19 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     constexpr bool coverReferenceViewport = false;
 #endif
     const float aspect = static_cast<float>(extent.width) / extent.height;
+    const bool playerView = playerController_.active() && !terrainEditorActive();
+    const float verticalFov = playerView ? 50.0f : kDefaultSceneVerticalFov;
     ubo.projection = sceneProjection(
         aspect,
         nearPlane,
         100.0f,
-        coverReferenceViewport
+        coverReferenceViewport,
+        verticalFov
     );
+    if (playerView) {
+        // Widen the horizontal frustum by 10% at the selected vertical FOV.
+        ubo.projection[0][0] /= 1.10f;
+    }
 
     if (authoredView_.enabled) {
         const float zoom = authoredView_.minimumAspect > 0.0f
