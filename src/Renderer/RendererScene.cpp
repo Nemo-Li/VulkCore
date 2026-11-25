@@ -414,6 +414,8 @@ void Renderer::appendWaterToScene(const TerrainMeshData& waterMesh) {
         meshData_.materials.size()
     );
     meshData_.materials.push_back(std::move(waterMaterial));
+    // Retain the slot so saved material overrides keep their indices.
+    if (!kWaterRenderingEnabled) return;
 
     const std::uint32_t vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
     const std::uint32_t indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
@@ -590,6 +592,7 @@ void Renderer::appendGrassToScene(const TerrainScene& terrain) {
     };
     for (std::size_t layer = 0; layer < lodNames.size(); ++layer) {
         const auto lod = kGrassLods[layer];
+        if (!kGrassCrossCardsEnabled && lod == GrassLod::CrossCard) continue;
         ModelNode node;
         node.name = lodNames[layer];
         node.nodeId = kGrassLodNodeBase + static_cast<std::uint32_t>(lod);
@@ -1810,6 +1813,13 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         }
     }
     for (const auto& resource : sceneModelResources_) {
+#ifdef VULKCORE_OHOS
+        if (resource.path.filename() == "spawn_woodland.glb") {
+            if (auto* node = findSceneNodeById(meshData_, resource.rootNodeId)) {
+                node->renderEnabled = false;
+            }
+        }
+#endif
         if (!resource.playerModel && std::find(gravityNodeIds.begin(), gravityNodeIds.end(),
             resource.rootNodeId) != gravityNodeIds.end()) {
             modelGravity_.try_emplace(resource.rootNodeId);

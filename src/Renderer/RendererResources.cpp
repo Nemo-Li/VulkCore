@@ -1177,7 +1177,11 @@ std::optional<Renderer::TerrainGrassImages> Renderer::decodeTerrainGrass(const s
         return image;
     };
     TerrainGrassImages images;
-    images.images = {decode("GrassAlb"), decode("GrassCrossAlb", 2), decode("GrassSpm")};
+    images.images = {
+        decode("GrassAlb"),
+        kGrassCrossCardsEnabled ? decode("GrassCrossAlb", 2) : EmbeddedTextureData{},
+        decode("GrassSpm")
+    };
     auto coverage = archive.decodeLayer(entryIndex("GrassCoverAlb"), 0);
     std::vector<std::uint8_t> red(coverage.data.size() / 4);
     for (std::size_t i = 0; i < red.size(); ++i) red[i] = coverage.data[i * 4];
@@ -1190,6 +1194,7 @@ SceneLoadTask Renderer::uploadTerrainGrass(TerrainGrassImages images) {
     TerrainGrassResources resources;
     const std::array targets{&resources.bladeAlbedo, &resources.crossAlbedo, &resources.specular};
     for (std::size_t i = 0; i < targets.size(); ++i) {
+        if (!kGrassCrossCardsEnabled && i == 1) continue;
         auto& image = images.images[i];
         const std::uint32_t layers = i == 1 ? 2 : 1;
         *targets[i] = std::make_unique<Texture>(*context_, image.data, image.width, image.height,

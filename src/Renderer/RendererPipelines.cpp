@@ -125,7 +125,7 @@ void Renderer::createRenderPass() {
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     dependency.dstAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    const std::array<VkAttachmentDescription, 2> attachments = {
+    std::array<VkAttachmentDescription, 2> attachments = {
         colorAttachment,
         depthAttachment
     };
@@ -141,6 +141,18 @@ void Renderer::createRenderPass() {
 
     if (vkCreateRenderPass(context_->device(), &renderPassInfo, nullptr, &renderPass_) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
+    }
+    if constexpr (!kHdrCompositionEnabled) {
+        // Keep the subpass compatible with the existing SDR pipelines and framebuffers.
+        for (auto& attachment : attachments) {
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+        if (vkCreateRenderPass(context_->device(), &renderPassInfo, nullptr, &directSdrRenderPass_) != VK_SUCCESS) {
+            vkDestroyRenderPass(context_->device(), renderPass_, nullptr);
+            renderPass_ = VK_NULL_HANDLE;
+            throw std::runtime_error("failed to create direct SDR render pass");
+        }
     }
 }
 
@@ -532,6 +544,11 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     };
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     shaderStages.reserve(graphicsStages.size());
+#ifdef VULKCORE_OHOS
+    constexpr VkBool32 mobileTerrain = VK_TRUE;
+    constexpr VkSpecializationMapEntry mobileTerrainEntry{0, 0, sizeof(mobileTerrain)};
+    const VkSpecializationInfo mobileTerrainInfo{1, &mobileTerrainEntry, sizeof(mobileTerrain), &mobileTerrain};
+#endif
     for (const ShaderStage stage : graphicsStages) {
         const bool casterStage = shadow && stage == ShaderStage::Fragment;
         std::string shaderName = casterStage ? casterFragment() : configuration.shader(stage);
@@ -554,6 +571,11 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         stageInfo.stage = vkShaderStage(stage);
         stageInfo.module = shaderModule(shaderName);
         stageInfo.pName = "main";
+#ifdef VULKCORE_OHOS
+        if (stage == ShaderStage::Fragment && shaderName == "shader_terrain.frag") {
+            stageInfo.pSpecializationInfo = &mobileTerrainInfo;
+        }
+#endif
         shaderStages.push_back(stageInfo);
     }
 

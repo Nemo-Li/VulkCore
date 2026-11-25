@@ -67,9 +67,8 @@ GrassCoverMask::GrassCoverMask(std::uint32_t width, std::uint32_t height, std::v
 bool GrassCoverMask::contains(glm::vec2 worldPosition) const {
     if (empty()) return true;
 
-    constexpr int layerCount = 3;
-    constexpr int anglesPerSector = 120;
-    constexpr int angleCount = layerCount * anglesPerSector;
+    constexpr int angleCount = 360;
+    constexpr int angleJitterRange = 120;
     static const auto rotations = [] {
         std::array<glm::vec2, angleCount> directions;
         for (int i = 0; i < angleCount; ++i) {
@@ -81,18 +80,15 @@ bool GrassCoverMask::contains(glm::vec2 worldPosition) const {
     const glm::vec2 scaled = worldPosition / kTileSize;
     const glm::vec2 block = glm::floor(scaled);
     const glm::vec2 local = scaled - block - 0.5f;
-    // Seed from the mask block so both LODs agree, even when a root lies in a neighboring draw cell.
+    // Use the world-space mask block to keep its rotation stable across rebuilds.
     const std::uint32_t seed = cellSeed(static_cast<int>(block.x), static_cast<int>(block.y), GrassLod::NearMesh);
-    const int phase = static_cast<int>(seed % angleCount);
-    for (int layer = 0; layer < layerCount; ++layer) {
-        const auto jitter = hashBits(seed + 1u + static_cast<std::uint32_t>(layer)) % anglesPerSector;
-        const int angle = (phase + layer * anglesPerSector + static_cast<int>(jitter)) % angleCount;
-        const glm::vec2 direction = rotations[angle];
-        const glm::vec2 rotated(direction.x * local.x - direction.y * local.y,
-                                direction.y * local.x + direction.x * local.y);
-        if (matches(rotated + 0.5f)) return true;
-    }
-    return false;
+    // Retain the original first layer's angle in each block.
+    const auto phase = seed % angleCount;
+    const auto jitter = hashBits(seed + 1u) % angleJitterRange;
+    const glm::vec2 direction = rotations[(phase + jitter) % angleCount];
+    const glm::vec2 rotated(direction.x * local.x - direction.y * local.y,
+                            direction.y * local.x + direction.x * local.y);
+    return matches(rotated + 0.5f);
 }
 
 bool GrassCoverMask::matches(glm::vec2 uv) const {
@@ -262,6 +258,7 @@ bool GrassCoverage::update(const TerrainScene& terrain, glm::vec2 center) {
 
     for (std::size_t layer = 0; layer < cells_.size(); ++layer) {
         const auto lod = kGrassLods[layer];
+        if (!kGrassCrossCardsEnabled && lod == GrassLod::CrossCard) continue;
         const auto& lodSettings = settings(lod);
         auto& cache = cells_[layer];
         const float span = lodSettings.cellSize;

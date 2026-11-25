@@ -442,6 +442,8 @@ void Renderer::recordCommandBuffer(
         const MaterialData& material = meshData_.materials[index];
         if (material.shaderConfiguration.shader(ShaderStage::Vertex).starts_with("shader_grass")
             != grassLod.has_value()) continue;
+        const bool waterShader = isWaterShaderConfiguration(material.shaderConfiguration);
+        if (!kWaterRenderingEnabled && waterShader) continue;
         if (material.transitionOpacity && transitionSettings_.enabled &&
             (transitionPlayer_.progress < material.transitionVisibleFrom ||
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
@@ -469,8 +471,7 @@ void Renderer::recordCommandBuffer(
                 continue;
             }
         }
-        const bool readsOpaque = material.samplesOpaqueScene ||
-            isWaterShaderConfiguration(material.shaderConfiguration);
+        const bool readsOpaque = material.samplesOpaqueScene || waterShader;
         needsOpaqueSnapshot |= readsOpaque;
         auto& queue = readsOpaque || isTransparentMaterial(material) ? transparent : opaque;
         queue.push_back({&part, index, grassLod});
@@ -552,7 +553,7 @@ void Renderer::recordCommandBuffer(
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
             if (*item.grassLod == GrassLod::CrossCard) materialPushConstants.waterSurface.y = kGrassCardMinWidth;
             if (*item.grassLod == GrassLod::NearMesh) {
-                // Near grass has no fade-in, leaving waterFlow.x free for the growth noise frequency.
+                // LOD0 has no fade-in, so reuse the first component for the growth noise frequency.
                 materialPushConstants.waterFlow.x = 1.0f / grassGrowth_.noiseSize;
                 materialPushConstants.waterSurface.y = glm::radians(grassGrowth_.minimumTilt);
                 materialPushConstants.waterSurface.z = glm::radians(grassGrowth_.maximumTilt);
@@ -749,17 +750,21 @@ void Renderer::recordCommandBuffer(
     const SceneRenderTarget& sceneTarget = sceneRenderTargets_[currentFrame_];
     const bool hdr = hdrComposition_ != nullptr;
     const auto hdrSettings = hdr ? realtimeHdrSettings(false) : hdrSettings_;
-    if (!hdr || needsOpaqueSnapshot) {
+    const std::uint32_t postProcessEffect = !kHdrCompositionEnabled && postProcessEffect_ == kBloomDemoIndex
+        ? 0u : postProcessEffect_;
+    const bool directSdr = directSdrRenderPass_ && !needsOpaqueSnapshot && postProcessEffect == 0;
+    const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
+    const glm::vec3 background = hdr ? hdrSettings.clearColor
+        : (isTornadoPreview ? glm::vec3(0.0015f, 0.0025f, 0.0100f)
+                            : glm::vec3(0.015f, 0.02f, 0.03f));
+
+    if ((!hdr && !directSdr) || needsOpaqueSnapshot) {
         VkRenderPassBeginInfo sceneRenderPassInfo{};
         sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         sceneRenderPassInfo.renderPass = sceneRenderPass_;
         sceneRenderPassInfo.framebuffer = sceneTarget.framebuffer;
         sceneRenderPassInfo.renderArea.offset = {0, 0};
         sceneRenderPassInfo.renderArea.extent = extent;
-        const bool isTornadoPreview = currentScenePath_.filename() == "tornado.scene";
-        const glm::vec3 background = hdr ? hdrSettings.clearColor
-            : (isTornadoPreview ? glm::vec3(0.0015f, 0.0025f, 0.0100f)
-                                : glm::vec3(0.015f, 0.02f, 0.03f));
         std::array<VkClearValue, 2> sceneClearValues{};
         sceneClearValues[0].color = {{background.r, background.g, background.b, 1.0f}};
         sceneClearValues[1].depthStencil = {1.0f, 0};
@@ -809,53 +814,58 @@ void Renderer::recordCommandBuffer(
                 return drawRealtimePost(commandBuffer, source, true);
             }) : HdrComposition::PostDraw{});
     } else {
-        recordLegacySceneTransfer(commandBuffer, imageIndex);
+        if (!directSdr) recordLegacySceneTransfer(commandBuffer, imageIndex);
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = renderPass_;
+        renderPassInfo.renderPass = directSdr ? directSdrRenderPass_ : renderPass_;
         renderPassInfo.framebuffer = swapChain_->framebuffers()[imageIndex];
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = extent;
-        const std::array<VkClearValue, 2> clearValues = {{
-            {{{0.015f, 0.02f, 0.03f, 1.0f}}},
-            {{{1.0f, 0}}}
-        }};
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{background.r, background.g, background.b, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
+        if (directSdr) {
+            renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+            renderPassInfo.pClearValues = clearValues.data();
+        }
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         bindSceneViewport();
 
-        // The demo is a regular full-screen pass over the off-screen scene. It
-        // uses the same descriptor set and push-constant ABI as material shaders,
-        // so no special render target or model-dependent path is introduced.
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipeline_);
-        const VkDescriptorSet& postProcessDescriptorSet =
-            descriptorSets_[static_cast<std::size_t>(currentFrame_) * materialCount];
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout_,
-            0,
-            1,
-            &postProcessDescriptorSet,
-            1,
-            &uniformOffset
-        );
-        MaterialPushConstants postProcessConstants{};
-        postProcessConstants.textureFlags = postProcessEffect_;
-        postProcessConstants.metallic = postProcessStrength_;
-        postProcessConstants.roughness = postProcessParameter_;
-        postProcessConstants.opacity = postProcessSplitView_ ? 1.0f : 0.0f;
-        postProcessConstants.waterFlow = glm::vec4(postProcessSplitPosition_, 0.0f, 0.0f, 0.0f);
-        vkCmdPushConstants(
-            commandBuffer,
-            pipelineLayout_,
-            kMaterialPushConstantStageFlags,
-            0,
-            sizeof(MaterialPushConstants),
-            &postProcessConstants
-        );
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        if (directSdr) {
+            drawOpaque(false);
+        } else {
+            // The demo is a regular full-screen pass over the off-screen scene. It
+            // uses the same descriptor set and push-constant ABI as material shaders,
+            // so no special render target or model-dependent path is introduced.
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipeline_);
+            const VkDescriptorSet& postProcessDescriptorSet =
+                descriptorSets_[static_cast<std::size_t>(currentFrame_) * materialCount];
+            vkCmdBindDescriptorSets(
+                commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout_,
+                0,
+                1,
+                &postProcessDescriptorSet,
+                1,
+                &uniformOffset
+            );
+            MaterialPushConstants postProcessConstants{};
+            postProcessConstants.textureFlags = postProcessEffect;
+            postProcessConstants.metallic = postProcessStrength_;
+            postProcessConstants.roughness = postProcessParameter_;
+            postProcessConstants.opacity = postProcessSplitView_ ? 1.0f : 0.0f;
+            postProcessConstants.waterFlow = glm::vec4(postProcessSplitPosition_, 0.0f, 0.0f, 0.0f);
+            vkCmdPushConstants(
+                commandBuffer,
+                pipelineLayout_,
+                kMaterialPushConstantStageFlags,
+                0,
+                sizeof(MaterialPushConstants),
+                &postProcessConstants
+            );
+            vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        }
 
         boundPipeline = VK_NULL_HANDLE;
         boundSet = VK_NULL_HANDLE;

@@ -28,6 +28,12 @@ inline constexpr std::array kGrassLods{
     GrassLod::NearMesh, GrassLod::CrossCard, GrassLod::FlowerCard, GrassLod::YellowFlowerCard
 };
 
+#ifdef VULKCORE_OHOS
+inline constexpr bool kGrassCrossCardsEnabled = false;
+#else
+inline constexpr bool kGrassCrossCardsEnabled = true;
+#endif
+
 inline std::optional<GrassLod> grassLodForLayer(std::uint32_t layer) {
     for (const auto lod : kGrassLods) {
         if (layer == static_cast<std::uint32_t>(lod)) return lod;
@@ -39,7 +45,7 @@ inline constexpr bool isGrassVegetation(GrassLod lod) {
     return lod == GrassLod::NearMesh || lod == GrassLod::CrossCard;
 }
 
-// Union of three rotations of the linear GrassCoverAlb red channel per world XZ block.
+// One sample of the linear GrassCoverAlb red channel with a rotation per world XZ block.
 class GrassCoverMask {
 public:
     static constexpr float kTileSize = 12.0f;

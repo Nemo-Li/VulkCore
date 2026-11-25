@@ -5,13 +5,13 @@
 namespace VulkCore {
 
 void Renderer::createSunShadowResources() {
+#ifdef VULKCORE_OHOS
+    // Terrain would otherwise be submitted again for each cascade.
+    return;
+#endif
     const VkDevice device = context_->device();
     const VkPhysicalDevice physicalDevice = context_->physicalDevice();
-#ifdef VULKCORE_OHOS
-    constexpr std::uint32_t tileSize = 1024;
-#else
     constexpr std::uint32_t tileSize = 1536;
-#endif
     constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkPhysicalDeviceProperties deviceProperties{};

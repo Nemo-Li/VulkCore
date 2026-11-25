@@ -69,6 +69,13 @@ constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
 constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
 constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
 constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
+#ifdef VULKCORE_OHOS
+constexpr bool kWaterRenderingEnabled = false;
+constexpr bool kHdrCompositionEnabled = false;
+#else
+constexpr bool kWaterRenderingEnabled = true;
+constexpr bool kHdrCompositionEnabled = true;
+#endif
 constexpr std::uint32_t kParticleSceneNodeBase = 0xD0000000u;
 // Reserved IDs from older scenes must remain outside the editor's allocation range.
 constexpr std::uint32_t kLegacyPlayerEffectNodeBase = 0xDFFFFFF0u;
@@ -76,6 +83,8 @@ constexpr std::uint32_t kTornadoPreviewNodeId = 0xDFFFFFF3u;
 constexpr std::uint32_t kSceneModelNodeStride = 1'000'000u;
 constexpr char kDefaultVertexShader[] = "shader_base.vert";
 constexpr char kDefaultFragmentShader[] = "shader_base.frag";
+
+constexpr std::uint32_t kBloomDemoIndex = 5;
 
 struct PostProcessDemo {
     const char* name;

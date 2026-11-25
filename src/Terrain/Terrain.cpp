@@ -1353,8 +1353,13 @@ TerrainMaterialLayers TerrainScene::buildMaterialLayers(const std::array<int, 25
         const auto offset = (static_cast<std::size_t>(layer) * padded * padded + (z + 1) * padded + x + 1) * 4;
         return result.pixels.data() + offset;
     };
-    for (const auto& [position, layer] : layersByPosition) {
-        const auto [span, centerX, centerZ] = position;
+    for (const auto& entry : layersByPosition) {
+        // Older OHOS Clang versions cannot capture structured bindings.
+        const auto& position = entry.first;
+        const float span = std::get<0>(position);
+        const float centerX = std::get<1>(position);
+        const float centerZ = std::get<2>(position);
+        const int layer = entry.second;
         const auto writeGutter = [&](int x, int z) {
             const int dx = x < 0 ? -1 : (x == size ? 1 : 0);
             const int dz = z < 0 ? -1 : (z == size ? 1 : 0);
@@ -1412,7 +1417,9 @@ TerrainMacroAlbedo TerrainScene::bakeMacroAlbedo(const TerrainMaterialLayers& la
     map.width = dims.x;
     map.height = dims.y;
     map.pixels.resize(static_cast<std::size_t>(map.width) * map.height * 4);
-    if (std::ranges::any_of(palette, [](glm::vec4 material) { return material.w > 0.0f; })) {
+    if (std::any_of(palette.begin(), palette.end(), [](const glm::vec4& material) {
+            return material.w > 0.0f;
+        })) {
         map.rockCoverage.resize(map.pixels.size());
     }
     constexpr int padded = kTerrainMaterialPaddedResolution;

@@ -465,6 +465,7 @@ private:
     std::unique_ptr<SwapChain> swapChain_;
 
     VkRenderPass renderPass_ = VK_NULL_HANDLE;
+    VkRenderPass directSdrRenderPass_ = VK_NULL_HANDLE;
     VkRenderPass sceneRenderPass_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;

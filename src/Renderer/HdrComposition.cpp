@@ -526,6 +526,8 @@ void HdrComposition::cleanup() {
 void Renderer::configureHdrComposition() {
     invalidateRealtimeEffectPipelines();
     hdrComposition_.reset();
+    if constexpr (!kHdrCompositionEnabled) return;
+
     const bool realtimePost = hasRealtimePostEffects();
     const auto settings = realtimeHdrSettings(true);
     if (!settings.enabled && !realtimePost) return;

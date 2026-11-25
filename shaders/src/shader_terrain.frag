@@ -32,6 +32,8 @@ layout(push_constant) uniform MaterialPushConstants {
     vec4 waterSurface;
 } material;
 
+layout(constant_id = 0) const bool mobileTerrain = false;
+
 const float detailTileSize = 4.0;
 
 struct TerrainProjection {
@@ -95,12 +97,13 @@ void main() {
     // in alpha so gaps in a terrain pack do not bleed black through the mips.
     vec4 macro = texture(macroAlbedo, fragMacroUv);
     if (textureSize(macroAlbedo, 0).x < 2 || macro.a < 1.0 / 255.0) macroBlend = 0.0;
+    else if (mobileTerrain) macroBlend = 1.0;
     vec3 albedo = macro.rgb / max(macro.a, 1.0 / 255.0);
 
     float nearBlend = 1.0 - macroBlend;
     float middleBlend = smoothstep(0.2, 0.95, macroBlend);
-    float strata = middleBlend * rockBandFade(rockStrataFrequency, dx, dy);
-    float chips = middleBlend * rockBandFade(rockChipsFrequency, dx, dy);
+    float strata = mobileTerrain ? 0.0 : middleBlend * rockBandFade(rockStrataFrequency, dx, dy);
+    float chips = mobileTerrain ? 0.0 : middleBlend * rockBandFade(rockChipsFrequency, dx, dy);
     vec4 grass = vec4(0.0);
     if (material.waterSurface.x > 0.0) grass = textureGrad(grassGroundCover, fragMacroUv, macroDx, macroDy);
     float rock = 0.0;
@@ -119,7 +122,7 @@ void main() {
 
     vec3 gradient = vec3(0.0);
     float ambientVisibility = 1.0;
-    if (rock > 0.0) {
+    if (!mobileTerrain && rock > 0.0) {
         float grain = nearBlend * rockBandFade(vec3(rockGrainFrequency), dx, dy);
         if (grain > 0.0) {
             gradient += 0.32 * grain * rock * rockGrainGradient(fragTerrainPosition * rockGrainFrequency,
@@ -140,7 +143,7 @@ void main() {
     vec3 normal = normalize(geometricNormal - (gradient - geometricNormal * dot(gradient, geometricNormal)));
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float diffuse = max(dot(normal, lightDirection), 0.0);
-    float visibility = sunVisibility(fragWorldPosition, geometricNormal);
+    float visibility = mobileTerrain ? 1.0 : sunVisibility(fragWorldPosition, geometricNormal);
     vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a;
     vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility;
     vec3 pointLight = effectPointLighting(fragWorldPosition, normal);
@@ -151,13 +154,18 @@ void main() {
         float farBlend = smoothstep(material.waterFlow.w, material.waterFlow.w * 2.8, worldDistance);
         float rockMask = smoothstep(0.15, 0.75, rock);
         float canopy = mix(mix(0.20, 0.90, distanceBlend), 0.08, farBlend) * (1.0 - rockMask);
-        vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
-        float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
-        canopy *= 1.0 - roadMask;
+        if (!mobileTerrain) {
+            vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
+            float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
+            canopy *= 1.0 - roadMask;
+        }
         vec3 canopyLight = ambient + sunlight * meadowCanopyDiffuse(geometricNormal, lightDirection) + pointLight;
         groundColor = groundColor * (1.0 - canopy * grass.a) +
             meadowCanopyAlbedo(grass.rgb) * canopyLight * canopy;
     }
-    outColor = vec4(applySceneFog(groundColor * material.baseColor.rgb,
-        sceneFogAt(fragWorldPosition, true)), material.opacity);
+    vec3 cameraRay = fragWorldPosition - ubo.cameraPosition.xyz;
+    vec4 fog = mobileTerrain
+        ? distanceFogAt(cameraRay / max(length(cameraRay), 1e-8), worldDistance, true)
+        : sceneFogAt(fragWorldPosition, true);
+    outColor = vec4(applySceneFog(groundColor * material.baseColor.rgb, fog), material.opacity);
 }

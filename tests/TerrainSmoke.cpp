@@ -461,19 +461,24 @@ void checkGrassCoverage() {
     require(cover.contains({6.0f, 6.0f}) && cover.contains({-6.0f, -6.0f}),
         "a bright block center must survive all rotations, including in negative coordinates");
     int coveredCount = 0;
-    int otherBlockDifferences = 0;
+    int xNeighborDifferences = 0;
+    int zNeighborDifferences = 0;
     for (int z = 0; z < 24; ++z) {
         for (int x = 0; x < 24; ++x) {
             const glm::vec2 point = (glm::vec2(x, z) + 0.5f) * 0.5f;
             const bool covered = cover.contains(point);
             coveredCount += covered;
-            otherBlockDifferences += covered != cover.contains(point - glm::vec2(24.0f, 12.0f));
+            xNeighborDifferences += covered != cover.contains(point + glm::vec2(GrassCoverMask::kTileSize, 0.0f));
+            zNeighborDifferences += covered != cover.contains(point - glm::vec2(0.0f, GrassCoverMask::kTileSize));
         }
     }
-    require(coveredCount > 24 * 24 * 3 / 4 && otherBlockDifferences > 0,
-        "three independently rotated masks must expand coverage and vary between blocks");
+    require(coveredCount > 0 && coveredCount < 24 * 24 &&
+        xNeighborDifferences > 0 && zNeighborDifferences > 0,
+        "neighboring blocks in both axes must vary the mask pattern");
+    require(!cover.contains({11.0f, 8.0f}) && !cover.contains({6.0f, 1.0f}),
+        "points covered only by the removed rotations must remain bare");
     const GrassCoverMask dark(1, 1, {127});
-    require(!dark.contains({1.0f, -6.0f}), "three below-threshold samples must stay uncovered");
+    require(!dark.contains({1.0f, -6.0f}), "a below-threshold sample must stay uncovered");
     grass.setCoverMask(cover);
     require(grass.update(*scene, {96.0f, 620.0f}), "replacing the cover must rebuild cached grass roots");
     std::array<std::size_t, 2> coverageCounts{};
@@ -484,7 +489,7 @@ void checkGrassCoverage() {
             require(map && map->height > 0.0f, "no instance may cross onto unmapped or bare ground");
             if (!isGrassVegetation(range.lod)) continue;
             if (range.lod == GrassLod::NearMesh) {
-                require(cover.contains({root.x, root.z}), "near grass must use the rotated mask union at every root");
+                require(cover.contains({root.x, root.z}), "near grass must use the block's rotated mask at every root");
             }
             ++coverageCounts[range.lod == GrassLod::NearMesh ? 0 : 1];
         }
@@ -502,10 +507,15 @@ void checkGrassCoverage() {
         std::abs((cross + 1)->motion.x - cross->motion.x - glm::half_pi<float>()) < 0.00001f,
         "LOD1 must draw two perpendicular cards at one root");
     const auto stableCardRoot = cross->rootHeight;
+    const glm::vec2 bladeProbe(96.0f, 620.0f);
+    const auto* blade = nearest(bladeProbe, GrassLod::NearMesh);
+    require(blade != nullptr, "the rotated cover must accept some near blades");
+    const auto stableBladeRoot = blade->rootHeight;
     require(grass.update(*scene, {96.0f, 900.0f}) && grass.instances().empty() &&
         grass.update(*scene, {96.0f, 620.0f}), "leaving the mask blocks must evict and rebuild them");
     cross = nearest({126.0f, 604.0f}, GrassLod::CrossCard);
-    require(cross && cross->rootHeight == stableCardRoot,
+    blade = nearest(bladeProbe, GrassLod::NearMesh);
+    require(cross && cross->rootHeight == stableCardRoot && blade && blade->rootHeight == stableBladeRoot,
         "rotated cover must make the same placement decisions after caches are rebuilt");
 
     std::filesystem::resize_file(greenPath, 100);

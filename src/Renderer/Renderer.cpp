@@ -185,6 +185,7 @@ Renderer::~Renderer() {
     if (descriptorSetLayout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(context_->device(), descriptorSetLayout_, nullptr);
     }
+    vkDestroyRenderPass(context_->device(), directSdrRenderPass_, nullptr);
     if (renderPass_ != VK_NULL_HANDLE) {
         vkDestroyRenderPass(context_->device(), renderPass_, nullptr);
     }

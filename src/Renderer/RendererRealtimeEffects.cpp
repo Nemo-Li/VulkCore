@@ -568,14 +568,16 @@ void Renderer::addRealtimeEffect(std::uint32_t id, const std::filesystem::path& 
     realtimeEffects_.emplace(id, effect);
     try {
         // Pipeline creation validates the imported shaders against the live render passes.
-        const bool addPost = effect->hasPost() && (!hdrComposition_ || !hdrComposition_->effectPostPass());
-        const bool addBloom = realtimeHdrSettings(true).bloomLevels && (!hdrComposition_ || !hdrComposition_->hasBloom());
-        if (addPost || addBloom) {
-            context_->waitIdle();
-            configureHdrComposition();
+        if constexpr (kHdrCompositionEnabled) {
+            const bool addPost = effect->hasPost() && (!hdrComposition_ || !hdrComposition_->effectPostPass());
+            const bool addBloom = realtimeHdrSettings(true).bloomLevels && (!hdrComposition_ || !hdrComposition_->hasBloom());
+            if (addPost || addBloom) {
+                context_->waitIdle();
+                configureHdrComposition();
+            }
+            require(!effect->hasPost() || (hdrComposition_ && hdrComposition_->effectPostPass()),
+                "Effect post-processing requires an HDR-capable Vulkan device.");
         }
-        require(!effect->hasPost() || (hdrComposition_ && hdrComposition_->effectPostPass()),
-            "Effect post-processing requires an HDR-capable Vulkan device.");
         effect->preparePipelines(hdrComposition_ ? hdrComposition_->geometryPass() : renderPass_,
             hdrComposition_ ? hdrComposition_->effectPostPass() : VK_NULL_HANDLE);
         meshData_.additionalNodes.push_back(std::move(node));
@@ -789,7 +791,7 @@ void Renderer::prepareRealtimeEffects(UniformBufferObject& scene) {
             frame.active = visible && time >= 0 && time <= layer.duration;
             if (!frame.active) continue;
             auto at = [&](Track index) { return layer.tracks[index].at(time); };
-            if (layer.kind == Post && at(PostStrength) <= 0.00001f) {
+            if (layer.kind == Post && (!kHdrCompositionEnabled || at(PostStrength) <= 0.00001f)) {
                 frame.active = false;
                 continue;
             }

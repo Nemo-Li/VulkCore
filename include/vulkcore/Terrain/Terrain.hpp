@@ -23,7 +23,12 @@ inline constexpr std::uint32_t kTerrainWaterResolution = 64;
 inline constexpr std::uint32_t kTerrainGrassResolution = 64;
 inline constexpr std::uint32_t kTerrainMaterialResolution = 256;
 inline constexpr std::uint32_t kTerrainMaterialPaddedResolution = kTerrainMaterialResolution + 2;
+// Share the stride between the mesh, collision, and rendered-height queries.
+#ifdef VULKCORE_OHOS
+inline constexpr std::uint32_t kTerrainRenderSampleStride = 4;
+#else
 inline constexpr std::uint32_t kTerrainRenderSampleStride = 2;
+#endif
 
 struct TerrainMaterialInfo {
     std::uint32_t index = 0;
@@ -201,9 +206,7 @@ private:
 };
 
 struct TerrainMeshOptions {
-    // The source tiles are 256x256. A stride of two keeps the generated
-    // terrain practical while reducing the long, visibly planar mountain
-    // faces produced by the previous stride-four mesh.
+    // Sample the 256x256 source tiles at the platform's terrain resolution.
     std::uint32_t sampleStride = kTerrainRenderSampleStride;
 };
 
