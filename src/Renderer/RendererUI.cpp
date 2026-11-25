@@ -275,7 +275,7 @@ void Renderer::updateTransition(float seconds) {
     transitionCameraFov_ = std::lerp(transitionCameraFov_,
         transitionPlayer_.active ? transitionSettings_.activeFov : authoredView_.fov, amount);
     // A player camera's position is constrained by terrain collision.
-    if (playerController_.active() || roadEditorActive()) return;
+    if (playerController_.active() || terrainEditorActive()) return;
 
     transitionCameraOffset_ = std::lerp(transitionCameraOffset_,
         transitionPlayer_.active ? transitionSettings_.distanceOffset : 0.0f, amount);
@@ -289,7 +289,7 @@ void Renderer::updateTransition(float seconds) {
 }
 
 void Renderer::updateCameraOrbit(bool viewportHovered) {
-    if (roadEditorActive() || (!effectCamera_ && (!authoredView_.orbitEnabled || playerController_.active())) ||
+    if (terrainEditorActive() || (!effectCamera_ && (!authoredView_.orbitEnabled || playerController_.active())) ||
         !fixedFrameOutput_.empty()) {
         cameraOrbitDragging_ = false;
         return;
@@ -549,8 +549,7 @@ bool Renderer::buildImGuiFrame() {
         queueSceneClose();
     }
     if (!fullscreen_ && sceneShortcuts && fixedFrameOutput_.empty() && ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
-        sceneEditMode_ = !sceneEditMode_;
-        if (sceneEditMode_) toolUiVisible_ = true;
+        setSceneEditMode(!sceneEditMode_);
     }
 #endif
     if (playerController_.active() && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {

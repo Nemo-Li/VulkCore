@@ -110,6 +110,17 @@ void Renderer::drawEditorFilePicker() {
 #endif
 }
 
+void Renderer::setSceneEditMode(bool enabled) {
+    if (enabled && !sceneEditMode_) {
+        sceneEditTool_ = SceneEditTool::LocatePlayer;
+        toolUiVisible_ = true;
+#ifdef VULKCORE_HAS_EFFECT_EDITOR
+        selectSceneWorkspace_ = true;
+#endif
+    }
+    sceneEditMode_ = enabled;
+}
+
 bool Renderer::drawGameEditor() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -140,7 +151,7 @@ bool Renderer::drawGameEditor() {
     }
     if (effectEditorSelected_) {
         sceneEditorViewport_ = glm::vec4(0.0f);
-        roadViewportOwnsInput_ = false;
+        terrainViewportOwnsInput_ = false;
         const auto top = ImGui::GetCursorScreenPos();
         const auto size = ImGui::GetContentRegionAvail();
         if (!effectEditorView_) effectEditorView_ = std::make_unique<EffectEditorView>(window_);
@@ -218,10 +229,14 @@ bool Renderer::drawGameEditor() {
                 currentScenePath_.empty() ? scenesDirectory_ : currentScenePath_.parent_path(),
                 [this](const auto& path) { importRealtimeEffect(path); });
         }
-        ImGui::MenuItem("Edit Mode", "F5", &sceneEditMode_);
+        if (ImGui::MenuItem("Edit Mode", "F5", sceneEditMode_)) setSceneEditMode(!sceneEditMode_);
         if (sceneEditMode_ && terrainScene_ && ImGui::BeginMenu("Edit Tool")) {
-            if (ImGui::MenuItem("Road Brush", nullptr, roadBrushEnabled_)) roadBrushEnabled_ = true;
-            if (ImGui::MenuItem("Select / Transform", nullptr, !roadBrushEnabled_)) roadBrushEnabled_ = false;
+            const auto tool = [&](const char* label, SceneEditTool value) {
+                if (ImGui::MenuItem(label, nullptr, sceneEditTool_ == value)) sceneEditTool_ = value;
+            };
+            tool("Locate Player", SceneEditTool::LocatePlayer);
+            tool("Road Brush", SceneEditTool::RoadBrush);
+            tool("Select / Transform", SceneEditTool::SelectTransform);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Tools")) {
@@ -273,14 +288,14 @@ bool Renderer::drawGameEditor() {
         acceptSceneModelDrop();
         ImGui::EndDragDropTarget();
     }
-    bool roadViewportHovered = false;
-    roadViewportOwnsInput_ = false;
-    if (roadEditorActive() && sceneViewport.GetWidth() > 0.0f) {
-        // Capture the drag before ImGui treats it as a click on the window background.
+    bool terrainViewportHovered = false;
+    terrainViewportOwnsInput_ = false;
+    if (terrainEditorActive() && sceneViewport.GetWidth() > 0.0f) {
+        // Capture the press before ImGui treats it as a click on the window background.
         ImGui::SetCursorScreenPos(sceneViewport.Min);
-        ImGui::InvisibleButton("##RoadViewport", sceneViewport.GetSize());
-        roadViewportOwnsInput_ = ImGui::IsItemActive();
-        roadViewportHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
+        ImGui::InvisibleButton("##TerrainViewport", sceneViewport.GetSize());
+        terrainViewportOwnsInput_ = ImGui::IsItemActive();
+        terrainViewportHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
     }
     ImGui::SetCursorScreenPos(ImVec2(origin.x + margin + width - right, panelY));
     if (ImGui::BeginChild("Inspector", ImVec2(right, panelHeight), ImGuiChildFlags_Borders)) drawGameInspector();
@@ -335,12 +350,19 @@ bool Renderer::drawGameEditor() {
     ImGui::End();
     const bool miniMapHovered = drawMiniMap({sceneViewport.Min.x, sceneViewport.Min.y},
         {sceneViewport.GetWidth(), sceneViewport.GetHeight()});
-    return (roadEditorActive() ? roadViewportHovered : hovered) && !miniMapHovered;
+    return (terrainEditorActive() ? terrainViewportHovered : hovered) && !miniMapHovered;
+}
+
+bool Renderer::movePlayerSpawn(const glm::vec2& position) {
+    if (!terrainScene_ || !playerController_.moveSpawn(*terrainScene_, *physicsWorld_, position)) return false;
+    playerSpawnPosition_ = playerController_.spawnPosition();
+    editorDirty_ = true;
+    return true;
 }
 
 glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportHovered) {
     const auto& io = ImGui::GetIO();
-    if (!sceneEditMode_ || roadEditorActive() || editorSelection_ != EditorSelection::Node || !selectedModelNode_ ||
+    if (!sceneEditMode_ || terrainEditorActive() || editorSelection_ != EditorSelection::Node || !selectedModelNode_ ||
         pendingSceneChange_ != EditorSceneChange::None || pendingSceneNodeRemoval_ ||
         io.KeyMods != 0 || io.WantTextInput || ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() ||
         ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
@@ -389,9 +411,7 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
     if (node.objectType == SceneObjectType::Player && playerController_.active()) {
         // Keep the physics capsule and the saved spawn in sync with the edited player position.
         const glm::vec3 destination = playerController_.position() + movement / modelScale_;
-        if (playerController_.moveSpawn(*terrainScene_, *physicsWorld_, {destination.x, destination.z})) {
-            playerSpawnPosition_ = playerController_.spawnPosition();
-            editorDirty_ = true;
+        if (movePlayerSpawn({destination.x, destination.z})) {
             updatePlayerCamera();
             updateCameraBasis();
         }
@@ -512,7 +532,7 @@ bool Renderer::editorDeletePressed() const {
 
 void Renderer::drawGameOutliner() {
     ImGui::SeparatorText("Scene");
-    if (sceneEditMode_ && !roadEditorActive()) ImGui::TextDisabled("WASD Move / Wheel Scale");
+    if (sceneEditMode_ && !terrainEditorActive()) ImGui::TextDisabled("WASD Move / Wheel Scale");
     const auto select = [&](const char* label, EditorSelection selection) {
         if (ImGui::Selectable(label, editorSelection_ == selection)) {
             editorSelection_ = selection;
@@ -747,9 +767,19 @@ void Renderer::drawEnemyPatrol(const ModelNode& modelRoot) {
 }
 
 void Renderer::drawGameInspector() {
-    if (roadEditorActive()) {
-        drawRoadBrushControls();
-        return;
+    if (terrainEditorActive()) {
+        if (sceneEditTool_ == SceneEditTool::RoadBrush) {
+            drawRoadBrushControls();
+            return;
+        }
+        ImGui::SeparatorText("Locate Player");
+        drawTerrainEditorViewControl();
+        if (playerController_.active()) {
+            ImGui::TextWrapped("Left click the terrain to set the player spawn.");
+        } else {
+            ImGui::TextWrapped("Add a player to set a spawn position.");
+        }
+        ImGui::TextDisabled("WASD to move, wheel to zoom\nRight drag to look");
     }
     ImGui::SeparatorText("Inspector");
     ImGui::PushItemWidth(std::max(65.0f, ImGui::GetContentRegionAvail().x * 0.53f));

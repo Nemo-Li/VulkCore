@@ -183,9 +183,13 @@ private:
     void destroyViewerTexture();
     bool drawGameEditor();
     void queueSceneClose();
+    void setSceneEditMode(bool enabled);
     void drawRoadBrushControls();
-    void updateRoadEditorCamera(float deltaSeconds, bool viewportHovered);
-    void updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHovered);
+    void drawTerrainEditorViewControl();
+    void updateTerrainEditorCamera(float deltaSeconds, bool viewportHovered);
+    void updateTerrainEditorTool(const glm::mat4& clipFromScene, bool viewportHovered);
+    bool movePlayerSpawn(const glm::vec2& position);
+    std::optional<glm::vec3> terrainHitAtMouse(const glm::mat4& clipFromScene) const;
     glm::vec3 updateGameEditorSelection(float deltaSeconds, bool viewportHovered);
     void drawGameSelectionOutline(const glm::mat4& clipFromScene);
     bool drawMiniMap(const glm::vec2& viewportOrigin, const glm::vec2& viewportSize);
@@ -376,7 +380,7 @@ private:
     void createDescriptorSets();
     void bindRoadIndex(std::uint32_t frame);
     void updateRoadIndex();
-    bool roadEditorActive() const;
+    bool terrainEditorActive() const;
     void updateSceneTextureDescriptors();
     void createCommandBuffers();
     void createSyncObjects();
@@ -640,7 +644,9 @@ private:
     std::unique_ptr<EffectEditorView> effectEditorView_;
 #endif
 #ifndef VULKCORE_OHOS
-    struct RoadEditorCamera {
+    enum class SceneEditTool { LocatePlayer, RoadBrush, SelectTransform };
+    SceneEditTool sceneEditTool_ = SceneEditTool::LocatePlayer;
+    struct TerrainEditorCamera {
         glm::vec3 originalPosition;
         glm::vec3 originalTarget;
         float yaw;
@@ -648,11 +654,10 @@ private:
         float distance;
         bool dragging = false;
     };
-    std::optional<RoadEditorCamera> roadEditorCamera_;
-    bool roadBrushEnabled_ = true;
-    bool roadTopDown_ = false;
+    std::optional<TerrainEditorCamera> terrainEditorCamera_;
+    bool terrainEditorTopDown_ = false;
     bool roadBrushDragging_ = false;
-    bool roadViewportOwnsInput_ = false;
+    bool terrainViewportOwnsInput_ = false;
     bool roadStrokeHasPoint_ = false;
     RoadSurface roadBrushSurface_ = RoadSurface::Mud;
     float roadBrushRadius_ = RoadPaint::kDefaultRadius;

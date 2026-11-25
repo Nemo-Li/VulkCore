@@ -612,13 +612,13 @@ void Renderer::frameRealtimeEffect(const ModelNode& node) {
     const auto& effect = *realtimeEffects_.at(node.nodeId);
     if (!previousSceneCamera_) {
         previousSceneCamera_ = SceneCamera{cameraPosition_, cameraTarget_, effectCamera_};
-        if (roadEditorCamera_ && !playerController_.active()) {
-            previousSceneCamera_->position = roadEditorCamera_->originalPosition;
-            previousSceneCamera_->target = roadEditorCamera_->originalTarget;
+        if (terrainEditorCamera_ && !playerController_.active()) {
+            previousSceneCamera_->position = terrainEditorCamera_->originalPosition;
+            previousSceneCamera_->target = terrainEditorCamera_->originalTarget;
         }
     }
-    roadEditorCamera_.reset();
-    roadBrushEnabled_ = false;
+    terrainEditorCamera_.reset();
+    sceneEditTool_ = SceneEditTool::SelectTransform;
 
     const auto basis = glm::rotation(glm::vec3(0, 1, 0), realtimeEffectSceneUp());
     const auto rotation = glm::quat(glm::radians(node.transformRotationDegrees)) * basis;

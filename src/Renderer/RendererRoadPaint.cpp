@@ -1,19 +1,18 @@
 #include "RendererImplementation.hpp"
 
 #ifndef VULKCORE_OHOS
-#include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 #endif
 
 namespace VulkCore {
 
-bool Renderer::roadEditorActive() const {
+bool Renderer::terrainEditorActive() const {
 #ifndef VULKCORE_OHOS
 #ifdef VULKCORE_HAS_EFFECT_EDITOR
-    if (toolUiVisible() && effectEditorSelected_) return false;
+    if (effectEditorSelected_) return false;
 #endif
-    return mode_ == Mode::Scene && sceneEditMode_ && terrainScene_ && roadBrushEnabled_ &&
-        fixedFrameOutput_.empty();
+    return mode_ == Mode::Scene && toolUiVisible() && sceneEditMode_ && terrainScene_ &&
+        sceneEditTool_ != SceneEditTool::SelectTransform && fixedFrameOutput_.empty();
 #else
     return false;
 #endif
@@ -54,14 +53,14 @@ void Renderer::updateRoadIndex() {
 #ifndef VULKCORE_OHOS
 namespace {
 
-bool roadInputAvailable(bool viewportOwnsInput) {
+bool terrainInputAvailable(bool viewportOwnsInput) {
     const auto& io = ImGui::GetIO();
     return !io.AppFocusLost && !io.WantTextInput && (viewportOwnsInput || !ImGui::IsAnyItemActive()) &&
         !ImGui::GetDragDropPayload() &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
-bool insideRoadViewport(const glm::vec4& viewport, ImVec2 point) {
+bool insideTerrainViewport(const glm::vec4& viewport, ImVec2 point) {
     return point.x >= viewport.x && point.x < viewport.z &&
         point.y >= viewport.y && point.y < viewport.w;
 }
@@ -85,25 +84,32 @@ void Renderer::drawRoadBrushControls() {
             editorDirty_ = true;
         }
     }
-    constexpr const char* views[] = {"Perspective", "Top-down"};
-    int view = roadTopDown_ ? 1 : 0;
-    if (ImGui::Combo("View", &view, views, IM_ARRAYSIZE(views))) roadTopDown_ = view == 1;
+    drawTerrainEditorViewControl();
     ImGui::TextWrapped("Left drag: paint\nRight drag: look\nWASD: move\nWheel: zoom");
     if (roadPaint_.full()) ImGui::TextWrapped("This scene has reached its road stroke limit.");
 }
 
-void Renderer::updateRoadEditorCamera(float deltaSeconds, bool viewportHovered) {
-    if (!roadEditorActive()) {
-        if (roadEditorCamera_) {
-            if (!playerController_.active()) {
-                cameraPosition_ = roadEditorCamera_->originalPosition;
-                cameraTarget_ = roadEditorCamera_->originalTarget;
-                cameraBasisInitialized_ = false;
-            }
-            roadEditorCamera_.reset();
-        }
+void Renderer::drawTerrainEditorViewControl() {
+    constexpr const char* views[] = {"Perspective", "Top-down"};
+    int view = terrainEditorTopDown_ ? 1 : 0;
+    if (ImGui::Combo("View", &view, views, IM_ARRAYSIZE(views))) terrainEditorTopDown_ = view == 1;
+}
+
+void Renderer::updateTerrainEditorCamera(float deltaSeconds, bool viewportHovered) {
+    const bool active = terrainEditorActive();
+    if (!active || sceneEditTool_ != SceneEditTool::RoadBrush) {
         roadBrushDragging_ = false;
         roadStrokeHasPoint_ = false;
+    }
+    if (!active) {
+        if (terrainEditorCamera_) {
+            if (!playerController_.active()) {
+                cameraPosition_ = terrainEditorCamera_->originalPosition;
+                cameraTarget_ = terrainEditorCamera_->originalTarget;
+                cameraBasisInitialized_ = false;
+            }
+            terrainEditorCamera_.reset();
+        }
         return;
     }
 
@@ -114,27 +120,27 @@ void Renderer::updateRoadEditorCamera(float deltaSeconds, bool viewportHovered) 
     const auto& boundsMin = terrain.boundsMinimum();
     const auto& boundsMax = terrain.boundsMaximum();
     const float maxDistance = std::max(60.0f, glm::length(boundsMax - boundsMin));
-    if (!roadEditorCamera_) {
+    if (!terrainEditorCamera_) {
         const glm::vec3 offset = cameraPosition_ - cameraTarget_;
         const float distance = glm::length(offset);
         const float yaw = std::atan2(offset.x, offset.z);
         const float pitch = distance > 0.0f ? std::asin(std::clamp(offset.y / distance, -1.0f, 1.0f)) : 0.0f;
-        roadEditorCamera_ = RoadEditorCamera{cameraPosition_, cameraTarget_, yaw,
+        terrainEditorCamera_ = TerrainEditorCamera{cameraPosition_, cameraTarget_, yaw,
             std::clamp(pitch, glm::radians(38.0f), glm::radians(85.0f)),
             hasPlayer ? 24.0f : std::clamp(distance / modelScale_, 12.0f, maxDistance)};
         if (hasPlayer) cameraTarget_ = toRenderUnits(playerController_.position());
     }
 
-    auto& camera = *roadEditorCamera_;
+    auto& camera = *terrainEditorCamera_;
     const auto& io = ImGui::GetIO();
-    const bool available = roadInputAvailable(roadViewportOwnsInput_) && pendingSceneChange_ == EditorSceneChange::None;
-    const bool overScene = available && viewportHovered && insideRoadViewport(sceneEditorViewport_, io.MousePos);
+    const bool available = terrainInputAvailable(terrainViewportOwnsInput_) && pendingSceneChange_ == EditorSceneChange::None;
+    const bool overScene = available && viewportHovered && insideTerrainViewport(sceneEditorViewport_, io.MousePos);
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) camera.dragging = overScene;
     if (!available || !ImGui::IsMouseDown(ImGuiMouseButton_Right)) camera.dragging = false;
     if (camera.dragging && !ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         constexpr float radiansPerPixel = 0.005f;
         camera.yaw = std::remainder(camera.yaw - io.MouseDelta.x * radiansPerPixel, glm::two_pi<float>());
-        if (!roadTopDown_) {
+        if (!terrainEditorTopDown_) {
             camera.pitch = std::clamp(camera.pitch + io.MouseDelta.y * radiansPerPixel,
                 glm::radians(-45.0f), glm::radians(85.0f));
         }
@@ -160,7 +166,7 @@ void Renderer::updateRoadEditorCamera(float deltaSeconds, bool viewportHovered) 
         }
     }
 
-    if (roadTopDown_) {
+    if (terrainEditorTopDown_) {
         const float height = std::max(boundsMax.y + 10.0f, toTerrainUnits(cameraTarget_).y + camera.distance);
         cameraPosition_ = {cameraTarget_.x, (height - modelCenter_.y) * modelScale_, cameraTarget_.z};
         cameraUp_ = -back;
@@ -177,11 +183,18 @@ void Renderer::updateRoadEditorCamera(float deltaSeconds, bool viewportHovered) 
     cameraBasisInitialized_ = true;
 }
 
-void Renderer::updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHovered) {
+void Renderer::updateTerrainEditorTool(const glm::mat4& clipFromScene, bool viewportHovered) {
     const auto& io = ImGui::GetIO();
-    const bool available = roadInputAvailable(roadViewportOwnsInput_) && pendingSceneChange_ == EditorSceneChange::None &&
-        !roadEditorCamera_->dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Right) && io.KeyMods == 0;
-    const bool overScene = available && viewportHovered && insideRoadViewport(sceneEditorViewport_, io.MousePos);
+    const bool available = terrainInputAvailable(terrainViewportOwnsInput_) && pendingSceneChange_ == EditorSceneChange::None &&
+        !terrainEditorCamera_->dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Right) && io.KeyMods == 0;
+    const bool overScene = available && viewportHovered && insideTerrainViewport(sceneEditorViewport_, io.MousePos);
+    if (sceneEditTool_ == SceneEditTool::LocatePlayer) {
+        if (overScene && playerController_.active() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (const auto hit = terrainHitAtMouse(clipFromScene)) movePlayerSpawn({hit->x, hit->z});
+        }
+        return;
+    }
+
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         roadBrushDragging_ = overScene;
         roadStrokeHasPoint_ = false;
@@ -192,17 +205,7 @@ void Renderer::updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHove
         return;
     }
 
-    const auto* viewport = ImGui::GetMainViewport();
-    const glm::dvec2 ndc(2.0 * (io.MousePos.x - viewport->Pos.x) / viewport->Size.x - 1.0,
-        2.0 * (io.MousePos.y - viewport->Pos.y) / viewport->Size.y - 1.0);
-    const glm::dmat4 sceneFromClip = glm::inverse(glm::dmat4(clipFromScene));
-    const auto unproject = [&](double depth) {
-        const glm::dvec4 point = sceneFromClip * glm::dvec4(ndc, depth, 1.0);
-        return glm::dvec3(point) / point.w;
-    };
-    const glm::dvec3 nearPoint = unproject(0.0);
-    const glm::vec3 direction(glm::normalize(unproject(0.99) - nearPoint));
-    const auto hit = physicsWorld_->raycastTerrain(glm::vec3(nearPoint), direction, 100.0f / modelScale_);
+    const auto hit = terrainHitAtMouse(clipFromScene);
     if (!hit) {
         roadStrokeHasPoint_ = false;
         return;
@@ -214,6 +217,7 @@ void Renderer::updateRoadBrush(const glm::mat4& clipFromScene, bool viewportHove
         editorDirty_ = true;
     }
 
+    const auto* viewport = ImGui::GetMainViewport();
     auto* draw = ImGui::GetBackgroundDrawList();
     draw->PushClipRect({sceneEditorViewport_.x, sceneEditorViewport_.y},
         {sceneEditorViewport_.z, sceneEditorViewport_.w}, true);

@@ -1693,7 +1693,7 @@ void Renderer::updateCameraBasis() {
     constexpr float kMinimumBasisLength = 0.0001f;
     const float kMinimumCameraDistance = effectCamera_
         ? std::min(0.05f, modelScale_ * 0.0001f)
-        : (playerController_.active() || roadEditorActive()
+        : (playerController_.active() || terrainEditorActive()
             ? std::max(0.00001f, modelScale_ * 0.02f) : 0.05f);
     glm::vec3 targetDelta = cameraTarget_ - cameraPosition_;
     if (glm::length(targetDelta) < kMinimumCameraDistance) {
@@ -1705,7 +1705,7 @@ void Renderer::updateCameraBasis() {
     cameraForward_ = glm::normalize(targetDelta);
 
     if (!cameraBasisInitialized_) {
-        const glm::vec3 worldUp = roadEditorActive() ? glm::vec3(0.0f, 1.0f, 0.0f) :
+        const glm::vec3 worldUp = terrainEditorActive() ? glm::vec3(0.0f, 1.0f, 0.0f) :
             (effectCamera_ ? effectCamera_->up :
                 (authoredView_.enabled ? authoredView_.up :
                     (playerController_.active() ? glm::vec3(0.0f, 1.0f, 0.0f) : kDefaultSceneUp)));
@@ -1778,7 +1778,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         1.0f / static_cast<float>(extent.width),
         1.0f / static_cast<float>(extent.height)
     );
-    const float nearPlane = playerController_.active() || roadEditorActive()
+    const float nearPlane = playerController_.active() || terrainEditorActive()
         ? std::max(0.00001f, modelScale_ * 0.02f)
         : 0.01f;
 #ifdef VULKCORE_OHOS
@@ -1804,7 +1804,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
         ubo.projection[1][1] *= -1.0f;
     }
 
-    if (effectCamera_ && !roadEditorActive()) {
+    if (effectCamera_ && !terrainEditorActive()) {
         glm::vec4 area{0.0f, 0.0f, 1.0f, 1.0f};
 #ifndef VULKCORE_OHOS
         if (toolUiVisible() && fixedFrameOutput_.empty()) {
@@ -1823,8 +1823,8 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     }
 
 #ifndef VULKCORE_OHOS
-    if (roadEditorActive() && roadTopDown_) {
-        const float halfHeight = roadEditorCamera_->distance * modelScale_ * 0.42f;
+    if (terrainEditorActive() && terrainEditorTopDown_) {
+        const float halfHeight = terrainEditorCamera_->distance * modelScale_ * 0.42f;
         const float halfWidth = halfHeight * aspect;
         ubo.projection = glm::orthoRH_ZO(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlane, 100.0f);
         ubo.projection[1][1] *= -1.0f;

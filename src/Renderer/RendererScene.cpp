@@ -636,11 +636,11 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         deltaSeconds,
         *physicsWorld_,
         sceneEditMode_ || effectCamera_ || io.WantTextInput,
-        !viewportHovered || effectCamera_ || roadEditorActive(),
+        !viewportHovered || effectCamera_ || terrainEditorActive(),
         skillEnabled
     );
     updatePlayerSkillEffects();
-    if (!roadEditorActive()) updatePlayerCamera();
+    if (!terrainEditorActive()) updatePlayerCamera();
 }
 
 bool Renderer::canIssuePlayerMove() const {
@@ -667,22 +667,25 @@ void Renderer::updatePlayerMoveClick(const glm::mat4& clipFromScene, bool viewpo
         return;
     }
 
+    if (const auto hit = terrainHitAtMouse(clipFromScene)) issuePlayerMove(*hit);
+}
+
+std::optional<glm::vec3> Renderer::terrainHitAtMouse(const glm::mat4& clipFromScene) const {
     // The scene renders across the framebuffer. The editor viewport gates input,
     // but does not change the coordinate space used by the projection.
+    const auto& mouse = ImGui::GetIO().MousePos;
     const auto* viewport = ImGui::GetMainViewport();
     const glm::dvec2 size(viewport->Size.x, viewport->Size.y);
-    if (size.x <= 0.0 || size.y <= 0.0) return;
+    if (size.x <= 0.0 || size.y <= 0.0) return std::nullopt;
     const glm::dvec2 uv = glm::dvec2(mouse.x - viewport->Pos.x, mouse.y - viewport->Pos.y) / size;
-    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return;
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return std::nullopt;
     const glm::dvec2 ndc = uv * 2.0 - 1.0;
     const glm::dmat4 sceneFromClip = glm::inverse(glm::dmat4(clipFromScene));
     const glm::dvec4 near = sceneFromClip * glm::dvec4(ndc, 0.0, 1.0);
     const glm::dvec4 ahead = sceneFromClip * glm::dvec4(ndc, 0.99, 1.0);
     const glm::dvec3 origin = glm::dvec3(near) / near.w;
     const glm::vec3 direction(glm::normalize(glm::dvec3(ahead) / ahead.w - origin));
-    if (const auto hit = physicsWorld_->raycastTerrain(glm::vec3(origin), direction, 100.0f / modelScale_)) {
-        issuePlayerMove(*hit);
-    }
+    return physicsWorld_->raycastTerrain(glm::vec3(origin), direction, 100.0f / modelScale_);
 }
 #endif
 
@@ -722,9 +725,9 @@ void Renderer::clearSceneData(bool rebuildResources) {
     roadIndexRevision_ = 0;
     for (auto& frame : roadFrameBuffers_) frame.revision = 0;
 #ifndef VULKCORE_OHOS
-    roadEditorCamera_.reset();
-    roadBrushEnabled_ = true;
-    roadTopDown_ = false;
+    terrainEditorCamera_.reset();
+    sceneEditTool_ = SceneEditTool::LocatePlayer;
+    terrainEditorTopDown_ = false;
     roadBrushDragging_ = false;
     roadStrokeHasPoint_ = false;
 #endif
@@ -3010,9 +3013,9 @@ bool Renderer::saveTransformSettings() const {
         savedCamera = previousSceneCamera_->position;
     }
 #ifndef VULKCORE_OHOS
-    if (!saveInitialCamera && roadEditorCamera_) {
-        savedCamera = roadEditorCamera_->originalPosition;
-        savedTarget = roadEditorCamera_->originalTarget;
+    if (!saveInitialCamera && terrainEditorCamera_) {
+        savedCamera = terrainEditorCamera_->originalPosition;
+        savedTarget = terrainEditorCamera_->originalTarget;
     }
 #endif
     if (saveEffectFraming) {

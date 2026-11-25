@@ -29,17 +29,17 @@ player_present 1
 player_click_to_move 1
 player_move_speed_multiplier 1
 player_camera_follow_distance 7
-player_spawn_position -205 124 -96
+player_spawn_position -644.117432 249.630066 1135.41992
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
 model_resource_path "../assets/models/spawn_woodland/spawn_woodland.glb" 5000001
 distance_fog 150 2050 0.430000007 0.340000004 0.50999999 0.670000017 0.239999995 0.409999996 0.600000024
 floating_mist 0.340000004
 sun_present 0
-camera_position -0.0336660072 -0.0648621246 -0.0062934407
+camera_position -0.160216317 -0.0354264118 0.273603201
 ambient_color 0.839999974 0.910000026 0.99000001
 ambient_intensity 0.939999998
-sun_light_direction 0.305999994 0.611999989 0.725900888
+sun_light_direction 0.306750596 0.613501191 0.727681518
 sun_light_color 0.910000026 0.879999995 0.829999983
 sun_light_intensity 2.01300001
 shader_demo 0 1 0.25 0.5 0

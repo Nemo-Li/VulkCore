@@ -1049,13 +1049,13 @@ bool Renderer::drawFrame() {
         );
 #ifndef VULKCORE_OHOS
         if ((playerController_.active() || transitionSettings_.enabled) &&
-            (!toolUiVisible() || roadEditorActive())) {
+            (!toolUiVisible() || terrainEditorActive())) {
             restoreSceneCamera();
         }
 #endif
         updatePlayerController(particleDeltaSeconds, viewportHovered);
 #ifndef VULKCORE_OHOS
-        updateRoadEditorCamera(particleDeltaSeconds, viewportHovered);
+        updateTerrainEditorCamera(particleDeltaSeconds, viewportHovered);
 #endif
         updateTransition(std::max(0.0f, elapsedSeconds - lastFrameElapsedSeconds_));
         updateCameraBasis();
@@ -1081,7 +1081,7 @@ bool Renderer::drawFrame() {
         if (clipFromScene && mode_ == Mode::ModelViewer) drawViewerPoints(*clipFromScene);
 #ifndef VULKCORE_OHOS
         if (clipFromScene) {
-            if (roadEditorActive()) updateRoadBrush(*clipFromScene, viewportHovered);
+            if (terrainEditorActive()) updateTerrainEditorTool(*clipFromScene, viewportHovered);
             else {
                 updatePlayerMoveClick(*clipFromScene, viewportHovered);
                 drawGameSelectionOutline(*clipFromScene);
