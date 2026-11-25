@@ -1579,6 +1579,10 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         if (prepared.terrain && prepared.terrain->grassTileCount() != 0 && !stopping()) {
             try {
                 prepared.grass = decodeTerrainGrass(terrainPath);
+                if (prepared.grass) {
+                    auto cover = prepared.terrain->bakeGrassSurface(cancelled);
+                    prepared.grass->groundCover = {std::move(cover.pixels), cover.width, cover.height, 1};
+                }
             } catch (const std::exception& grassError) {
                 prepared.grassError = grassError.what();
             }

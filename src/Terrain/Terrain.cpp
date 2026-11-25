@@ -1504,6 +1504,53 @@ std::size_t TerrainScene::waterTileCount() const {
     return waterTiles_.size();
 }
 
+TerrainGrassSurface TerrainScene::bakeGrassSurface(const std::atomic<bool>* cancelled) const {
+    if (grassTiles_.empty() || loadCancelled(cancelled)) return {};
+
+    constexpr float targetTexelSize = 4.0f;
+    constexpr int maxResolution = 2048;
+    const glm::vec2 minimum(boundsMinimum_.x, boundsMinimum_.z);
+    const glm::vec2 extent = glm::max(glm::vec2(boundsMaximum_.x, boundsMaximum_.z) - minimum,
+        glm::vec2(0.0001f));
+    const float texelSize = std::max(targetTexelSize, std::max(extent.x, extent.y) / maxResolution);
+    const glm::ivec2 dims = glm::clamp(glm::ivec2(glm::ceil(extent / texelSize)),
+        glm::ivec2(2), glm::ivec2(maxResolution));
+    const glm::vec2 worldPerPixel = extent / glm::vec2(dims);
+    const auto pixelBoundary = [&](glm::vec2 world) {
+        return glm::clamp(glm::ivec2(glm::ceil((world - minimum) / worldPerPixel - 0.5f)),
+            glm::ivec2(0), dims);
+    };
+    const auto encode = [](float value) {
+        return static_cast<std::uint8_t>(std::round(glm::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+
+    TerrainGrassSurface surface;
+    surface.width = dims.x;
+    surface.height = dims.y;
+    surface.pixels.resize(static_cast<std::size_t>(surface.width) * surface.height * 4);
+    for (const auto& tile : grassTiles_) {
+        const auto first = pixelBoundary(tile.minimum);
+        const auto end = pixelBoundary(tile.maximum);
+        for (int z = first.y; z < end.y; ++z) {
+            if (loadCancelled(cancelled)) return {};
+            for (int x = first.x; x < end.x; ++x) {
+                const glm::vec2 world = minimum + (glm::vec2(x, z) + 0.5f) * worldPerPixel;
+                const auto sample = grassAtWorld(world);
+                if (!sample || sample->height <= 0.0f) continue;
+                if (const auto water = waterHeightAtWorld(world)) {
+                    const auto ground = renderedHeightAtWorld(world);
+                    if (!ground || *water > *ground + 0.02f) continue;
+                }
+                const float coverage = glm::smoothstep(0.008f, 0.32f, sample->height);
+                const auto offset = (static_cast<std::size_t>(z) * surface.width + x) * 4;
+                for (int c = 0; c < 3; ++c) surface.pixels[offset + c] = encode(sample->color[c] * coverage);
+                surface.pixels[offset + 3] = encode(coverage);
+            }
+        }
+    }
+    return surface;
+}
+
 std::optional<GrassSample> TerrainScene::grassAtWorld(const glm::vec2& worldPosition) const {
     if (grassTiles_.empty()) return std::nullopt;
     const auto candidates = grassTilesByCell_.find(surfaceCell(worldPosition));

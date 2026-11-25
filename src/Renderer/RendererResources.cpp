@@ -1197,6 +1197,14 @@ SceneLoadTask Renderer::uploadTerrainGrass(TerrainGrassImages images) {
         image = {};
         co_yield static_cast<int>(i + 1);
     }
+    if (!images.groundCover.rgba.empty()) {
+        try {
+            resources.groundCover = std::make_unique<Texture>(*context_, images.groundCover, false,
+                TextureColorSpace::Linear, clamp, clamp);
+        } catch (const std::exception& error) {
+            std::cerr << "warning: terrain grass ground cover upload failed: " << error.what() << '\n';
+        }
+    }
     grassCoverage_.setCoverMask(std::move(images.coverMask));
     terrainGrass_ = std::move(resources);
     co_return true;
@@ -1408,7 +1416,8 @@ void Renderer::createDescriptorSets() {
             depthImageInfo.sampler = sceneRenderTargets_[i].depthSampler;
 
             const Texture* grassAlbedo = grassMaterial ? terrainGrass_.bladeAlbedo.get() : nullptr;
-            if (!grassAlbedo) grassAlbedo = texture;
+            if (terrainMaterial) grassAlbedo = terrainGrass_.groundCover.get();
+            if (!grassAlbedo) grassAlbedo = terrainMaterial ? fallbackTexture_.get() : texture;
             const VkDescriptorImageInfo grassAlbedoInfo{
                 grassAlbedo->sampler(), grassAlbedo->imageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             };

@@ -239,6 +239,7 @@ private:
     struct TerrainGrassImages {
         std::array<EmbeddedTextureData, 3> images;
         GrassCoverMask coverMask;
+        DecodedTexturePixels groundCover;
     };
     static std::optional<TerrainGrassImages> decodeTerrainGrass(const std::filesystem::path& terrainRoot);
     SceneLoadTask uploadTerrainGrass(TerrainGrassImages images);
@@ -600,6 +601,7 @@ private:
         std::unique_ptr<Texture> bladeAlbedo;
         std::unique_ptr<Texture> crossAlbedo;
         std::unique_ptr<Texture> specular;
+        std::unique_ptr<Texture> groundCover;
     } terrainGrass_;
     std::filesystem::path skyboxTexturePath_;
     bool skyboxEnabled_ = false;

@@ -9,6 +9,7 @@ layout(location = 2) in vec3 fragWorldPosition;
 layout(location = 3) flat in float fragLod;
 layout(location = 4) flat in float fragVariation;
 layout(location = 5) flat in vec4 fragMapColor;
+layout(location = 6) flat in float fragCanopyBlend;
 
 #include "scene_fog.glsl"
 #include "effect_lighting.glsl"
@@ -81,7 +82,7 @@ void main() {
         if (crossCard) {
             // Each tuft's two cards share the same variety and alpha cutoff.
             vec4 sampleColor = texture(grassCrossAlbedo, vec3(uv, step(0.5, variation)));
-            if (sampleColor.a < 0.45) discard;
+            if (sampleColor.a < 0.36) discard;
             albedo = sampleColor.rgb;
         } else {
             albedo = texture(grassBladeAlbedo, uv).rgb;
@@ -104,6 +105,11 @@ void main() {
         float specular = specularMask * pow(max(dot(normal, halfDirection), 0.0), 28.0) * 0.052;
         vec3 lighting = ambient + sunlight * (diffuse + (backLight + rim) * 0.35);
         vec3 color = albedo * kMeadowTextureExposure * material.baseColor.rgb * lighting + sunlight * specular;
+        if (crossCard && fragMapColor.a > 0.0) {
+            vec3 canopyLight = ambient + sunlight * meadowCanopyDiffuse(groundFacingNormal, lightDirection);
+            vec3 canopyColor = meadowCanopyAlbedo(fragMapColor.rgb) * material.baseColor.rgb * canopyLight;
+            color = mix(color, canopyColor, fragCanopyBlend);
+        }
         SUN_SHADOW_COLOR(vec4(applySceneFog(color, sceneFogAt(fragWorldPosition, true)), material.opacity));
         return;
     }

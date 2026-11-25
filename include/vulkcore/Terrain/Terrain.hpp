@@ -145,6 +145,12 @@ struct TerrainMacroAlbedo {
     std::uint32_t height = 0;
 };
 
+struct TerrainGrassSurface {
+    std::vector<std::uint8_t> pixels; // RGB premultiplied by grass coverage, in A.
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 struct WaterMeshOptions {
     // The .water.extm files are native 64x64 flow/height grids. Keeping the
     // source resolution preserves narrow rivers and shoreline boundaries.
@@ -229,6 +235,7 @@ public:
     TerrainMaterialLayers buildMaterialLayers(const std::array<int, 256>& albedoLayers) const;
     TerrainMacroAlbedo bakeMacroAlbedo(const TerrainMaterialLayers& layers,
         const std::array<glm::vec4, 256>& palette, const std::atomic<bool>* cancelled = nullptr) const;
+    TerrainGrassSurface bakeGrassSurface(const std::atomic<bool>* cancelled = nullptr) const;
     std::optional<GrassSample> grassAtWorld(const glm::vec2& worldPosition) const;
     std::optional<float> waterHeightAtWorld(const glm::vec2& worldPosition) const;
 

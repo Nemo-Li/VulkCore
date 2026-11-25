@@ -17,8 +17,8 @@ struct GrassLodSettings {
 };
 
 constexpr GrassLodSettings kNearMeshSettings{8.0f, 20, {0.0f, 0.0f, 30.0f, 40.0f}};
-constexpr GrassLodSettings kCrossCardSettings{16.0f, 24,
-    {kNearMeshSettings.fade.z, kNearMeshSettings.fade.w, 83.0f, 112.0f}};
+constexpr GrassLodSettings kCrossCardSettings{16.0f, 40,
+    {kNearMeshSettings.fade.z, kNearMeshSettings.fade.w, 65.0f, 96.0f}};
 constexpr GrassLodSettings kFlowerSettings{8.0f, 8, {0.0f, 0.0f, 19.0f, 27.0f}};
 constexpr float kMappedGrassHeight = kDefaultGrassHeight * 1.18f;
 constexpr float kAnchorSize = 4.0f;
@@ -171,7 +171,11 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             )) * spacing;
             const auto map = terrain.grassAtWorld(point);
             if (!map || (!bladeMesh && map->height <= 0.0f)) continue;
-            if (lod == GrassLod::CrossCard && !coverMask_.contains(point)) continue;
+            const float heightVariation = hash01(seed + 4u);
+            const float canopy = map->height * kMappedGrassHeight;
+            const float cardHeight = canopy * std::lerp(0.90f, 1.10f, heightVariation);
+            const float cardWidth = cardHeight * 1.75f;
+            if (lod == GrassLod::CrossCard && cardWidth <= kGrassCardMinWidth) continue;
             const auto ground = terrain.renderedHeightAtWorld(point);
             if (!ground) continue;
             if (!bladeMesh) {
@@ -191,7 +195,6 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             ));
 
             const glm::vec3 root(point.x, *ground, point.y);
-            const float heightVariation = hash01(seed + 4u);
             const float yaw = hash01(seed + 5u) * 2.0f * kPi;
             if (bladeMesh) {
                 constexpr int blades = 14;
@@ -218,12 +221,11 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                            hash01(bladeSeed + 3u), bladeSeed, variation, *bladeMap);
                 }
             } else {
-                const float canopy = map->height * kMappedGrassHeight;
                 float height = std::min(0.48f + heightVariation * 0.32f, canopy);
                 float width = std::min(0.42f, height * 0.65f);
                 if (!flower) {
-                    height = canopy * std::lerp(0.90f, 1.10f, heightVariation);
-                    width = height * 1.75f;
+                    height = cardHeight;
+                    width = cardWidth;
                 } else if (yellowFlower) {
                     height = canopy * std::lerp(0.94f, 1.14f, heightVariation);
                     width = std::min(0.092f, height * 0.092f);

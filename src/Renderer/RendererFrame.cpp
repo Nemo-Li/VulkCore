@@ -429,6 +429,7 @@ void Renderer::recordCommandBuffer(
     std::vector<DrawItem> transparent;
     std::vector<DrawItem> casters;
     bool needsOpaqueSnapshot = realtimeNeedsOpaqueSnapshot();
+    const bool grassGroundCoverEnabled = terrainGrass_.groundCover && isSceneNodeRenderEnabled(kGrassSceneNodeId);
     terrainDrawCandidates_ = 0;
     terrainDrawCulled_ = 0;
     for (const MeshPart& part : meshData_.parts) {
@@ -539,11 +540,17 @@ void Renderer::recordCommandBuffer(
             materialPushConstants.textureFlags |= kAlphaTestFlag;
             materialPushConstants.waterFlow.x = material.alphaCutoff;
         }
+        if (fragment == "shader_terrain.frag") {
+            materialPushConstants.waterFlow = grassFadeDistances(GrassLod::CrossCard);
+            materialPushConstants.waterSurface.x = grassGroundCoverEnabled ? 1.0f : 0.0f;
+            materialPushConstants.metallic = ochreDirtRatio_;
+        }
         if (item.grassLod) {
             materialPushConstants.waterFlow = grassFadeDistances(*item.grassLod);
             materialPushConstants.metallic = ochreDirtRatio_;
             materialPushConstants.waterSurface.x = isGrassVegetation(*item.grassLod) ? grassHeightScale_ : 1.0f;
             materialPushConstants.waterSurface.w = static_cast<float>(*item.grassLod);
+            if (*item.grassLod == GrassLod::CrossCard) materialPushConstants.waterSurface.y = kGrassCardMinWidth;
             if (*item.grassLod == GrassLod::NearMesh) {
                 // Near grass has no fade-in, leaving waterFlow.x free for the growth noise frequency.
                 materialPushConstants.waterFlow.x = 1.0f / grassGrowth_.noiseSize;

@@ -87,6 +87,8 @@ struct GrassDrawRange {
 };
 
 inline constexpr char kGrassVertexShader[] = "shader_grass.vert";
+// LOD1 tufts narrower than this cannot cover the 0.40-unit placement grid.
+inline constexpr float kGrassCardMinWidth = 0.30f;
 inline constexpr float kDefaultGrassHeight = PlayerController::kBotwLinkHeight * 0.73f;
 inline constexpr std::array<std::uint16_t, 21> kGrassIndices{
     0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 4, 5, 6, 5, 7, 6, 6, 7, 8

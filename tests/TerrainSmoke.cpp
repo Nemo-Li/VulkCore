@@ -350,8 +350,29 @@ void checkGrassCoverage() {
     require(bare && bare->height == 0.0f, "zero-height map cells must remain bare");
     require(!scene->grassAtWorld({96.0f, 900.0f}), "missing and empty grass data must differ");
 
+    const auto surface = scene->bakeGrassSurface();
+    const auto surfacePixel = [&](unsigned x, unsigned z) {
+        const auto offset = (static_cast<std::size_t>(z) * surface.width + x) * 4;
+        const auto* pixel = surface.pixels.data() + offset;
+        return std::array{pixel[0], pixel[1], pixel[2], pixel[3]};
+    };
+    require(surface.width == 313 && surface.height == 313 &&
+        surfacePixel(24, 24) == std::array<std::uint8_t, 4>{24, 150, 60, 255} &&
+        surfacePixel(100, 24)[3] == 0 && surfacePixel(24, 225)[3] == 0 &&
+        surfacePixel(295, 24)[3] == 0,
+        "grass ground cover must keep planted tint and omit bare, missing and effectively empty grass");
+
     GrassCoverage grass;
     require(grass.update(*scene, {96.0f, 96.0f}), "initial grass coverage must populate");
+    std::size_t cardsInCell = 0;
+    for (const auto& range : grass.ranges()) {
+        if (range.lod != GrassLod::CrossCard) continue;
+        for (std::uint32_t i = 0; i < range.instanceCount; ++i) {
+            const auto& root = grass.instances()[range.firstInstance + i].rootHeight;
+            if (root.x >= 128.0f && root.x < 144.0f && root.z >= 96.0f && root.z < 112.0f) ++cardsInCell;
+        }
+    }
+    require(cardsInCell == 2 * 40 * 40, "one fully covered cell must contain the dense LOD1 grid");
     const auto nearest = [&](glm::vec2 position, GrassLod lod) -> const GrassInstance* {
         const GrassInstance* bestInstance = nullptr;
         float distance = std::numeric_limits<float>::max();
@@ -422,16 +443,16 @@ void checkGrassCoverage() {
         near->mapColor == std::array<std::uint8_t, 4>{180, 72, 16, 255},
         "grass coverage must follow long movement and adopt the new map");
     require(grass.update(*scene, {1180.0f, 96.0f}), "the short grass area must update coverage");
-    for (const auto lod : {GrassLod::NearMesh, GrassLod::CrossCard}) {
-        const auto* shortGrass = nearest({1180.0f, 96.0f}, lod);
-        require(shortGrass && shortGrass->mapColor == std::array<std::uint8_t, 4>{0, 0, 0, 255} &&
-            shortGrass->rootHeight.w > 0.0f && shortGrass->rootHeight.w < 0.01f,
-            "black RGB and the smallest positive grass map height must render in both LODs");
-        const auto& root = shortGrass->rootHeight;
-        const auto ground = scene->renderedHeightAtWorld({root.x, root.z});
-        require(ground && root.y >= *ground && root.y - *ground < root.w * 0.1f,
-            "tiny blades and cards must sit on the rendered ground");
-    }
+    const auto* shortGrass = nearest({1180.0f, 96.0f}, GrassLod::NearMesh);
+    require(shortGrass && shortGrass->mapColor == std::array<std::uint8_t, 4>{0, 0, 0, 255} &&
+        shortGrass->rootHeight.w > 0.0f && shortGrass->rootHeight.w < 0.01f,
+        "near grass must retain black RGB and the smallest positive grass map height");
+    const auto& root = shortGrass->rootHeight;
+    const auto ground = scene->renderedHeightAtWorld({root.x, root.z});
+    require(ground && root.y >= *ground && root.y - *ground < root.w * 0.1f,
+        "tiny blades must sit on the rendered ground");
+    require(!nearest({1180.0f, 96.0f}, GrassLod::CrossCard),
+        "tufts too small to cover the LOD1 grid must not populate the card buffer");
 
     require(grass.update(*scene, {96.0f, 900.0f}) && grass.instances().empty() && grass.ranges().empty(),
         "terrain without a grass map must not spawn fallback grass or flowers");
@@ -462,11 +483,20 @@ void checkGrassCoverage() {
             const auto map = scene->grassAtWorld({root.x, root.z});
             require(map && map->height > 0.0f, "no instance may cross onto unmapped or bare ground");
             if (!isGrassVegetation(range.lod)) continue;
-            require(cover.contains({root.x, root.z}), "both grass LODs must use the rotated mask union at every root");
+            if (range.lod == GrassLod::NearMesh) {
+                require(cover.contains({root.x, root.z}), "near grass must use the rotated mask union at every root");
+            }
             ++coverageCounts[range.lod == GrassLod::NearMesh ? 0 : 1];
         }
     }
     require(coverageCounts[0] > 0 && coverageCounts[1] > 0, "the paths must contain mesh blades and cross cards");
+    grass.setCoverMask(dark);
+    require(grass.update(*scene, {96.0f, 620.0f}) &&
+        std::ranges::none_of(grass.ranges(), [](const auto& range) { return range.lod == GrassLod::NearMesh; }) &&
+        std::ranges::any_of(grass.ranges(), [](const auto& range) { return range.lod == GrassLod::CrossCard; }),
+        "the fine rotated mask must not punch holes in the card canopy");
+    grass.setCoverMask(cover);
+    grass.update(*scene, {96.0f, 620.0f});
     const auto* cross = nearest({126.0f, 604.0f}, GrassLod::CrossCard);
     require(cross && (cross + 1)->rootHeight == cross->rootHeight &&
         std::abs((cross + 1)->motion.x - cross->motion.x - glm::half_pi<float>()) < 0.00001f,

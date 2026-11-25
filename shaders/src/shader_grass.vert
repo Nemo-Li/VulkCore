@@ -31,6 +31,7 @@ layout(location = 2) out vec3 fragWorldPosition;
 layout(location = 3) flat out float fragLod;
 layout(location = 4) flat out float fragVariation;
 layout(location = 5) flat out vec4 fragMapColor;
+layout(location = 6) flat out float fragCanopyBlend;
 
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
@@ -57,6 +58,7 @@ float bladeDither(vec2 root) {
 
 void main() {
     // waterSurface 分别保存高度倍率、最小和最大倾斜弧度、GrassLod。
+    // LOD1 用第二个分量传入能形成连续覆盖的最小草丛宽度。
     float lod = material.waterSurface.w;
     bool nearBlade = lod < 0.5;
     bool crossCard = lod > 0.5 && lod < 1.5;
@@ -70,11 +72,11 @@ void main() {
     vec4 fade = material.waterFlow;
     float fadeIn = crossCard ? smoothstep(fade.x, fade.y, distanceWorld) : 1.0;
     float fadeOut = 1.0 - smoothstep(fade.z, fade.w, distanceWorld);
-    float visibility = fadeIn * fadeOut;
+    float visibility = crossCard ? fadeIn : fadeOut;
     float dither = bladeDither(root.xz);
     // Reject invisible instances before doing wind and growth work for each vertex.
     gl_Position = vec4(0.0, 0.0, -1.0, 1.0);
-    if (visibility <= dither) return;
+    if (fadeOut <= 0.0 || visibility <= dither) return;
 
     vec3 rootNormal = inNormalWidth.xyz;
     float yaw = inMotion.x;
@@ -110,7 +112,20 @@ void main() {
         if (inMapColor.a > 0.0) baseWidth *= min(1.0, sourceHeight / 0.70);
         width = baseWidth * (1.0 - 0.62 * heightWeight);
     }
-    if (crossCard) width *= mix(1.0, 0.36, shortGrass);
+    float canopyBlend = 0.0;
+    if (crossCard) {
+        width *= mix(1.0, 0.36, shortGrass);
+        // Use the uncollapsed canopy footprint so fading does not feed back into the test.
+        vec4 rootView = ubo.view * vec4(rootScene, 1.0);
+        float heightPixels = bladeHeight * sceneScale * abs(ubo.projection[1][1]) *
+            (ubo.viewport.y * 0.5) / max(-rootView.z, 0.000001);
+        float widthCoverage = smoothstep(material.waterSurface.y, 0.66, width);
+        float screenCoverage = smoothstep(2.5, 6.0, heightPixels);
+        float canopy = fadeOut * widthCoverage * screenCoverage;
+        if (canopy <= 0.0) return;
+        bladeHeight *= canopy;
+        canopyBlend = 1.0 - canopy;
+    }
     float twist = nearBlade ? (inMotion.w - 0.5) * 0.58 * heightWeight : 0.0;
     vec3 widthAxis = right * cos(twist) + forward * sin(twist);
     vec3 growthOffset = rootNormal * heightWeight;
@@ -157,7 +172,7 @@ void main() {
     localPosition.xz += trampleDirection * interaction * bendWeight * (nearBlade ? 0.30 : 0.18) * trampleStrength;
     localPosition.y -= interaction * bendWeight * 0.14 * trampleStrength;
 
-    localPosition.y -= (1.0 - fadeOut) * bladeHeight * 0.52;
+    if (!crossCard) localPosition.y -= (1.0 - fadeOut) * bladeHeight * 0.52;
     fragWorldPosition = (model * vec4(localPosition, 1.0)).xyz;
     gl_Position = ubo.projection * ubo.view * vec4(fragWorldPosition, 1.0);
 
@@ -167,4 +182,5 @@ void main() {
     fragLod = lod;
     fragVariation = inMotion.w;
     fragMapColor = inMapColor;
+    fragCanopyBlend = canopyBlend;
 }

@@ -5,6 +5,8 @@
 #include "effect_lighting.glsl"
 #include "sun_shadow.glsl"
 #include "terrain_rock.glsl"
+#include "meadow_shading.glsl"
+#include "terrain_road_weights.glsl"
 
 layout(location = 0) in vec2 fragMapUv;
 layout(location = 1) in vec3 fragNormal;
@@ -18,6 +20,7 @@ layout(set = 0, binding = 1) uniform sampler2D macroAlbedo;
 layout(set = 0, binding = 3) uniform sampler2D rockCoverage;
 layout(set = 0, binding = 6) uniform sampler2DArray albedoLayers;
 layout(set = 0, binding = 7) uniform sampler2DArray materialMaps;
+layout(set = 0, binding = 9) uniform sampler2D grassGroundCover;
 layout(push_constant) uniform MaterialPushConstants {
     mat4 nodeTransform;
     vec4 baseColor;
@@ -98,8 +101,10 @@ void main() {
     float middleBlend = smoothstep(0.2, 0.95, macroBlend);
     float strata = middleBlend * rockBandFade(rockStrataFrequency, dx, dy);
     float chips = middleBlend * rockBandFade(rockChipsFrequency, dx, dy);
+    vec4 grass = vec4(0.0);
+    if (material.waterSurface.x > 0.0) grass = textureGrad(grassGroundCover, fragMacroUv, macroDx, macroDy);
     float rock = 0.0;
-    if (max(nearBlend, max(strata, chips)) > 0.0 && textureSize(rockCoverage, 0).x >= 2) {
+    if (max(grass.a, max(nearBlend, max(strata, chips))) > 0.0 && textureSize(rockCoverage, 0).x >= 2) {
         vec4 coverage = textureGrad(rockCoverage, fragMacroUv, macroDx, macroDy);
         rock = clamp(coverage.r / max(coverage.a, 1.0 / 255.0), 0.0, 1.0);
     }
@@ -136,9 +141,23 @@ void main() {
     vec3 lightDirection = normalize(ubo.sunLightDirection.xyz);
     float diffuse = max(dot(normal, lightDirection), 0.0);
     float visibility = sunVisibility(fragWorldPosition, geometricNormal);
-    vec3 lighting = ubo.ambientLight.rgb * ubo.ambientLight.a * ambientVisibility +
-        ubo.sunLightColor.rgb * ubo.sunLightDirection.w * diffuse * visibility +
-        effectPointLighting(fragWorldPosition, normal);
-    outColor = vec4(applySceneFog(albedo * lighting * material.baseColor.rgb,
+    vec3 ambient = ubo.ambientLight.rgb * ubo.ambientLight.a;
+    vec3 sunlight = ubo.sunLightColor.rgb * ubo.sunLightDirection.w * visibility;
+    vec3 pointLight = effectPointLighting(fragWorldPosition, normal);
+    vec3 groundColor = albedo * (ambient * ambientVisibility + sunlight * diffuse + pointLight);
+    if (grass.a > 1.0 / 255.0) {
+        // Match the cards as they shrink, then transition to the native ground texture.
+        float distanceBlend = smoothstep(material.waterFlow.x * 0.65, material.waterFlow.z, worldDistance);
+        float farBlend = smoothstep(material.waterFlow.w, material.waterFlow.w * 2.8, worldDistance);
+        float rockMask = smoothstep(0.15, 0.75, rock);
+        float canopy = mix(mix(0.20, 0.90, distanceBlend), 0.08, farBlend) * (1.0 - rockMask);
+        vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
+        float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
+        canopy *= 1.0 - roadMask;
+        vec3 canopyLight = ambient + sunlight * meadowCanopyDiffuse(geometricNormal, lightDirection) + pointLight;
+        groundColor = groundColor * (1.0 - canopy * grass.a) +
+            meadowCanopyAlbedo(grass.rgb) * canopyLight * canopy;
+    }
+    outColor = vec4(applySceneFog(groundColor * material.baseColor.rgb,
         sceneFogAt(fragWorldPosition, true)), material.opacity);
 }
