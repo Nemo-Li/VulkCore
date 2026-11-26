@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "vulkcore/Renderer/Mesh.hpp"
@@ -37,18 +38,20 @@ private:
     std::shared_ptr<const Data> data_;
 
     friend MeshData loadSbfresMesh(const std::filesystem::path&, const std::filesystem::path&,
-        const std::filesystem::path&, bool, SbfresTextureArchive*);
+        const std::filesystem::path&, bool, SbfresTextureArchive*, std::string_view);
 };
 
 // Loads the Switch BFRES 5.x subset. An omitted texture path probes the sibling
 // <stem>.Tex<extension>; an optional animation path imports FSKA clips from a
 // separate BFRES animation package. Preview callers can opt in to embedded clips
 // and receive a browsable archive. In that mode array materials use fallback maps.
+// A static model group selects one exact FMDL and keeps up to three native index LODs.
 MeshData loadSbfresMesh(const std::filesystem::path& modelPath,
                         const std::filesystem::path& texturePath = {},
                         const std::filesystem::path& animationPath = {},
                         bool includeEmbeddedAnimations = false,
-                        SbfresTextureArchive* previewTextures = nullptr);
+                        SbfresTextureArchive* previewTextures = nullptr,
+                        std::string_view staticModelGroup = {});
 
 enum class BfresContent { Model, SkeletalAnimation, Texture, Other };
 BfresContent inspectBfresContent(const std::filesystem::path& path);

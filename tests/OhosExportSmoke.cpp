@@ -39,6 +39,10 @@ int main() {
         write(effect, "vfx3d package");
         const auto layout = root / "external roads/roads.yml";
         write(layout, "Rails: []\n");
+        const auto tree = root / "external forest/tree.sbfres";
+        write(tree, "model archive");
+        write(tree.parent_path() / "tree.Tex.sbfres", "texture archive");
+        write(tree.parent_path() / "unused.sbfres", "unreferenced archive");
         write(source / "assets/terrain/MainField.tscb", "terrain");
         write(source / "src/main.cpp", "// runtime");
         write(source / "include/engine.hpp", "// interface");
@@ -73,7 +77,9 @@ int main() {
             "realtime_effect 100 \"" + effect.generic_string() + "\" 1 0\n"
             "camera_position 1 2 3\n"
             "terrain_road_layout \"" + layout.generic_string() + "\"\n"
-            "terrain_road_path 4.8 3 20 25 25 29 31 32\n";
+            "terrain_road_path 4.8 3 20 25 25 29 31 32\n"
+            "forest_patch 25 12 9 185\n"
+            "forest_species \"" + tree.generic_string() + "\" \"Broadleaf\" 0.6 0.9 1\n";
         const std::string roads = "terrain_road_ochre_ratio 0.8\n"
             "  terrain_road 1 3.75 2 0 0 1 1\n"
             "terrain_road 0 3.75 1 1 0\n";
@@ -111,6 +117,10 @@ int main() {
         require(read(payload / "assets/external/1/fire.vfx3d") == "vfx3d package", "Realtime effect package was lost");
         require(exported.find("terrain_road_layout \"../assets/external/2/roads.yml\"") != std::string::npos &&
             read(payload / "assets/external/2/roads.yml") == "Rails: []\n", "Road layout file or reference was lost");
+        require(exported.find("forest_species \"../assets/external/3/tree.sbfres\" \"Broadleaf\" 0.6 0.9 1") !=
+            std::string::npos && read(payload / "assets/external/3/tree.sbfres") == "model archive" &&
+            read(payload / "assets/external/3/tree.Tex.sbfres") == "texture archive" &&
+            !fs::exists(payload / "assets/external/3/unused.sbfres"), "Forest files or model group were not preserved");
         require(exported.find("particle_system_object 99") != std::string::npos &&
             exported.find("particle_system_object 98") == std::string::npos &&
             !fs::exists(payload / "assets/external/2/atlas.png"), "Export retained a retired atlas effect");

@@ -424,6 +424,8 @@ void Renderer::recordCommandBuffer(
         const MeshPart* part;
         std::uint32_t materialIndex;
         std::optional<GrassLod> grassLod;
+        const ForestInstance* tree = nullptr;
+        std::size_t lod = 0;
     };
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
@@ -477,6 +479,32 @@ void Renderer::recordCommandBuffer(
         auto& queue = readsOpaque || isTransparentMaterial(material) ? transparent : opaque;
         queue.push_back({&part, index, grassLod});
     }
+    if (!forestInstances_.empty()) {
+        const auto worldEye = cameraPosition_ / modelScale_ + modelCenter_;
+        std::array<unsigned, 3> forestLodCounts{};
+        for (const auto& tree : forestInstances_) {
+            const auto& model = forestModels_[tree.modelIndex];
+            const bool visible = !clipFromScene || !isOutsideVulkanFrustum(*clipFromScene * tree.transform,
+                model.bounds.minimum, model.bounds.maximum);
+            const float distance = glm::distance(worldEye, glm::vec3(tree.transform[3]));
+            const std::size_t lod = distance < kForestLod1Distance ? 0 : distance < kForestLod2Distance ? 1 : 2;
+            if (visible) ++forestLodCounts[lod];
+            for (const auto& part : model.parts) {
+                const auto materialIndex = part.materialIndex;
+                if (materialIndex >= materialCount || materialIndex >= materialTextures_.size()) continue;
+                const DrawItem item{&part, materialIndex, std::nullopt, &tree, lod};
+                if (visible) {
+                    auto& queue = isTransparentMaterial(meshData_.materials[materialIndex]) ? transparent : opaque;
+                    queue.push_back(item);
+                }
+                if (sunShadowsActive_) casters.push_back(item);
+            }
+        }
+        if (captureScreenshot && !fixedFrameOutput_.empty()) {
+            std::cerr << "Visible SBFRES trees by LOD: " << forestLodCounts[0] << ", "
+                      << forestLodCounts[1] << ", " << forestLodCounts[2] << '\n';
+        }
+    }
 
     VkPipeline boundPipeline = VK_NULL_HANDLE;
     VkDescriptorSet boundSet = VK_NULL_HANDLE;
@@ -486,7 +514,12 @@ void Renderer::recordCommandBuffer(
         const std::uint32_t materialIndex = item.materialIndex;
         const MaterialData& material = meshData_.materials[materialIndex];
         const auto& shaders = material.shaderConfiguration;
-        const glm::mat4 nodeTransform = transformForSceneNode(part.nodeId);
+        const glm::mat4 nodeTransform = item.tree ? item.tree->transform : transformForSceneNode(part.nodeId);
+        if (shadow && item.tree) {
+            const auto& bounds = forestModels_[item.tree->modelIndex].bounds;
+            if (isOutsideVulkanFrustum(sunShadowClipFromWorld_[cascade] * nodeTransform,
+                bounds.minimum, bounds.maximum)) return;
+        }
         if (shadow && part.terrainBounds && shaders.shader(ShaderStage::Vertex) == "shader_terrain.vert" &&
             shaders.shader(ShaderStage::TessellationControl).empty() &&
             shaders.shader(ShaderStage::TessellationEvaluation).empty() &&
@@ -586,7 +619,8 @@ void Renderer::recordCommandBuffer(
                 boundPipeline = pipeline;
             }
             if (!item.grassLod) {
-                vkCmdDrawIndexed(commandBuffer, part.indexCount, 1, part.firstIndex, 0, 0);
+                const auto range = part.indexRange(item.lod);
+                vkCmdDrawIndexed(commandBuffer, range.indexCount, 1, range.firstIndex, 0, 0);
                 return;
             }
 

@@ -10,6 +10,8 @@
 namespace VulkCore {
 
 inline constexpr float kDefaultSceneVerticalFov = 45.0f;
+inline constexpr float kPlayerSceneVerticalFov = 50.0f;
+inline constexpr float kPlayerHorizontalFovScale = 1.10f;
 
 inline glm::mat4 sceneProjection(float aspectRatio, float nearPlane, float farPlane, bool coverReferenceViewport,
                                  float verticalFovDegrees = kDefaultSceneVerticalFov) {

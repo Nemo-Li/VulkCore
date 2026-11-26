@@ -229,6 +229,10 @@ void Renderer::selectModelResource(const std::filesystem::path& path) {
 
 void Renderer::initializeEmptyScene() {
     meshData_ = MeshData{};
+    forestPatch_.reset();
+    forestSpecies_.clear();
+    forestModels_.clear();
+    forestInstances_.clear();
     if (physicsWorld_) {
         physicsWorld_->clear();
     }
@@ -1270,6 +1274,8 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         std::optional<std::uint32_t> rootNodeId;
     };
     std::vector<ModelResourceReference> modelReferences;
+    std::optional<ForestPatch> forestPatch;
+    std::vector<ForestSpecies> forestSpecies;
     std::filesystem::path terrainPath;
     std::filesystem::path roadLayoutPath;
     std::filesystem::path waterPath;
@@ -1365,6 +1371,30 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 rootNodeId = static_cast<std::uint32_t>(savedRootNodeId);
             }
             modelReferences.push_back({std::move(configuredPath), rootNodeId});
+        } else if (key == "forest_patch") {
+            ForestPatch patch;
+            if (forestPatch || !(sceneFile >> patch.seed >> patch.treeCount >> patch.nearDistance >> patch.farDistance) ||
+                patch.treeCount == 0 || patch.treeCount > 4096 ||
+                !(patch.nearDistance >= 8.0f && patch.nearDistance < patch.farDistance && patch.farDistance <= 4000.0f)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has invalid forest patch settings.";
+                co_return false;
+            }
+            forestPatch = patch;
+        } else if (key == "forest_species") {
+            ForestSpecies species;
+            std::string configuredPath;
+            if (forestSpecies.size() >= 12 || !(sceneFile >> std::quoted(configuredPath) >> std::quoted(species.group) >>
+                species.minimumScale >> species.maximumScale >> species.weight) ||
+                configuredPath.empty() || !isBfresPath(configuredPath) || species.group.empty() ||
+                !(species.minimumScale >= 0.1f && species.maximumScale >= species.minimumScale &&
+                    species.maximumScale <= 4.0f && species.weight > 0.0f && species.weight <= 100.0f)) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid SBFRES forest species.";
+                co_return false;
+            }
+            species.model = std::move(configuredPath);
+            forestSpecies.push_back(std::move(species));
         } else if (key == "terrain_resource") {
             std::string configuredPath;
             if (!(sceneFile >> std::quoted(configuredPath))) {
@@ -1604,6 +1634,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     }
 
     for (auto& model : modelReferences) model.path = resolveSceneAsset(model.path);
+    for (auto& species : forestSpecies) species.model = resolveSceneAsset(species.model);
     playerModelPath = resolveSceneAsset(playerModelPath);
     std::vector<std::filesystem::path> modelsToPrepare;
     if (incremental) {
@@ -1876,6 +1907,11 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         }
         appendRoadToScene(assets.roadMesh);
         assets.roadMesh = {};
+        if (terrainScene_ && playerController_.active() && forestPatch) {
+            forestPatch_ = forestPatch;
+            forestSpecies_ = std::move(forestSpecies);
+            buildForest(*terrainScene_);
+        }
         return firstUnmappedMaterial;
     };
     std::size_t firstUnmappedMaterial;
@@ -1944,13 +1980,6 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         }
     }
     for (const auto& resource : sceneModelResources_) {
-#ifdef VULKCORE_OHOS
-        if (resource.path.filename() == "spawn_woodland.glb") {
-            if (auto* node = findSceneNodeById(meshData_, resource.rootNodeId)) {
-                node->renderEnabled = false;
-            }
-        }
-#endif
         if (!resource.playerModel && std::find(gravityNodeIds.begin(), gravityNodeIds.end(),
             resource.rootNodeId) != gravityNodeIds.end()) {
             modelGravity_.try_emplace(resource.rootNodeId);
@@ -3090,6 +3119,16 @@ bool Renderer::saveTransformSettings() const {
             }
             file << "water_resource " << std::quoted(waterReference.generic_string())
                  << "\n";
+        }
+    }
+    if (forestPatch_) {
+        const auto& patch = *forestPatch_;
+        file << "forest_patch " << patch.seed << ' ' << patch.treeCount << ' '
+             << patch.nearDistance << ' ' << patch.farDistance << '\n';
+        for (const auto& species : forestSpecies_) {
+            file << "forest_species " << std::quoted(sceneReference(species.model)) << ' '
+                 << std::quoted(species.group) << ' ' << species.minimumScale << ' '
+                 << species.maximumScale << ' ' << species.weight << '\n';
         }
     }
     for (const SceneModelResource& model : sceneModelResources_) {

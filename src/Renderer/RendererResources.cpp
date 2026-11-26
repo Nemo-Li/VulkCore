@@ -472,6 +472,11 @@ void Renderer::removeSunMesh() {
                 --part.materialIndex;
             }
         }
+        for (auto& model : forestModels_) {
+            for (auto& part : model.parts) {
+                if (part.materialIndex > removedMaterialIndex) --part.materialIndex;
+            }
+        }
         adjustMaterialOverrides(adjustMaterialOverrides, meshData_.hierarchy);
         for (ModelNode& node : meshData_.additionalNodes) {
             adjustMaterialOverrides(adjustMaterialOverrides, node);
@@ -1788,7 +1793,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
 #endif
     const float aspect = static_cast<float>(extent.width) / extent.height;
     const bool playerView = playerController_.active() && !terrainEditorActive();
-    const float verticalFov = playerView ? 50.0f : kDefaultSceneVerticalFov;
+    const float verticalFov = playerView ? kPlayerSceneVerticalFov : kDefaultSceneVerticalFov;
     ubo.projection = sceneProjection(
         aspect,
         nearPlane,
@@ -1798,7 +1803,7 @@ std::optional<glm::mat4> Renderer::updateUniformBuffer() {
     );
     if (playerView) {
         // Widen the horizontal frustum by 10% at the selected vertical FOV.
-        ubo.projection[0][0] /= 1.10f;
+        ubo.projection[0][0] /= kPlayerHorizontalFovScale;
     }
 
     if (authoredView_.enabled) {

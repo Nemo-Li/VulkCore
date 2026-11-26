@@ -13,7 +13,11 @@ player_camera_height 5.71999979
 player_spawn_position -644.117432 249.630066 1135.41992
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
-model_resource_path "../assets/models/spawn_woodland/spawn_woodland.glb" 5000001
+# Seeded planting from the foreground to the distant valley in the opening camera frustum.
+forest_patch 714027 1840 9 2750
+forest_species "/Users/nemo/Downloads/Model/Obj_TreeBroadleaf_A.sbfres" "Obj_TreeBroadleaf_A_L" 0.63 0.90 5
+forest_species "/Users/nemo/Downloads/Model/Obj_TreeBroadleaf_A.sbfres" "Obj_TreeBroadleaf_A_LL" 0.56 0.75 2
+forest_species "/Users/nemo/Downloads/Model/Obj_TreeBroadleafLow_B.sbfres" "Obj_TreeBroadleafLow_B_02" 0.82 1.15 4
 distance_fog 150 2050 0.430000007 0.340000004 0.50999999 0.670000017 0.239999995 0.409999996 0.600000024
 floating_mist 0.340000004
 sun_present 0

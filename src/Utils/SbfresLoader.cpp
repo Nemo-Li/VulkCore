@@ -735,7 +735,8 @@ void appendShape(
     const SbfresSkeleton& skeleton,
     std::size_t skeletonBoneOffset,
     ModelNode& node,
-    MeshData& result
+    MeshData& result,
+    bool loadLowerLods
 ) {
     file.magic(shape, "FSHP");
     node.name = file.string(shape + 0x10);
@@ -756,9 +757,7 @@ void appendShape(
     }
     const auto lod = file.table(shape + 0x20, lodCount, 0x38);
     if (lodCount == 0) return;
-    const auto indexCount = file.u32(lod + 0x2c);
-    if (indexCount == 0) return;
-    if (file.u32(lod + 0x24) != 3 || indexCount % 3 != 0) file.fail("expected triangle-list LOD0");
+    if (file.u32(lod + 0x2c) == 0) return;
     const auto materialIndex = file.u16(shape + 0x5e);
     const auto boneIndex = file.u16(shape + 0x60);
     const auto vertexIndex = file.u16(shape + 0x62);
@@ -769,15 +768,9 @@ void appendShape(
     const auto vertex = vertexTable + vertexIndex * 0x60;
     file.magic(vertex, "FVTX");
     const auto vertexCount = file.u32(vertex + 0x58);
-    if (vertexCount == 0 || vertexCount > kVertexLimit - result.vertices.size() ||
-        indexCount > kIndexLimit - result.indices.size()) file.fail("geometry budget exceeded");
-    const auto indexFormat = file.u32(lod + 0x28);
-    if (indexFormat > 2) file.fail("unsupported index format");
-    const std::size_t indexSize = std::size_t(1) << indexFormat;
-    const auto bufferSize = file.u32(file.table(lod + 0x18, 1, 4));
-    if (indexCount > bufferSize / indexSize) file.fail("LOD index count exceeds buffer size");
-    const Binary indices{gpu.slice(file.u32(lod + 0x20), bufferSize), "FSHP indices"};
-    const auto baseVertex = file.u32(lod + 0x30);
+    if (vertexCount == 0 || vertexCount > kVertexLimit - result.vertices.size()) {
+        file.fail("geometry budget exceeded");
+    }
     const auto start = static_cast<std::uint32_t>(result.vertices.size());
     const glm::mat4 geometryTransform = skinCount == 0
         ? (skeleton.globalTransforms.empty() ? glm::mat4(1.0f) : skeleton.globalTransforms[boneIndex])
@@ -812,19 +805,42 @@ void appendShape(
         }
     }
 
-    const auto firstIndex = static_cast<std::uint32_t>(result.indices.size());
-    for (std::size_t i = 0; i < indexCount; ++i) {
-        const auto offset = i * indexSize;
-        const auto index = indexSize == 1 ? indices.u8(offset) :
-            indexSize == 2 ? indices.u16(offset) : indices.u32(offset);
-        if (baseVertex >= vertexCount || index >= vertexCount - baseVertex) indices.fail("index outside FVTX");
-        const auto absolute = start + baseVertex + index;
-        result.indices.push_back(absolute);
-        addBounds(node, result.vertices[absolute].position);
+    const auto appendLod = [&](std::size_t entry) -> MeshIndexRange {
+        const auto count = file.u32(entry + 0x2c);
+        if (count == 0) return {};
+        if (file.u32(entry + 0x24) != 3 || count % 3 != 0) file.fail("expected triangle-list LOD");
+        if (count > kIndexLimit - result.indices.size()) file.fail("geometry budget exceeded");
+        const auto indexFormat = file.u32(entry + 0x28);
+        if (indexFormat > 2) file.fail("unsupported index format");
+        const std::size_t indexSize = std::size_t(1) << indexFormat;
+        const auto bufferSize = file.u32(file.table(entry + 0x18, 1, 4));
+        if (count > bufferSize / indexSize) file.fail("LOD index count exceeds buffer size");
+        const Binary indices{gpu.slice(file.u32(entry + 0x20), bufferSize), "FSHP indices"};
+        const auto baseVertex = file.u32(entry + 0x30);
+        const auto first = static_cast<std::uint32_t>(result.indices.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto offset = i * indexSize;
+            const auto index = indexSize == 1 ? indices.u8(offset) :
+                indexSize == 2 ? indices.u16(offset) : indices.u32(offset);
+            if (baseVertex >= vertexCount || index >= vertexCount - baseVertex) indices.fail("index outside FVTX");
+            const auto absolute = start + baseVertex + index;
+            result.indices.push_back(absolute);
+            addBounds(node, result.vertices[absolute].position);
+        }
+        return {first, count};
+    };
+    const auto base = appendLod(lod);
+    MeshPart part{base.firstIndex, base.indexCount, static_cast<std::uint32_t>(materialStart + materialIndex), node.nodeId};
+    if (loadLowerLods) {
+        for (std::size_t level = 1; level <= part.lowerLods.size() && level < lodCount; ++level) {
+            // A one-triangle LOD can serve as a native placeholder for a hidden shape.
+            const auto entry = lod + level * 0x38;
+            part.lowerLods[level - 1] = appendLod(entry);
+        }
     }
     node.meshCount = 1;
     node.meshPartIndices.push_back(static_cast<std::uint32_t>(result.parts.size()));
-    result.parts.push_back({firstIndex, indexCount, static_cast<std::uint32_t>(materialStart + materialIndex), node.nodeId});
+    result.parts.push_back(part);
 }
 
 struct BfresCurve {
@@ -1076,7 +1092,8 @@ struct ImportedModelRange {
 MeshData parseModel(
     const Binary& file,
     TexturePacks& textures,
-    std::vector<SkeletalAnimationClip> animations
+    std::vector<SkeletalAnimationClip> animations,
+    std::string_view staticModelGroup
 ) {
     const auto modelCount = file.u16(0xbc);
     if (modelCount == 0 || modelCount > 1024) file.fail("invalid FMDL count");
@@ -1093,6 +1110,8 @@ MeshData parseModel(
     for (std::size_t i = 0; i < modelCount; ++i) {
         const auto model = models + i * 0x78;
         file.magic(model, "FMDL");
+        const auto name = file.string(model + 0x10);
+        if (!staticModelGroup.empty() && name != staticModelGroup) continue;
         const auto vertexCount = file.u16(model + 0x68);
         const auto shapeCount = file.u16(model + 0x6a);
         const auto materialCount = file.u16(model + 0x6c);
@@ -1108,7 +1127,7 @@ MeshData parseModel(
             result.materials.push_back(readMaterial(file, materials + j * 0xb8, textures));
         }
         ModelNode node;
-        node.name = file.string(model + 0x10);
+        node.name = name;
         node.nodeId = nextNode++;
         const auto vertexStart = result.vertices.size();
         const auto boneStart = result.skeletonBones.size();
@@ -1142,7 +1161,8 @@ MeshData parseModel(
                 skeleton,
                 boneStart,
                 shape,
-                result
+                result,
+                !staticModelGroup.empty()
             );
             if (shape.hasBounds) {
                 addBounds(node, shape.boundsMinimum);
@@ -1164,7 +1184,10 @@ MeshData parseModel(
         });
         result.hierarchy.children.push_back(std::move(node));
     }
-    if (result.indices.empty()) file.fail("no renderable triangles");
+    if (result.indices.empty()) {
+        if (!staticModelGroup.empty()) file.fail("no renderable triangles in FMDL " + std::string(staticModelGroup));
+        file.fail("no renderable triangles");
+    }
 
     if (!animations.empty()) {
         std::size_t targetRange = 0;
@@ -1366,7 +1389,8 @@ MeshData loadSbfresMesh(
     const std::filesystem::path& texturePath,
     const std::filesystem::path& animationPath,
     bool includeEmbeddedAnimations,
-    SbfresTextureArchive* previewTextures
+    SbfresTextureArchive* previewTextures,
+    std::string_view staticModelGroup
 ) {
     const auto sidecarPath = texturePath.empty() ? findBfresTextureSidecar(modelPath) : texturePath;
     try {
@@ -1388,7 +1412,7 @@ MeshData loadSbfresMesh(
         } else if (includeEmbeddedAnimations) {
             animations = readSkeletalAnimations(model->file);
         }
-        auto result = parseModel(model->file, textures, std::move(animations));
+        auto result = parseModel(model->file, textures, std::move(animations), staticModelGroup);
         if (result.hierarchy.name.empty()) result.hierarchy.name = modelPath.stem().string();
         if (previewTextures) {
             auto archive = sidecar ? std::move(sidecar) : std::move(model);

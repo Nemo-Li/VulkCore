@@ -258,6 +258,7 @@ private:
     void appendWaterToScene(const TerrainMeshData& waterMesh);
     void appendPlayerToScene();
     void appendGrassToScene(const TerrainScene& terrain);
+    void buildForest(const TerrainScene& terrain);
     void updateGrassCoverage();
     void updatePlayerController(float deltaSeconds, bool viewportHovered);
     void updatePlayerCamera();
@@ -520,6 +521,33 @@ private:
     std::uint32_t uniformSliceStride_ = 0;
     bool sunShadowsActive_ = false;
     MeshData meshData_;
+    struct ForestPatch {
+        std::uint32_t seed = 0;
+        std::uint32_t treeCount = 0;
+        float nearDistance = 0.0f;
+        float farDistance = 0.0f;
+    };
+    struct ForestSpecies {
+        std::filesystem::path model;
+        std::string group;
+        float minimumScale = 1.0f;
+        float maximumScale = 1.0f;
+        float weight = 1.0f;
+    };
+    struct ForestModel {
+        TerrainChunkBounds bounds;
+        std::vector<MeshPart> parts;
+    };
+    struct ForestInstance {
+        std::size_t modelIndex;
+        glm::mat4 transform;
+    };
+    static constexpr float kForestLod1Distance = 42.0f;
+    static constexpr float kForestLod2Distance = 115.0f;
+    std::optional<ForestPatch> forestPatch_;
+    std::vector<ForestSpecies> forestSpecies_;
+    std::vector<ForestModel> forestModels_;
+    std::vector<ForestInstance> forestInstances_;
     std::unique_ptr<TerrainScene> terrainScene_;
     RoadPaint roadPaint_;
     static constexpr float kDefaultOchreDirtRatio = 0.80f;

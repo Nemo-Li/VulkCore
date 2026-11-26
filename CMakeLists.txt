@@ -339,6 +339,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/ParticleSystem.cpp
     src/Renderer/Renderer.cpp
     src/Renderer/RendererFrame.cpp
+    src/Renderer/RendererForest.cpp
     src/Renderer/RendererModelViewer.cpp
     src/Renderer/HdrComposition.cpp
     src/Renderer/RendererPipelines.cpp

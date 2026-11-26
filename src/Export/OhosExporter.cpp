@@ -101,7 +101,7 @@ public:
     ResourceCollector(fs::path source, fs::path scene, fs::path payload, fs::path output)
         : source_(std::move(source)), scene_(std::move(scene)), payload_(std::move(payload)), output_(std::move(output)) {}
 
-    std::string path(const std::string& value, bool sceneRelative, bool modelDirectory) {
+    std::string path(const std::string& value, bool sceneRelative, bool modelDirectory, bool bfresSidecar = false) {
         if (value.empty()) return value;
         fs::path resolved(value);
         if (resolved.is_relative()) {
@@ -143,6 +143,11 @@ public:
                 const fs::path exported = fs::path("assets/external") /
                     std::to_string(external_.size()) / origin.filename();
                 copyTree(origin, payload_ / exported);
+                if (bfresSidecar) {
+                    const auto name = resolved.stem().string() + ".Tex" + resolved.extension().string();
+                    const auto companion = resolved.parent_path() / name;
+                    if (fs::is_regular_file(companion)) copyTree(companion, payload_ / exported.parent_path() / name);
+                }
                 external_.emplace_back(origin, exported);
                 target = modelDirectory ? exported / resolved.filename() : exported;
             }
@@ -163,7 +168,8 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector,
         std::string key;
         tokens >> key;
         if (omitRoads && (key == "terrain_road" || key == "terrain_road_ochre_ratio")) continue;
-        const bool model = key == "model_resource_path" || key == "player_model_resource";
+        const bool forest = key == "forest_species";
+        const bool model = key == "model_resource_path" || key == "player_model_resource" || forest;
         const bool reference = model || key == "terrain_resource" || key == "water_resource" ||
             key == "terrain_road_layout" || key == "realtime_effect";
         const bool material = key == "material";
@@ -173,7 +179,7 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector,
             auto fields = quotedFields(line);
             const std::size_t first = material ? 1 : 0;
             const std::size_t count = textures ? 2 : 1;
-            if (fields.size() != first + count) {
+            if (fields.size() != first + count + (forest ? 1 : 0)) {
                 throw std::runtime_error("Invalid path fields in scene record: " + key);
             }
             if (key == "particle_system_object") {
@@ -185,7 +191,7 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector,
             for (std::size_t index = first + count; index-- > first;) {
                 auto& field = fields[index];
                 std::ostringstream encoded;
-                encoded << std::quoted(collector.path(field.value, reference, model));
+                encoded << std::quoted(collector.path(field.value, reference, model && !forest, forest));
                 line.replace(field.start, field.length, encoded.str());
             }
         }

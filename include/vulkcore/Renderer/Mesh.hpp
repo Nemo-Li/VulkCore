@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -199,12 +200,26 @@ struct TerrainChunkBounds {
     glm::vec3 maximum;
 };
 
+struct MeshIndexRange {
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+};
+
 struct MeshPart {
     std::uint32_t firstIndex = 0;
     std::uint32_t indexCount = 0;
     std::uint32_t materialIndex = 0;
     std::uint32_t nodeId = 0;
     std::optional<TerrainChunkBounds> terrainBounds = std::nullopt;
+    std::array<MeshIndexRange, 2> lowerLods{};
+
+    MeshIndexRange indexRange(std::size_t lod) const {
+        lod = std::min(lod, lowerLods.size());
+        for (; lod != 0; --lod) {
+            if (lowerLods[lod - 1].indexCount != 0) return lowerLods[lod - 1];
+        }
+        return {firstIndex, indexCount};
+    }
 };
 
 enum class SceneObjectType : std::uint8_t {
