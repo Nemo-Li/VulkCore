@@ -449,7 +449,8 @@ void Renderer::recordCommandBuffer(
              transitionPlayer_.progress > material.transitionVisibleUntil)) continue;
         // The light sees off-camera geometry that can still occlude visible surfaces.
         // Skip dense grass blades to avoid drawing them again for each shadow cascade.
-        if (sunShadowsActive_ && part.nodeId != kSunSceneNodeId && (!grassLod || !isGrassVegetation(*grassLod))) {
+        if (sunShadowsActive_ && part.nodeId != kSunSceneNodeId && part.nodeId != kTerrainRoadSceneNodeId &&
+            (!grassLod || !isGrassVegetation(*grassLod))) {
             casters.push_back({&part, index, grassLod});
         }
         if (const auto& bounds = part.terrainBounds) {

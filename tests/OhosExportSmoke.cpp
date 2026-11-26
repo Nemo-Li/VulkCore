@@ -37,6 +37,8 @@ int main() {
         write(atlas, "retired atlas");
         const auto effect = root / "external VFX/fire.vfx3d";
         write(effect, "vfx3d package");
+        const auto layout = root / "external roads/roads.yml";
+        write(layout, "Rails: []\n");
         write(source / "assets/terrain/MainField.tscb", "terrain");
         write(source / "src/main.cpp", "// runtime");
         write(source / "include/engine.hpp", "// interface");
@@ -69,7 +71,9 @@ int main() {
             "particle_system_object 99 1 \"assets/textures/spark.png\"\n"
             "particle_system_object 98 1 \"" + atlas.generic_string() + "\" flipbook 2 2 4 192 4 2\n"
             "realtime_effect 100 \"" + effect.generic_string() + "\" 1 0\n"
-            "camera_position 1 2 3\n";
+            "camera_position 1 2 3\n"
+            "terrain_road_layout \"" + layout.generic_string() + "\"\n"
+            "terrain_road_path 4.8 3 20 25 25 29 31 32\n";
         const std::string roads = "terrain_road_ochre_ratio 0.8\n"
             "  terrain_road 1 3.75 2 0 0 1 1\n"
             "terrain_road 0 3.75 1 1 0\n";
@@ -105,6 +109,8 @@ int main() {
         require(exported.find("realtime_effect 100 \"../assets/external/1/fire.vfx3d\" 1 0") != std::string::npos,
             "Realtime effect path or settings were lost");
         require(read(payload / "assets/external/1/fire.vfx3d") == "vfx3d package", "Realtime effect package was lost");
+        require(exported.find("terrain_road_layout \"../assets/external/2/roads.yml\"") != std::string::npos &&
+            read(payload / "assets/external/2/roads.yml") == "Rails: []\n", "Road layout file or reference was lost");
         require(exported.find("particle_system_object 99") != std::string::npos &&
             exported.find("particle_system_object 98") == std::string::npos &&
             !fs::exists(payload / "assets/external/2/atlas.png"), "Export retained a retired atlas effect");
@@ -129,6 +135,8 @@ int main() {
         const auto gamePayload = gameOptions.outputDirectory / "entry/src/main/resources/rawfile/vulkcore";
         require(read(gamePayload / "scenes/game.scene") == exported.substr(0, exported.size() - roads.size()),
             "game.scene should omit road records and preserve other settings");
+        require(read(gamePayload / "scenes/game.scene").find("terrain_road_path 4.8 3 20 25 25 29 31 32") !=
+            std::string::npos, "Road mesh path was removed from HarmonyOS game.scene");
         require(read(gameOptions.scene) == original + roads, "Original game.scene was modified");
         options.outputDirectory = root / "broken";
         write(scene, "model_resource_path \"missing.fbx\" 42\n");

@@ -294,9 +294,15 @@ Selected Node 区域的 Node Material 可以为当前节点及其子节点绑定
 
 macOS 编辑器顶部的 `Effects` 标签支持粒子、网格、拖尾、灯光和后处理，可通过时间轴、曲线和自定义 GLSL 制作特效。可导出供 Three.js 播放的效果包，或导出交给 VulkCore 的 Vulkan 渲染器实时播放的 `.vfx3d` 资源。详见 [特效编辑器](docs/vfx_editor.md)。
 
+#### 坐标路网
+
+`scenes/game.scene` 通过 `terrain_road_layout "../assets/road_layouts/game.yml"` 引用道路布局。该记录接受相对于场景的 YAML 文件路径，也可引用包含多个 YAML 分区的目录。加载器读取 `Rails` 中 `UnitConfigName` 为 `NavigationMeshRoad` 的条目，用 `RailPoints[].Translate` 的 X、Z 作为世界坐标，从地形采样 Y 生成黄土路面，并在路面范围内避让草叶。
+
+`Width` 单位为米，默认 4.8 m。`RailType` 可用 `Linear` 或 `Bezier`，后者的 `ControlPoints` 是相对于当前点的入向、出向偏移。缺少控制点时，该段仍可沿节点连线铺设。`IsClosed: true` 会接通首尾。编辑布局后重新打开场景即可看到变化。
+
 #### 地形道路笔刷
 
-打开包含地形的场景后按 `F5` 进入编辑模式，从 **Edit Tool** 选择 **Road Brush**。在右侧面板选择黄土路（`Ochre dirt`）、碎石、石板或橡皮擦，并设置以米为单位的笔刷半径。黄土路的半径沿笔画连续变化，幅度在设定半径的 ±22% 内。`View` 可切换透视和正交俯视，两种视角共用同一份道路数据。
+打开包含地形且未铺设道路网格的场景后按 `F5` 进入编辑模式，从 **Edit Tool** 选择 **Road Brush**。在右侧面板选择黄土路（`Ochre dirt`）、碎石、石板或橡皮擦，并设置以米为单位的笔刷半径。黄土路的半径沿笔画连续变化，幅度在设定半径的 ±22% 内。`View` 可切换透视和正交俯视，两种视角共用同一份道路数据。
 
 在视口内按住左键拖动绘制，按住右键拖动环绕相机，用 `WASD` 平移，滚轮缩放。选择黄土路时，`Ochre dirt mix` 可实时调整场景内所有黄土路的路心占比（默认 80%），路肩保留更多原地表。点击 `Save` 将道路及占比写入当前 `.scene` 文件。需要移动物体时，从 `Edit Tool` 切换到 `Select / Transform`。
 

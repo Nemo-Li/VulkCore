@@ -1,5 +1,6 @@
 #include "vulkcore/Renderer/Frustum.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
+#include "vulkcore/Terrain/RoadLayout.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 #include "vulkcore/Utils/SbfresLoader.hpp"
 
@@ -315,6 +316,96 @@ void checkMaterialMaps() {
     }), "filtered triangles must keep their remapped material layer");
 }
 
+void checkRoadMesh() {
+    using namespace VulkCore;
+    Fixture fixture;
+    fixture.create(false);
+    const auto scene = TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    const auto mesh = scene->buildRoadMesh({TerrainRoadPath{4.0f, {{90, 96}, {105, 96}, {116, 105}}}});
+    require(!mesh.indices.empty() && mesh.indices.size() % 3 == 0, "road must generate an indexed surface");
+    require(scene->roadContains({100, 96}) && !scene->roadContains({100, 99}) &&
+        !scene->roadContains({87, 96}), "road footprint must respect its width and endpoints");
+    for (const auto& vertex : mesh.vertices) {
+        const auto y = scene->renderedHeightAtWorld({vertex.position.x, vertex.position.z});
+        require(y && vertex.position.y > *y && vertex.position.y < *y + 0.2f,
+            "road must follow the rendered terrain");
+    }
+    for (std::size_t i = 0; i < mesh.indices.size(); i += 3) {
+        const auto a = mesh.vertices.at(mesh.indices[i]).position;
+        const auto b = mesh.vertices.at(mesh.indices[i + 1]).position;
+        const auto c = mesh.vertices.at(mesh.indices[i + 2]).position;
+        require(glm::cross(b - a, c - a).y > 0.0f, "road triangles must face up");
+    }
+    require(scene->buildRoadMesh({}).vertices.empty() && !scene->roadContains({100, 96}),
+        "empty road data must clear the footprint");
+}
+
+void checkRoadLayout() {
+    using namespace VulkCore;
+    Fixture fixture;
+    fixture.create(false);
+    const auto layout = fixture.root / "layout";
+    std::filesystem::create_directories(layout / "east");
+    std::ofstream(layout / "west.yml") << R"(Objs:
+- {HashId: !u 0x123, UnitConfigName: Tree}
+Rails:
+- UnitConfigName: Route
+  RailPoints: [{Translate: [90, 0, 115]}, {Translate: [110, 0, 115]}]
+- UnitConfigName: NavigationMeshRoad
+  Width: 4
+  RailPoints:
+  - Translate: [90, 900, 96]
+  - Translate: [110, -20, 96]
+)";
+    std::ofstream(layout / "east/path.yaml") << R"(Rails:
+  - UnitConfigName: NavigationMeshRoad
+    RailType: Bezier
+    RailPoints:
+      - Translate: [120, 10, 114]
+        ControlPoints: [[0, 0, 0], [6, 0, 12]]
+      - Translate: [144, 20, 114]
+        ControlPoints: [[-6, 0, 12], [0, 0, 0]]
+  - UnitConfigName: NavigationMeshRoad
+    RailType: Linear
+    IsClosed: true
+    RailPoints:
+      - Translate: [160, 0, 100]
+      - Translate: [180, 0, 100]
+      - Translate: [180, 0, 120]
+      - Translate: [160, 0, 120]
+)";
+    auto paths = loadTerrainRoadLayout(layout);
+    require(paths.size() == 3 && paths[2].points.size() == 2 && paths[2].width == 4.0f,
+        "only road rails should be loaded, in stable tile order");
+    require(paths[0].points.front() == glm::vec2(120, 114) &&
+        paths[0].points.back() == glm::vec2(144, 114) && paths[0].width == 4.8f,
+        "road endpoints should use world XZ and default width");
+    require(paths[1].points.front() == paths[1].points.back(),
+        "closed road must return to its start");
+
+    const auto terrain = TerrainScene::load(fixture.root / "MainField.tscb", fixture.root);
+    const auto mesh = terrain->buildRoadMesh(std::move(paths));
+    require(terrain->hasRoadMesh() && !mesh.indices.empty() &&
+        terrain->roadContains({100, 96}) && terrain->roadContains({132, 123}) &&
+        terrain->roadContains({160, 110}) && !terrain->roadContains({100, 115}),
+        "the generated footprint must follow the closed, linear and Bezier roads only");
+    for (const auto& vertex : mesh.vertices) {
+        const auto y = terrain->renderedHeightAtWorld({vertex.position.x, vertex.position.z});
+        require(y && std::abs(vertex.position.y - *y - 0.10f) < 0.001f,
+            "the road layout's Y coordinate must not replace terrain elevation");
+    }
+
+    const auto invalid = layout / "broken.yml";
+    std::ofstream(invalid) << "Rails: [{UnitConfigName: NavigationMeshRoad, Width: bogus}]";
+    bool rejected = false;
+    try {
+        loadTerrainRoadLayout(invalid);
+    } catch (const std::exception& error) {
+        rejected = std::string_view(error.what()).find("broken.yml") != std::string_view::npos;
+    }
+    require(rejected, "an invalid road layout must report the source file");
+}
+
 void checkGrassCoverage() {
     using namespace VulkCore;
     Fixture fixture;
@@ -373,6 +464,15 @@ void checkGrassCoverage() {
         }
     }
     require(cardsInCell == 2 * 40 * 40, "one fully covered cell must contain the dense LOD1 grid");
+    const auto roadMesh = scene->buildRoadMesh({TerrainRoadPath{4.0f, {{90, 96}, {110, 96}}}});
+    require(!roadMesh.indices.empty(), "grass fixture road must generate");
+    GrassCoverage grassBesideRoad;
+    grassBesideRoad.update(*scene, {96.0f, 96.0f});
+    require(grassBesideRoad.instances().size() < grass.instances().size() &&
+        std::none_of(grassBesideRoad.instances().begin(), grassBesideRoad.instances().end(), [&](const auto& blade) {
+            return scene->roadContains({blade.rootHeight.x, blade.rootHeight.z});
+        }), "road must exclude grass and flowers from its footprint during instance generation");
+    scene->buildRoadMesh({});
     const auto nearest = [&](glm::vec2 position, GrassLod lod) -> const GrassInstance* {
         const GrassInstance* bestInstance = nullptr;
         float distance = std::numeric_limits<float>::max();
@@ -578,6 +678,8 @@ int main() {
         checkMaterialMaps();
         checkArchiveMaterialLayers();
         checkGrassCoverage();
+        checkRoadMesh();
+        checkRoadLayout();
         checkFrustum();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

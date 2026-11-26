@@ -129,6 +129,13 @@ struct TerrainMeshData {
     std::size_t selectMaterialTiles(std::span<const int> textureLayers);
 };
 
+inline constexpr float kTerrainRoadSampleSpacing = 0.75f;
+
+struct TerrainRoadPath {
+    float width = 0.0f;
+    std::vector<glm::vec2> points;
+};
+
 struct TerrainMaterialSample {
     std::uint8_t firstId;
     std::uint8_t secondId;
@@ -239,6 +246,11 @@ public:
     TerrainMacroAlbedo bakeMacroAlbedo(const TerrainMaterialLayers& layers,
         const std::array<glm::vec4, 256>& palette, const std::atomic<bool>* cancelled = nullptr) const;
     TerrainGrassSurface bakeGrassSurface(const std::atomic<bool>* cancelled = nullptr) const;
+    TerrainMeshData buildRoadMesh(
+        std::vector<TerrainRoadPath> paths, const std::atomic<bool>* cancelled = nullptr);
+    bool hasRoadMesh() const { return !roadCells_.empty(); }
+    bool roadContains(glm::vec2 worldPosition) const;
+    const std::vector<TerrainRoadPath>& roadPaths() const { return roadPaths_; }
     std::optional<GrassSample> grassAtWorld(const glm::vec2& worldPosition) const;
     std::optional<float> waterHeightAtWorld(const glm::vec2& worldPosition) const;
 
@@ -259,6 +271,9 @@ private:
     std::vector<TerrainChunk> chunks_;
     std::vector<std::vector<TerrainMaterialSample>> materialTiles_;
     std::vector<WaterTileData> waterTiles_;
+    std::vector<TerrainRoadPath> roadPaths_;
+    using RoadTriangle = std::array<glm::vec2, 3>;
+    std::map<std::pair<int, int>, std::vector<RoadTriangle>> roadCells_;
     struct GrassTile {
         glm::vec2 minimum;
         glm::vec2 maximum;

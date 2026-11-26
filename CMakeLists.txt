@@ -135,6 +135,18 @@ add_custom_command(
 )
 list(APPEND VULKCORE_SHADER_BINARIES "${OHOS_TERRAIN_BINARY}")
 
+# Desktop scenes authored with the original brush can still edit their strokes.
+set(LEGACY_TERRAIN_BINARY "${VULKCORE_SHADER_BINARY_DIR}/legacy/shader_terrain.frag.spv")
+add_custom_command(
+    OUTPUT "${LEGACY_TERRAIN_BINARY}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VULKCORE_SHADER_BINARY_DIR}/legacy"
+    COMMAND "${VULKCORE_GLSLC_EXECUTABLE}" -O -DVULKCORE_LEGACY_ROAD_BRUSH=1 "${OHOS_TERRAIN_SOURCE}" -o "${LEGACY_TERRAIN_BINARY}"
+    DEPENDS "${OHOS_TERRAIN_SOURCE}" ${VULKCORE_SHADER_INCLUDES}
+    COMMENT "Compiling desktop terrain brush shader"
+    VERBATIM
+)
+list(APPEND VULKCORE_SHADER_BINARIES "${LEGACY_TERRAIN_BINARY}")
+
 # Compile depth-only forms of materials whose coverage is procedural. They reuse the
 # visible shader's discard and alpha rules without accessing the receiving shadow map.
 foreach(SHADOW_MATERIAL IN ITEMS grass grid particle surface_wipe tornado uv_ribbon)
@@ -301,6 +313,27 @@ else()
     target_compile_options(vulkcore_physics PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+find_package(yaml-cpp 0.8 CONFIG QUIET)
+if(NOT TARGET yaml-cpp::yaml-cpp)
+    function(vulkcore_fetch_yaml_cpp)
+        # yaml-cpp 0.8 declares CMake 3.4. Scope compatibility to this dependency.
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0 AND
+           "${CMAKE_POLICY_VERSION_MINIMUM}" VERSION_LESS 3.10)
+            set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+        endif()
+        set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(yaml-cpp
+            GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+            GIT_TAG 0.8.0
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(yaml-cpp)
+    endfunction()
+    vulkcore_fetch_yaml_cpp()
+endif()
+
 set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/Buffer.cpp
     src/Renderer/ParticleSystem.cpp
@@ -323,6 +356,7 @@ set(VULKCORE_RUNTIME_SOURCES
     src/Renderer/VulkanContext.cpp
     src/Gameplay/Player.cpp
     src/Terrain/Grass.cpp
+    src/Terrain/RoadLayout.cpp
     src/Terrain/RoadPaint.cpp
     src/Terrain/Terrain.cpp
     src/Utils/FileUtils.cpp
@@ -447,6 +481,7 @@ target_link_libraries(${VULKCORE_RUNTIME_TARGET}
         ${VULKCORE_GLM_TARGET}
     PRIVATE
         ${VULKCORE_ASSIMP_TARGET}
+        yaml-cpp::yaml-cpp
         vulkcore_imgui
         vulkcore_physics
 )
@@ -505,11 +540,12 @@ if(BUILD_TESTING AND NOT VULKCORE_OHOS)
     add_executable(vulkcore_terrain_smoke
         tests/TerrainSmoke.cpp
         src/Terrain/Grass.cpp
+        src/Terrain/RoadLayout.cpp
         src/Terrain/Terrain.cpp
         src/Utils/FileUtils.cpp
         src/Utils/SbfresLoader.cpp
     )
     target_include_directories(vulkcore_terrain_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(vulkcore_terrain_smoke PRIVATE Vulkan::Headers ${VULKCORE_GLM_TARGET})
+    target_link_libraries(vulkcore_terrain_smoke PRIVATE Vulkan::Headers ${VULKCORE_GLM_TARGET} yaml-cpp::yaml-cpp)
     add_test(NAME vulkcore_terrain_smoke COMMAND vulkcore_terrain_smoke)
 endif()

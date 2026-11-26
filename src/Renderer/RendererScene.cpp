@@ -4,9 +4,11 @@
 
 #include <atomic>
 #include <future>
+#include <iterator>
 
 #include "vulkcore/Physics/PhysicsWorld.hpp"
 #include "vulkcore/Terrain/Grass.hpp"
+#include "vulkcore/Terrain/RoadLayout.hpp"
 #include "vulkcore/Terrain/Terrain.hpp"
 
 #include <cerrno>
@@ -240,6 +242,8 @@ void Renderer::initializeEmptyScene() {
     terrainMacroAlbedo_.reset();
     terrainRockCoverage_.reset();
     terrainResourcePath_.clear();
+    roadLayoutPath_.clear();
+    inlineRoadPathCount_ = 0;
     waterResourcePath_.clear();
     playerController_.clear();
     playerClickToMove_ = false;
@@ -377,6 +381,39 @@ void Renderer::appendTerrainToScene(const TerrainMeshData& terrainMesh) {
         throw std::runtime_error("BOTW terrain chunks contain no triangles");
     }
     meshData_.additionalNodes.push_back(std::move(terrainNode));
+}
+
+void Renderer::appendRoadToScene(const TerrainMeshData& roadMesh) {
+    if (roadMesh.indices.empty()) return;
+
+    const auto vertexOffset = static_cast<std::uint32_t>(meshData_.vertices.size());
+    const auto indexOffset = static_cast<std::uint32_t>(meshData_.indices.size());
+    const auto materialIndex = static_cast<std::uint32_t>(meshData_.materials.size());
+    const auto partIndex = static_cast<std::uint32_t>(meshData_.parts.size());
+    meshData_.vertices.insert(meshData_.vertices.end(), roadMesh.vertices.begin(), roadMesh.vertices.end());
+    meshData_.bindPoseVertices.insert(meshData_.bindPoseVertices.end(), roadMesh.vertices.begin(), roadMesh.vertices.end());
+    meshData_.skinSourceVertices.insert(meshData_.skinSourceVertices.end(), roadMesh.vertices.begin(), roadMesh.vertices.end());
+    for (const auto index : roadMesh.indices) meshData_.indices.push_back(vertexOffset + index);
+
+    MaterialData material;
+    material.name = "Terrain Road";
+    material.roughness = 1.0f;
+    meshData_.materials.push_back(std::move(material));
+    meshData_.parts.push_back({indexOffset, static_cast<std::uint32_t>(roadMesh.indices.size()),
+        materialIndex, kTerrainRoadSceneNodeId});
+
+    ModelNode node;
+    node.name = "Terrain Road";
+    node.nodeId = kTerrainRoadSceneNodeId;
+    node.meshCount = 1;
+    node.meshPartIndices.push_back(partIndex);
+    node.hasBounds = true;
+    node.boundsMinimum = node.boundsMaximum = roadMesh.vertices.front().position;
+    for (const auto& vertex : roadMesh.vertices) {
+        node.boundsMinimum = glm::min(node.boundsMinimum, vertex.position);
+        node.boundsMaximum = glm::max(node.boundsMaximum, vertex.position);
+    }
+    meshData_.additionalNodes.push_back(std::move(node));
 }
 
 void Renderer::appendWaterToScene(const TerrainMeshData& waterMesh) {
@@ -1234,6 +1271,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     };
     std::vector<ModelResourceReference> modelReferences;
     std::filesystem::path terrainPath;
+    std::filesystem::path roadLayoutPath;
     std::filesystem::path waterPath;
     std::filesystem::path playerModelPath;
     std::optional<glm::vec3> playerSpawnPosition;
@@ -1248,6 +1286,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     std::optional<float> playerCameraFollowDistance;
     std::optional<float> playerCameraHeight;
     RoadPaint savedRoadPaint;
+    std::vector<TerrainRoadPath> savedRoadPaths;
     float savedOchreDirtRatio = kDefaultOchreDirtRatio;
     std::ifstream sceneFile(resolvedScenePath);
     if (!sceneFile.is_open()) {
@@ -1334,6 +1373,46 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 co_return false;
             }
             terrainPath = std::move(configuredPath);
+        } else if (key == "terrain_road_layout") {
+            std::string record;
+            std::getline(sceneFile, record);
+            std::istringstream data(record);
+            std::string configuredPath, extra;
+            if (!roadLayoutPath.empty() || !(data >> std::quoted(configuredPath)) ||
+                configuredPath.empty() || data >> extra) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid terrain road layout reference.";
+                co_return false;
+            }
+            roadLayoutPath = std::move(configuredPath);
+        } else if (key == "terrain_road_path") {
+            TerrainRoadPath path;
+            std::size_t count = 0;
+            std::string record;
+            std::getline(sceneFile, record);
+            std::istringstream data(record);
+            bool valid = (data >> path.width >> count) && std::isfinite(path.width) &&
+                path.width >= 0.5f && path.width <= 24.0f &&
+                count >= 2 && count <= 256 && savedRoadPaths.size() < 64;
+            float length = 0.0f;
+            for (std::size_t i = 0; valid && i < count; ++i) {
+                glm::vec2 point{};
+                valid = (data >> point.x >> point.y) && std::isfinite(point.x) &&
+                    std::isfinite(point.y) && std::abs(point.x) <= 10000.0f && std::abs(point.y) <= 10000.0f;
+                if (valid && !path.points.empty()) {
+                    const float span = glm::length(point - path.points.back());
+                    length += span;
+                    valid = span >= 0.05f && length <= 2000.0f;
+                }
+                if (valid) path.points.push_back(point);
+            }
+            std::string extra;
+            if (!valid || data >> extra) {
+                sceneStatusFailed_ = true;
+                sceneStatus_ = "Scene file has an invalid terrain road path.";
+                co_return false;
+            }
+            savedRoadPaths.push_back(std::move(path));
         } else if (key == "terrain_road") {
             if (!savedRoadPaint.readStroke(sceneFile)) {
                 sceneStatusFailed_ = true;
@@ -1476,6 +1555,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     if (isTornadoScene) {
         std::erase_if(modelReferences, [](const auto& model) { return !model.rootNodeId; });
         terrainPath.clear();
+        roadLayoutPath.clear();
         waterPath.clear();
         playerModelPath.clear();
         playerSpawnPosition.reset();
@@ -1484,12 +1564,13 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
     }
 
     sceneResourceWarnings_.clear();
-    const auto resolveSceneAsset = [&](const std::filesystem::path& asset, bool directory = false) {
+    enum class AssetType { File, Directory, FileOrDirectory };
+    const auto resolveSceneAsset = [&](const std::filesystem::path& asset, AssetType type = AssetType::File) {
         if (!asset.is_relative() || asset.empty()) return normalizedPath(asset);
         const auto relative = normalizedPath(resolvedScenePath.parent_path() / asset);
         const auto exists = [&](const std::filesystem::path& candidate) {
-            return directory ? std::filesystem::is_directory(candidate, error) :
-                std::filesystem::is_regular_file(candidate, error);
+            return (type != AssetType::File && std::filesystem::is_directory(candidate, error)) ||
+                (type != AssetType::Directory && std::filesystem::is_regular_file(candidate, error));
         };
         if (exists(relative)) return relative;
         // Older scenes can also contain paths relative to the working directory.
@@ -1507,11 +1588,12 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         }
     };
 
-    terrainPath = resolveSceneAsset(terrainPath, true);
+    terrainPath = resolveSceneAsset(terrainPath, AssetType::Directory);
     const bool terrainReferenced = !terrainPath.empty();
+    roadLayoutPath = resolveSceneAsset(roadLayoutPath, AssetType::FileOrDirectory);
     bool waterSkipped = false;
     if (!waterPath.empty()) {
-        waterPath = resolveSceneAsset(waterPath, true);
+        waterPath = resolveSceneAsset(waterPath, AssetType::Directory);
         if (!std::filesystem::is_directory(waterPath, error)) {
             warnResource("Water", waterPath, "directory not found");
             waterPath.clear();
@@ -1540,17 +1622,20 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         std::unique_ptr<TerrainScene> terrain;
         TerrainMeshData terrainMesh;
         TerrainMeshData waterMesh;
+        TerrainMeshData roadMesh;
         std::optional<TerrainMaterialImages> terrainMaterials;
         std::optional<TerrainGrassImages> grass;
         std::string terrainError;
+        std::string roadLayoutError;
         std::string terrainMaterialError;
         std::string grassError;
         std::unordered_map<std::string, ModelResourceCacheEntry> models;
     };
     std::atomic<int> preparationProgress{4};
     const auto* cancelled = incremental ? &sceneLoadCancelled_ : nullptr;
-    const auto prepare = [terrainPath, waterPath, models = std::move(modelsToPrepare),
-                          &preparationProgress, cancelled] {
+    const auto inlineRoadPathCount = savedRoadPaths.size();
+    auto prepare = [terrainPath, roadLayoutPath, waterPath, models = std::move(modelsToPrepare),
+                    paths = std::move(savedRoadPaths), &preparationProgress, cancelled]() mutable {
         const auto stopping = [cancelled] {
             return cancelled && cancelled->load(std::memory_order_relaxed);
         };
@@ -1563,6 +1648,25 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 prepared.terrainMesh = prepared.terrain->buildMesh({}, cancelled);
                 if (stopping()) return prepared;
                 prepared.waterMesh = prepared.terrain->buildWaterMesh({}, cancelled);
+                if (stopping()) return prepared;
+                if (!roadLayoutPath.empty()) {
+                    try {
+                        auto imported = loadTerrainRoadLayout(roadLayoutPath, cancelled);
+                        if (stopping()) return prepared;
+                        if (imported.empty()) {
+                            prepared.roadLayoutError = "contains no NavigationMeshRoad rails";
+                        }
+                        paths.insert(paths.end(), std::make_move_iterator(imported.begin()),
+                            std::make_move_iterator(imported.end()));
+                    } catch (const std::exception& roadError) {
+                        prepared.roadLayoutError = roadError.what();
+                    }
+                }
+                prepared.roadMesh = prepared.terrain->buildRoadMesh(std::move(paths), cancelled);
+                if (!stopping() && !roadLayoutPath.empty() && prepared.roadLayoutError.empty() &&
+                    !prepared.terrain->hasRoadMesh()) {
+                    prepared.roadLayoutError = "no road surface overlaps the loaded terrain";
+                }
                 if (!stopping()) {
                     try {
                         prepared.terrainMaterials = decodeTerrainMaterials(*prepared.terrain, terrainPath, cancelled);
@@ -1608,7 +1712,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
 
     PreparedAssets assets;
     if (incremental) {
-        auto preparation = std::async(std::launch::async, prepare);
+        auto preparation = std::async(std::launch::async, std::move(prepare));
         while (preparation.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             co_yield preparationProgress.load(std::memory_order_relaxed);
         }
@@ -1618,6 +1722,7 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
         assets = prepare();
     }
     if (!assets.terrainError.empty()) warnResource("Terrain", terrainPath, assets.terrainError);
+    if (!assets.roadLayoutError.empty()) warnResource("Road layout", roadLayoutPath, assets.roadLayoutError);
     if (!assets.terrainMaterialError.empty()) {
         warnResource("Terrain material library", terrainPath, assets.terrainMaterialError);
     }
@@ -1717,9 +1822,17 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
                 appendWaterToScene(assets.waterMesh);
                 assets.waterMesh = {};
                 terrainScene_ = std::move(assets.terrain);
-                roadPaint_ = std::move(savedRoadPaint);
-                ochreDirtRatio_ = savedOchreDirtRatio;
+                if (!terrainScene_->hasRoadMesh()) {
+                    roadPaint_ = std::move(savedRoadPaint);
+                    ochreDirtRatio_ = savedOchreDirtRatio;
+                }
                 terrainResourcePath_ = terrainPath;
+                roadLayoutPath_ = roadLayoutPath;
+                inlineRoadPathCount_ = inlineRoadPathCount;
+                if (terrainScene_->hasRoadMesh()) {
+                    std::cerr << "Loaded " << terrainScene_->roadPaths().size() << " road centerlines, "
+                              << assets.roadMesh.indices.size() / 3 << " road triangles\n";
+                }
                 waterResourcePath_ = waterPath;
                 if (sceneHasPlayer) {
 #ifdef VULKCORE_OHOS
@@ -1761,6 +1874,8 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
             // Keep the authored material indices for terrain-only scenes.
             appendGrassToScene(*terrainScene_);
         }
+        appendRoadToScene(assets.roadMesh);
+        assets.roadMesh = {};
         return firstUnmappedMaterial;
     };
     std::size_t firstUnmappedMaterial;
@@ -2910,8 +3025,19 @@ bool Renderer::saveTransformSettings() const {
              << grassGrowth_.maximumTilt << ' ' << grassGrowth_.noiseSize << '\n'
              << "grass_blade_width " << grassGrowth_.minimumBladeWidth << ' '
              << grassGrowth_.maximumBladeWidth << '\n';
-        file << "terrain_road_ochre_ratio " << ochreDirtRatio_ << '\n';
-        roadPaint_.writeStrokes(file);
+        if (!terrainScene_->hasRoadMesh()) {
+            file << "terrain_road_ochre_ratio " << ochreDirtRatio_ << '\n';
+            roadPaint_.writeStrokes(file);
+        }
+        if (!roadLayoutPath_.empty()) {
+            file << "terrain_road_layout " << std::quoted(sceneReference(roadLayoutPath_)) << '\n';
+        }
+        for (std::size_t i = 0; i < inlineRoadPathCount_; ++i) {
+            const auto& path = terrainScene_->roadPaths()[i];
+            file << "terrain_road_path " << path.width << ' ' << path.points.size();
+            for (const auto& point : path.points) file << ' ' << point.x << ' ' << point.y;
+            file << '\n';
+        }
     }
     if (!terrainResourcePath_.empty()) {
         std::error_code relativeError;
@@ -3085,9 +3211,10 @@ bool Renderer::saveTransformSettings() const {
         }
     }
     for (const MeshPart& part : meshData_.parts) {
-        // Water and grass are regenerated before node removals are loaded.
-        // Keep their material slots so saved overrides still use the right indices.
-        const bool regenerated = (part.nodeId >= kWaterSceneNodeId && part.nodeId < kGrassSceneNodeId) ||
+        // Generated surfaces are present before node removals are loaded.
+        // Preserve their material slots for saved overrides.
+        const bool regenerated = part.nodeId == kTerrainRoadSceneNodeId ||
+            (part.nodeId >= kWaterSceneNodeId && part.nodeId < kGrassSceneNodeId) ||
             grassLodForLayer(part.nodeId - kGrassLodNodeBase).has_value();
         if (part.materialIndex < meshData_.materials.size() &&
             (regenerated || !removedSceneNodeIds_.contains(part.nodeId))) {

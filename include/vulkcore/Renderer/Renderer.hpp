@@ -254,6 +254,7 @@ private:
     bool saveTransformSettings() const;
     void initializeEmptyScene();
     void appendTerrainToScene(const TerrainMeshData& terrainMesh);
+    void appendRoadToScene(const TerrainMeshData& roadMesh);
     void appendWaterToScene(const TerrainMeshData& waterMesh);
     void appendPlayerToScene();
     void appendGrassToScene(const TerrainScene& terrain);
@@ -548,6 +549,8 @@ private:
     std::unordered_map<std::uint32_t, std::optional<glm::mat4>> modelGravity_;
     std::unordered_map<std::uint32_t, EnemyPatrol> enemyPatrols_;
     std::filesystem::path terrainResourcePath_;
+    std::filesystem::path roadLayoutPath_;
+    std::size_t inlineRoadPathCount_ = 0;
     std::filesystem::path waterResourcePath_;
     PlayerController playerController_;
     bool playerClickToMove_ = false;

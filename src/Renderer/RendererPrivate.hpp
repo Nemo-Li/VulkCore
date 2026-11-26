@@ -67,6 +67,7 @@ constexpr float kMaximumRealtimeEffectScale = 100.0f;
 constexpr std::uint32_t kSunSceneNodeId = 0xF0000000u;
 constexpr std::uint32_t kTerrainSceneNodeId = 0xE0000000u;
 constexpr std::uint32_t kTerrainChunkNodeBase = 0xE1000000u;
+constexpr std::uint32_t kTerrainRoadSceneNodeId = 0xE2000000u;
 constexpr std::uint32_t kWaterSceneNodeId = 0xE3000000u;
 constexpr std::uint32_t kWaterChunkNodeBase = 0xE4000000u;
 #ifdef VULKCORE_OHOS

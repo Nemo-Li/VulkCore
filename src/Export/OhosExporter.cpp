@@ -165,7 +165,7 @@ std::string rewriteScene(const std::string& input, ResourceCollector& collector,
         if (omitRoads && (key == "terrain_road" || key == "terrain_road_ochre_ratio")) continue;
         const bool model = key == "model_resource_path" || key == "player_model_resource";
         const bool reference = model || key == "terrain_resource" || key == "water_resource" ||
-            key == "realtime_effect";
+            key == "terrain_road_layout" || key == "realtime_effect";
         const bool material = key == "material";
         const bool textures = key == "material_textures";
         const bool particle = key == "particle_system_object" || key == "particle_system";

@@ -1511,6 +1511,133 @@ std::size_t TerrainScene::waterTileCount() const {
     return waterTiles_.size();
 }
 
+namespace {
+constexpr float kRoadCellSize = 8.0f;
+constexpr float kRoadSurfaceLift = 0.10f;
+
+std::pair<int, int> roadCell(glm::vec2 point) {
+    const glm::vec2 cell = glm::floor(point / kRoadCellSize);
+    return {static_cast<int>(cell.x), static_cast<int>(cell.y)};
+}
+
+float roadEdge(glm::vec2 a, glm::vec2 b, glm::vec2 p) {
+    const glm::vec2 ab = b - a;
+    const glm::vec2 ap = p - a;
+    return ab.x * ap.y - ab.y * ap.x;
+}
+} // namespace
+
+TerrainMeshData TerrainScene::buildRoadMesh(
+    std::vector<TerrainRoadPath> paths, const std::atomic<bool>* cancelled
+) {
+    roadPaths_ = std::move(paths);
+    roadCells_.clear();
+    TerrainMeshData mesh;
+    const auto indexTriangle = [&](const RoadTriangle& triangle) {
+        const auto [minX, minZ] = roadCell(glm::min(glm::min(triangle[0], triangle[1]), triangle[2]));
+        const auto [maxX, maxZ] = roadCell(glm::max(glm::max(triangle[0], triangle[1]), triangle[2]));
+        for (int z = minZ; z <= maxZ; ++z) {
+            for (int x = minX; x <= maxX; ++x) roadCells_[{x, z}].push_back(triangle);
+        }
+    };
+    for (const auto& path : roadPaths_) {
+        if (path.points.size() < 2) continue;
+        const float halfWidth = path.width * 0.5f;
+        const int columns = std::max(2, static_cast<int>(std::ceil(path.width / kTerrainRoadSampleSpacing)));
+        const std::size_t last = path.points.size() - 1;
+        const bool closed = last > 2 && path.points.front() == path.points.back();
+        const auto sideAt = [&](std::size_t i) {
+            const auto previous = i == 0 ? (closed ? last - 1 : 0) : i - 1;
+            const auto next = i == last ? (closed ? 1 : last) : i + 1;
+            const glm::vec2 before = i == previous ? path.points[next] - path.points[i]
+                : path.points[i] - path.points[previous];
+            const glm::vec2 after = i == next ? before : path.points[next] - path.points[i];
+            const glm::vec2 incoming = glm::normalize(before);
+            const glm::vec2 outgoing = glm::normalize(after);
+            const glm::vec2 sum = incoming + outgoing;
+            const glm::vec2 tangent = glm::dot(sum, sum) > 0.001f ? glm::normalize(sum) : outgoing;
+            return glm::vec2(-tangent.y, tangent.x) * halfWidth /
+                std::max(0.65f, glm::dot(tangent, outgoing));
+        };
+        std::optional<std::uint32_t> lastRow;
+        glm::vec2 lastLeft{}, lastRight{};
+        const auto appendRow = [&](glm::vec2 center, glm::vec2 side, float distance) {
+            const auto row = static_cast<std::uint32_t>(mesh.vertices.size());
+            for (int column = 0; column <= columns; ++column) {
+                const float u = static_cast<float>(column) / columns;
+                const glm::vec2 p = center + side * (2.0f * u - 1.0f);
+                const auto y = renderedHeightAtWorld(p);
+                if (!y) {
+                    mesh.vertices.resize(row);
+                    lastRow.reset();
+                    return;
+                }
+                constexpr float probe = 0.35f;
+                const glm::vec2 dx(probe, 0.0f), dz(0.0f, probe);
+                const glm::vec3 normal = glm::normalize(glm::vec3(
+                    renderedHeightAtWorld(p - dx).value_or(*y) - renderedHeightAtWorld(p + dx).value_or(*y),
+                    2.0f * probe,
+                    renderedHeightAtWorld(p - dz).value_or(*y) - renderedHeightAtWorld(p + dz).value_or(*y)));
+                // Slightly darker, irregular shoulders. Colors are interpolated on the mesh.
+                const float edge = std::abs(2.0f * u - 1.0f);
+                const float grain = std::sin(distance * 1.9f + u * 17.0f) *
+                    std::sin(distance * 0.77f - u * 11.0f);
+                const float tone = 1.0f - 0.22f * glm::smoothstep(0.65f, 1.0f, edge) + 0.09f * grain;
+                mesh.vertices.push_back({
+                    {p.x, *y + kRoadSurfaceLift, p.y}, normal, {u, distance},
+                    glm::vec4(glm::vec3(0.155f, 0.103f, 0.055f) * tone, 1.0f)
+                });
+            }
+            const glm::vec2 left = center - side, right = center + side;
+            if (lastRow) {
+                for (int column = 0; column < columns; ++column) {
+                    const auto a = *lastRow + static_cast<std::uint32_t>(column);
+                    const auto b = row + static_cast<std::uint32_t>(column);
+                    mesh.indices.insert(mesh.indices.end(), {a, a + 1u, b, b, a + 1u, b + 1u});
+                }
+                indexTriangle({lastLeft, lastRight, left});
+                indexTriangle({left, lastRight, right});
+            }
+            lastRow = row;
+            lastLeft = left;
+            lastRight = right;
+        };
+
+        float distance = 0.0f;
+        appendRow(path.points.front(), sideAt(0), distance);
+        for (std::size_t i = 1; i < path.points.size(); ++i) {
+            if (loadCancelled(cancelled)) {
+                roadPaths_.clear();
+                roadCells_.clear();
+                return {};
+            }
+            const glm::vec2 start = path.points[i - 1], end = path.points[i];
+            const glm::vec2 startSide = sideAt(i - 1), endSide = sideAt(i);
+            const float length = glm::length(end - start);
+            const int intervals = static_cast<int>(std::ceil(length / kTerrainRoadSampleSpacing));
+            for (int step = 1; step <= intervals; ++step) {
+                const float t = static_cast<float>(step) / intervals;
+                appendRow(glm::mix(start, end, t), glm::mix(startSide, endSide, t), distance + t * length);
+            }
+            distance += length;
+        }
+    }
+    return mesh;
+}
+
+bool TerrainScene::roadContains(glm::vec2 worldPosition) const {
+    if (roadCells_.empty()) return false;
+    const auto found = roadCells_.find(roadCell(worldPosition));
+    if (found == roadCells_.end()) return false;
+    for (const auto& triangle : found->second) {
+        const float a = roadEdge(triangle[0], triangle[1], worldPosition);
+        const float b = roadEdge(triangle[1], triangle[2], worldPosition);
+        const float c = roadEdge(triangle[2], triangle[0], worldPosition);
+        if ((a >= 0.0f && b >= 0.0f && c >= 0.0f) || (a <= 0.0f && b <= 0.0f && c <= 0.0f)) return true;
+    }
+    return false;
+}
+
 TerrainGrassSurface TerrainScene::bakeGrassSurface(const std::atomic<bool>* cancelled) const {
     if (grassTiles_.empty() || loadCancelled(cancelled)) return {};
 

@@ -6,7 +6,7 @@
 #include "sun_shadow.glsl"
 #include "terrain_rock.glsl"
 #include "meadow_shading.glsl"
-#ifndef VULKCORE_OHOS
+#ifdef VULKCORE_LEGACY_ROAD_BRUSH
 #include "terrain_road_weights.glsl"
 #endif
 
@@ -160,7 +160,7 @@ void main() {
         float farBlend = smoothstep(material.waterFlow.w, material.waterFlow.w * 2.8, worldDistance);
         float rockMask = smoothstep(0.15, 0.75, rock);
         float canopy = mix(mix(0.20, 0.90, distanceBlend), 0.08, farBlend) * (1.0 - rockMask);
-#ifndef VULKCORE_OHOS
+#ifdef VULKCORE_LEGACY_ROAD_BRUSH
         vec3 roads = terrainRoadWeights(fragTerrainPosition.xz);
         float roadMask = clamp(dot(roads, vec3(material.metallic, 1.0, 1.0)), 0.0, 1.0);
         canopy *= 1.0 - roadMask;

@@ -165,6 +165,7 @@ GrassCoverage::Cell GrassCoverage::buildCell(
             const glm::vec2 point = (glm::vec2(gx, gz) + glm::vec2(
                 0.12f + hash01(seed + 1u) * 0.76f, 0.12f + hash01(seed + 2u) * 0.76f
             )) * spacing;
+            if (!bladeMesh && terrain.roadContains(point)) continue;
             const auto map = terrain.grassAtWorld(point);
             if (!map || (!bladeMesh && map->height <= 0.0f)) continue;
             const float heightVariation = hash01(seed + 4u);
@@ -201,7 +202,7 @@ GrassCoverage::Cell GrassCoverage::buildCell(
                         std::lerp(0.78f, 1.18f, hash01(bladeSeed + 6u));
                     const glm::vec2 offset = glm::vec2(std::cos(angle), std::sin(angle)) * radius;
                     const glm::vec2 bladePoint = point + offset;
-                    if (!coverMask_.contains(bladePoint)) continue;
+                    if (terrain.roadContains(bladePoint) || !coverMask_.contains(bladePoint)) continue;
                     const auto bladeMap = terrain.grassAtWorld(bladePoint);
                     if (!bladeMap || bladeMap->height <= 0.0f) continue;
                     const auto bladeGround = terrain.renderedHeightAtWorld(bladePoint);

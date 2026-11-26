@@ -1,6 +1,7 @@
 #include "RendererImplementation.hpp"
 #include "SceneLoadTask.hpp"
 #include "HdrComposition.hpp"
+#include "vulkcore/Terrain/Terrain.hpp"
 
 namespace VulkCore {
 
@@ -504,6 +505,10 @@ std::string Renderer::graphicsPipelineKey(
     key += ";cull=" + std::to_string(cullMode);
     key += ";lessEqual=" + std::to_string(material.depthLessEqual);
     key += ";hdr=" + std::to_string(hdr);
+    if (configuration.shader(ShaderStage::Vertex) == kGrassVertexShader ||
+        configuration.shader(ShaderStage::Fragment) == "shader_terrain.frag") {
+        key += terrainScene_ && terrainScene_->hasRoadMesh() ? ";roadMesh" : ";roadBrush";
+    }
     return key;
 }
 
@@ -544,6 +549,10 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
     };
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
     shaderStages.reserve(graphicsStages.size());
+    const bool usesRoadMesh = terrainScene_ && terrainScene_->hasRoadMesh();
+    constexpr VkBool32 noLegacyBrush = VK_FALSE;
+    constexpr VkSpecializationMapEntry legacyGrassEntry{0, 0, sizeof(noLegacyBrush)};
+    const VkSpecializationInfo meshRoadGrassInfo{1, &legacyGrassEntry, sizeof(noLegacyBrush), &noLegacyBrush};
     for (const ShaderStage stage : graphicsStages) {
         const bool casterStage = shadow && stage == ShaderStage::Fragment;
         std::string shaderName = casterStage ? casterFragment() : configuration.shader(stage);
@@ -564,8 +573,16 @@ VkPipeline Renderer::createMaterialGraphicsPipeline(
         VkPipelineShaderStageCreateInfo stageInfo{};
         stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stageInfo.stage = vkShaderStage(stage);
+#ifndef VULKCORE_OHOS
+        if (shaderName == "shader_terrain.frag" && !usesRoadMesh) {
+            shaderName = "legacy/shader_terrain.frag";
+        }
+#endif
         stageInfo.module = shaderModule(shaderName);
         stageInfo.pName = "main";
+        if (shaderName == kGrassVertexShader && usesRoadMesh) {
+            stageInfo.pSpecializationInfo = &meshRoadGrassInfo;
+        }
         shaderStages.push_back(stageInfo);
     }
 

@@ -33,6 +33,8 @@ layout(location = 4) flat out float fragVariation;
 layout(location = 5) flat out vec4 fragMapColor;
 layout(location = 6) flat out float fragCanopyBlend;
 
+layout(constant_id = 0) const bool legacyRoadBrush = true;
+
 const float bladeRows[5] = float[](0.0, 0.28, 0.58, 0.82, 1.0);
 
 vec2 growthNoiseAt(ivec2 cell) {
@@ -90,19 +92,20 @@ void main() {
     // 二次弯曲让草根保持固定、叶尖偏移更大。沿高度收窄并扭转宽度轴以塑造叶片轮廓。
     float bendWeight = heightWeight * heightWeight;
     float sourceHeight = inRootHeight.w * material.waterSurface.x;
-    float dirtRatio = clamp(material.ochreDirtRatio, 0.0, 1.0);
-    // Keep the full verge height gradient at typical mix values and recover the
-    // original grass height as the painted dirt fades out.
-    float ochreVergeStrength = min(1.0, 2.0 * dirtRatio);
-    float shortGrass;
-    vec3 roads = terrainRoadWeights(root.xz, vegetation, ochreVergeStrength, shortGrass);
-    float ochreGrass = 1.0 - dirtRatio;
-    if (vegetation && roads.x > 0.0 && dirtRatio > 0.0 && dirtRatio < 1.0) {
-        float tuft = smoothstep(0.42, 0.82, roadGrassClusters(root.xz));
-        ochreGrass += (tuft - 0.5) * (2.0 * min(dirtRatio, 1.0 - dirtRatio));
+    float shortGrass = 0.0;
+    if (legacyRoadBrush) {
+        float dirtRatio = clamp(material.ochreDirtRatio, 0.0, 1.0);
+        // Fade the brush's roadside height gradient as the painted dirt fades.
+        float ochreVergeStrength = min(1.0, 2.0 * dirtRatio);
+        vec3 roads = terrainRoadWeights(root.xz, vegetation, ochreVergeStrength, shortGrass);
+        float ochreGrass = 1.0 - dirtRatio;
+        if (vegetation && roads.x > 0.0 && dirtRatio > 0.0 && dirtRatio < 1.0) {
+            float tuft = smoothstep(0.42, 0.82, roadGrassClusters(root.xz));
+            ochreGrass += (tuft - 0.5) * (2.0 * min(dirtRatio, 1.0 - dirtRatio));
+        }
+        float roadVisibility = 1.0 - clamp(dot(roads, vec3(1.0 - ochreGrass, 1.0, 1.0)), 0.0, 1.0);
+        if (visibility * roadVisibility <= dither) return;
     }
-    float roadVisibility = 1.0 - clamp(dot(roads, vec3(1.0 - ochreGrass, 1.0, 1.0)), 0.0, 1.0);
-    if (visibility * roadVisibility <= dither) return;
     float shortHeight = mix(0.085, 0.22, inMotion.y);
     float bladeHeight = mix(sourceHeight, min(sourceHeight, shortHeight), shortGrass);
     float width = inNormalWidth.w;

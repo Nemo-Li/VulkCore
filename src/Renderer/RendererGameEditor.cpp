@@ -235,7 +235,7 @@ bool Renderer::drawGameEditor() {
                 if (ImGui::MenuItem(label, nullptr, sceneEditTool_ == value)) sceneEditTool_ = value;
             };
             tool("Locate Player", SceneEditTool::LocatePlayer);
-            tool("Road Brush", SceneEditTool::RoadBrush);
+            if (!terrainScene_->hasRoadMesh()) tool("Road Brush", SceneEditTool::RoadBrush);
             tool("Select / Transform", SceneEditTool::SelectTransform);
             ImGui::EndMenu();
         }
@@ -373,7 +373,7 @@ glm::vec3 Renderer::updateGameEditorSelection(float deltaSeconds, bool viewportH
     const auto id = node.nodeId;
     const bool terrain = id >= kTerrainSceneNodeId && id < kPlayerSceneNodeId;
     const bool grass = id == kGrassSceneNodeId || grassLodForLayer(id - kGrassLodNodeBase).has_value();
-    if (terrain || grass || id == kTornadoPreviewNodeId ||
+    if (terrain || grass || id == kTerrainRoadSceneNodeId || id == kTornadoPreviewNodeId ||
         (&node == &meshData_.hierarchy && node.name == "Scene")) {
         return glm::vec3(0.0f);
     }
@@ -607,6 +607,9 @@ void Renderer::drawGameOutliner() {
         } else if (id >= kTerrainSceneNodeId && id < kPlayerSceneNodeId) {
             sceneStatusFailed_ = true;
             sceneStatus_ = "The terrain and its chunks are managed by the physics world.";
+        } else if (id == kTerrainRoadSceneNodeId) {
+            sceneStatusFailed_ = true;
+            sceneStatus_ = "Edit the terrain_road_layout or terrain_road_path records to remove the road.";
         } else {
             pendingSceneNodeRemoval_ = id;
         }
@@ -946,6 +949,10 @@ void Renderer::drawGameInspector() {
             ImGui::TextDisabled("%zu / %zu chunks visible", terrainDrawCandidates_ - terrainDrawCulled_,
                 terrainDrawCandidates_);
             drawFirstMaterial(node, "terrain");
+            return;
+        }
+        if (node.nodeId == kTerrainRoadSceneNodeId) {
+            drawFirstMaterial(node, "road");
             return;
         }
         if (node.nodeId >= kWaterSceneNodeId && node.nodeId < kGrassSceneNodeId) {

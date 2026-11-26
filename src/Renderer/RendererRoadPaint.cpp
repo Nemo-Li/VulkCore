@@ -195,6 +195,7 @@ void Renderer::updateTerrainEditorTool(const glm::mat4& clipFromScene, bool view
         return;
     }
 
+    if (terrainScene_->hasRoadMesh()) return;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         roadBrushDragging_ = overScene;
         roadStrokeHasPoint_ = false;
