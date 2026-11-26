@@ -29,7 +29,16 @@ int main() {
             require(invalidRight.right == 0 && invalidRight.forward == 0 &&
                 invalidForward.right == 0 && invalidForward.forward == 0, "Invalid input reached player movement");
         }
-        std::cout << "Analog movement direction and input validation checks passed\n";
+        const auto drift = VulkCore::gamepadStickInput(0.12, -0.12);
+        require(drift.right == 0 && drift.forward == 0, "Gamepad stick drift passed the dead zone");
+        const auto diagonal = VulkCore::gamepadStickInput(0.15, -0.15);
+        require(diagonal.right > 0 && near(diagonal.right, -diagonal.forward), "Dead zone was not radial");
+        const auto halfTilt = VulkCore::gamepadStickInput(0, 0.6);
+        require(halfTilt.right == 0 && near(halfTilt.forward, 0.5f), "Gamepad stick did not scale beyond the dead zone");
+        const auto fullTilt = VulkCore::gamepadStickInput(-1, 1);
+        require(fullTilt.right < 0 && fullTilt.forward > 0 &&
+            near(std::hypot(fullTilt.right, fullTilt.forward), 1), "Full diagonal gamepad tilt exceeded unit speed");
+        std::cout << "Analog movement direction, dead zone and input validation checks passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

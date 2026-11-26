@@ -76,6 +76,7 @@ public:
         PhysicsWorld& physics,
         bool keyboardCaptured,
         bool mouseCaptured,
+        const GamepadInput& gamepad,
         const std::array<bool, kPlayerSkillCount>& skillEnabled
     );
 
@@ -115,7 +116,7 @@ private:
 
     FollowCameraPose desiredFollowCameraPose() const;
     float followCameraClearance(const PhysicsWorld& physics, float yaw, float distance) const;
-    void updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds);
+    void updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds, bool orbitInputActive);
     glm::vec3 horizontalForward() const;
     float currentFootTraction() const;
 

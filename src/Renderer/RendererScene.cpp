@@ -663,7 +663,9 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
     // Touch look is routed to the player separately from ImGui's pointer.
     viewportHovered = true;
 #endif
-    if (sceneEditMode_ || effectCamera_) {
+    const bool keyboardCaptured = sceneEditMode_ || effectCamera_ || io.WantTextInput;
+    const auto gamepad = readGamepad(window_);
+    if (sceneEditMode_ || effectCamera_ || (!keyboardCaptured && gamepad.moving())) {
         playerController_.cancelMove();
         playerMoveMarker_.reset();
     }
@@ -676,8 +678,9 @@ void Renderer::updatePlayerController(float deltaSeconds, bool viewportHovered) 
         window_,
         deltaSeconds,
         *physicsWorld_,
-        sceneEditMode_ || effectCamera_ || io.WantTextInput,
+        keyboardCaptured,
         !viewportHovered || effectCamera_ || terrainEditorActive(),
+        gamepad,
         skillEnabled
     );
     updatePlayerSkillEffects();
