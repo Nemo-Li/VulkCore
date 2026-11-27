@@ -37,6 +37,7 @@ void Renderer::buildForest(const TerrainScene& terrain) {
     struct PreparedSpecies {
         const ForestSpecies* config;
         std::size_t modelIndex;
+        bool hasNativeLod2;
     };
     std::vector<PreparedSpecies> species;
     std::vector<float> weights;
@@ -60,7 +61,10 @@ void Renderer::buildForest(const TerrainScene& terrain) {
                 part.materialIndex += materialOffset;
                 for (auto& range : part.lowerLods) range.firstIndex += indexOffset;
             }
-            species.push_back({&config, forestModels_.size()});
+            const bool hasNativeLod2 = std::all_of(mesh.parts.begin(), mesh.parts.end(), [](const MeshPart& part) {
+                return part.lowerLods[1].indexCount != 0;
+            });
+            species.push_back({&config, forestModels_.size(), hasNativeLod2});
             weights.push_back(config.weight);
             forestModels_.push_back({{mesh.hierarchy.boundsMinimum, mesh.hierarchy.boundsMaximum}, std::move(mesh.parts)});
         } catch (const std::exception& error) {
@@ -109,41 +113,23 @@ void Renderer::buildForest(const TerrainScene& terrain) {
         return true;
     };
 
-    // Allocate distinct quotas across the whole view so the distant slopes receive their own stands.
-    constexpr std::array bandEnds{kForestLod1Distance - 6.0f, kForestLod2Distance - 6.0f,
-        250.0f, 550.0f, 1050.0f, 1800.0f};
-    constexpr std::array bandWeights{1.0f, 2.0f, 3.0f, 8.5f, 15.5f, 26.0f, 44.0f};
-    std::array<float, bandWeights.size() + 1> distanceBreaks{};
-    distanceBreaks.front() = patch.nearDistance;
-    distanceBreaks.back() = patch.farDistance;
-    for (std::size_t i = 0; i < bandEnds.size(); ++i) {
-        distanceBreaks[i + 1] = std::clamp(bandEnds[i], patch.nearDistance, patch.farDistance);
-    }
-    float totalWeight = 0.0f;
-    for (std::size_t band = 0; band < bandWeights.size(); ++band) {
-        if (distanceBreaks[band] < distanceBreaks[band + 1]) totalWeight += bandWeights[band];
-    }
-
-    float cumulativeWeight = 0.0f;
-    for (std::size_t band = 0; band < bandWeights.size(); ++band) {
-        const float start = distanceBreaks[band];
-        const float end = distanceBreaks[band + 1];
-        if (start == end) continue;
-        cumulativeWeight += bandWeights[band];
-        const auto goal = static_cast<std::size_t>(std::lround(patch.treeCount * cumulativeWeight / totalWeight));
+    constexpr float foregroundDepth = kForestLod1Distance - 6.0f;
+    constexpr float groveDepth = 250.0f;
+    const auto plantBand = [&](float start, float end, std::size_t count, std::optional<std::size_t> fixedLod) {
         const auto countBeforeBand = planted.size();
-        const std::size_t attemptLimit = 60 * (goal - countBeforeBand);
-        for (std::size_t attempt = 0; attempt < attemptLimit && planted.size() < goal; ++attempt) {
+        const auto goal = countBeforeBand + count;
+        for (std::size_t attempt = 0; attempt < 60 * count && planted.size() < goal; ++attempt) {
             const auto& selected = species[chooseSpecies(random)];
+            if (fixedLod == 2 && !selected.hasNativeLod2) continue;
             const auto& model = forestModels_[selected.modelIndex];
             const float scale = std::lerp(selected.config->minimumScale, selected.config->maximumScale, unit(random));
             const float depth = std::lerp(start, end, unit(random));
             const float column = unit(random) * 2.0f - 1.0f;
             // Leave the player and the central approach visible in the foreground.
-            if (band == 0 && std::abs(column) < 0.42f) continue;
+            if (depth < foregroundDepth && std::abs(column) < 0.42f) continue;
             const auto position = eye + forward * depth + right * (depth * halfWidth * column);
             if (glm::distance(position, player) < 5.5f) continue;
-            if (depth >= bandEnds[2]) {
+            if (depth >= groveDepth) {
                 const float density = groveDensity(position, 135.0f, patch.seed);
                 if (unit(random) > std::lerp(0.035f, 1.0f, glm::smoothstep(0.36f, 0.76f, density))) continue;
             }
@@ -170,10 +156,47 @@ void Renderer::buildForest(const TerrainScene& terrain) {
             const float yaw = unit(random) * 2.0f * glm::pi<float>();
             const auto transform = glm::translate(glm::mat4(1.0f), glm::vec3(position.x, *height, position.y)) *
                 glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0, 1, 0)) * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
-            forestInstances_.push_back({selected.modelIndex, transform});
+            forestInstances_.push_back({selected.modelIndex, transform, fixedLod});
             planted.push_back({position, spacing});
         }
         std::cerr << "Forest depth " << start << "–" << end << " m: " << planted.size() - countBeforeBand << " trees\n";
+    };
+
+    if (patch.lodSplit) {
+        const auto& split = *patch.lodSplit;
+        plantBand(patch.nearDistance, split.splitDistance, split.lod0Count, 0);
+        plantBand(split.splitDistance, patch.farDistance, patch.treeCount - split.lod0Count, 2);
+    } else {
+        // Allocate distinct quotas across the whole view so the distant slopes receive their own stands.
+        constexpr std::array bandEnds{foregroundDepth, kForestLod2Distance - 6.0f,
+            groveDepth, 550.0f, 1050.0f, 1800.0f};
+        constexpr std::array bandWeights{1.0f, 2.0f, 3.0f, 8.5f, 15.5f, 26.0f, 44.0f};
+        std::array<float, bandWeights.size() + 1> distanceBreaks{};
+        distanceBreaks.front() = patch.nearDistance;
+        distanceBreaks.back() = patch.farDistance;
+        for (std::size_t i = 0; i < bandEnds.size(); ++i) {
+            distanceBreaks[i + 1] = std::clamp(bandEnds[i], patch.nearDistance, patch.farDistance);
+        }
+        float totalWeight = 0.0f;
+        for (std::size_t band = 0; band < bandWeights.size(); ++band) {
+            if (distanceBreaks[band] < distanceBreaks[band + 1]) totalWeight += bandWeights[band];
+        }
+
+        float cumulativeWeight = 0.0f;
+        for (std::size_t band = 0; band < bandWeights.size(); ++band) {
+            const float start = distanceBreaks[band];
+            const float end = distanceBreaks[band + 1];
+            if (start == end) continue;
+            cumulativeWeight += bandWeights[band];
+            const auto goal = static_cast<std::size_t>(std::lround(patch.treeCount * cumulativeWeight / totalWeight));
+            plantBand(start, end, goal - planted.size(), std::nullopt);
+        }
+    }
+    if (patch.lodSplit && planted.size() != patch.treeCount) {
+        const auto warning = "Only " + std::to_string(planted.size()) + " of " +
+            std::to_string(patch.treeCount) + " trees fit the forest LOD split.";
+        sceneResourceWarnings_.push_back(warning);
+        std::cerr << "warning: " << warning << '\n';
     }
     std::cerr << "Planted " << forestInstances_.size() << " trees in the opening view from "
               << forestModels_.size() << " SBFRES model groups\n";

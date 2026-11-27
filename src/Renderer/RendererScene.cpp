@@ -1372,13 +1372,28 @@ SceneLoadTask Renderer::loadSceneSteps(std::filesystem::path path, bool incremen
             }
             modelReferences.push_back({std::move(configuredPath), rootNodeId});
         } else if (key == "forest_patch") {
+            std::string record;
+            std::getline(sceneFile, record);
+            if (const auto comment = record.find('#'); comment != std::string::npos) record.resize(comment);
+            std::istringstream settings(record);
             ForestPatch patch;
-            if (forestPatch || !(sceneFile >> patch.seed >> patch.treeCount >> patch.nearDistance >> patch.farDistance) ||
+            if (forestPatch || !(settings >> patch.seed >> patch.treeCount >> patch.nearDistance >> patch.farDistance) ||
                 patch.treeCount == 0 || patch.treeCount > 4096 ||
                 !(patch.nearDistance >= 8.0f && patch.nearDistance < patch.farDistance && patch.farDistance <= 4000.0f)) {
                 sceneStatusFailed_ = true;
                 sceneStatus_ = "Scene file has invalid forest patch settings.";
                 co_return false;
+            }
+            if (!(settings >> std::ws).eof()) {
+                ForestPatch::LodSplit split;
+                if (!(settings >> split.lod0Count >> split.splitDistance) || !(settings >> std::ws).eof() ||
+                    split.lod0Count > patch.treeCount ||
+                    !(split.splitDistance > patch.nearDistance && split.splitDistance < patch.farDistance)) {
+                    sceneStatusFailed_ = true;
+                    sceneStatus_ = "Scene file has an invalid forest LOD split.";
+                    co_return false;
+                }
+                patch.lodSplit = split;
             }
             forestPatch = patch;
         } else if (key == "forest_species") {
@@ -3124,7 +3139,11 @@ bool Renderer::saveTransformSettings() const {
     if (forestPatch_) {
         const auto& patch = *forestPatch_;
         file << "forest_patch " << patch.seed << ' ' << patch.treeCount << ' '
-             << patch.nearDistance << ' ' << patch.farDistance << '\n';
+             << patch.nearDistance << ' ' << patch.farDistance;
+        if (patch.lodSplit) {
+            file << ' ' << patch.lodSplit->lod0Count << ' ' << patch.lodSplit->splitDistance;
+        }
+        file << '\n';
         for (const auto& species : forestSpecies_) {
             file << "forest_species " << std::quoted(sceneReference(species.model)) << ' '
                  << std::quoted(species.group) << ' ' << species.minimumScale << ' '

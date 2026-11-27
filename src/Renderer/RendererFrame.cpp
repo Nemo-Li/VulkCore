@@ -487,7 +487,8 @@ void Renderer::recordCommandBuffer(
             const bool visible = !clipFromScene || !isOutsideVulkanFrustum(*clipFromScene * tree.transform,
                 model.bounds.minimum, model.bounds.maximum);
             const float distance = glm::distance(worldEye, glm::vec3(tree.transform[3]));
-            const std::size_t lod = distance < kForestLod1Distance ? 0 : distance < kForestLod2Distance ? 1 : 2;
+            const std::size_t lod = tree.fixedLod.value_or(
+                distance < kForestLod1Distance ? 0 : distance < kForestLod2Distance ? 1 : 2);
             if (visible) ++forestLodCounts[lod];
             for (const auto& part : model.parts) {
                 const auto materialIndex = part.materialIndex;

@@ -522,10 +522,15 @@ private:
     bool sunShadowsActive_ = false;
     MeshData meshData_;
     struct ForestPatch {
+        struct LodSplit {
+            std::uint32_t lod0Count = 0;
+            float splitDistance = 0.0f;
+        };
         std::uint32_t seed = 0;
         std::uint32_t treeCount = 0;
         float nearDistance = 0.0f;
         float farDistance = 0.0f;
+        std::optional<LodSplit> lodSplit;
     };
     struct ForestSpecies {
         std::filesystem::path model;
@@ -541,6 +546,7 @@ private:
     struct ForestInstance {
         std::size_t modelIndex;
         glm::mat4 transform;
+        std::optional<std::size_t> fixedLod;
     };
     static constexpr float kForestLod1Distance = 42.0f;
     static constexpr float kForestLod2Distance = 115.0f;

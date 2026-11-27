@@ -13,8 +13,8 @@ player_camera_height 5.71999979
 player_spawn_position -644.117432 249.630066 1135.41992
 player_model_resource "../assets/models/yasuo/high_noon_yasuo.glb"
 water_resource "../assets/terrain/terrain_water"
-# Seeded planting from the foreground to the distant valley in the opening camera frustum.
-forest_patch 714027 1840 9 2750
+# Seed, total trees, near and far depths, LOD0 tree count, LOD0-to-LOD2 split depth.
+forest_patch 714027 20 9 2750 10 145
 forest_species "../assets/models/local_sbfres/Obj_TreeBroadleaf_A.sbfres" "Obj_TreeBroadleaf_A_L" 0.63 0.90 5
 forest_species "../assets/models/local_sbfres/Obj_TreeBroadleaf_A.sbfres" "Obj_TreeBroadleaf_A_LL" 0.56 0.75 2
 forest_species "../assets/models/local_sbfres/Obj_TreeBroadleafLow_B.sbfres" "Obj_TreeBroadleafLow_B_02" 0.82 1.15 4
