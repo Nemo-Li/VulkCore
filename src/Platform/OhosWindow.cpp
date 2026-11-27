@@ -17,6 +17,7 @@ MovementInput analogMovement(Window* window) {
     std::lock_guard lock(window->inputMutex);
     return window->movement;
 }
+GamepadInput readGamepad(Window*) { return {}; }
 bool lookPressed(Window* window) {
     if (!window) return false;
     std::lock_guard lock(window->inputMutex);

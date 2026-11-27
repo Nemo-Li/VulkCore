@@ -16,6 +16,32 @@ bool keyPressed(Window* window, Key key) {
     return window && glfwGetKey(window, keys[static_cast<unsigned>(key)]) == GLFW_PRESS;
 }
 MovementInput analogMovement(Window*) { return {}; }
+GamepadInput readGamepad(Window* window) {
+    if (!window || !glfwGetWindowAttrib(window, GLFW_FOCUSED)) return {};
+
+    for (int joystick = GLFW_JOYSTICK_1; joystick <= GLFW_JOYSTICK_LAST; ++joystick) {
+        GLFWgamepadstate state{};
+        if (glfwGetGamepadState(joystick, &state) != GLFW_TRUE) continue;
+
+        GamepadInput input;
+        input.movement = gamepadStickInput(state.axes[GLFW_GAMEPAD_AXIS_LEFT_X],
+            -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]);
+        const auto look = gamepadStickInput(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X],
+            -state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y]);
+        input.lookRight = look.right;
+        input.lookUp = look.forward;
+        const auto mapButton = [&](Key key, int button) {
+            input.buttons[static_cast<unsigned>(key)] = state.buttons[button] == GLFW_PRESS;
+        };
+        mapButton(Key::Jump, GLFW_GAMEPAD_BUTTON_A);
+        mapButton(Key::SkillQ, GLFW_GAMEPAD_BUTTON_X);
+        mapButton(Key::SkillW, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER);
+        mapButton(Key::SkillE, GLFW_GAMEPAD_BUTTON_B);
+        mapButton(Key::SkillR, GLFW_GAMEPAD_BUTTON_Y);
+        return input;
+    }
+    return {};
+}
 bool lookPressed(Window* window) {
     return window && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 }

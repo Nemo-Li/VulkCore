@@ -20,6 +20,7 @@ constexpr float kDebugMovementSpeedMultiplier = 4.0f;
 constexpr float kDebugAscentSpeed = 6.0f;
 constexpr float kPlayerTerrainClearance = 0.025f;
 constexpr float kMouseSensitivity = 0.006f;
+constexpr float kGamepadLookSpeed = 2.5f; // Radians per second at full tilt.
 constexpr float kDefaultOrbitCameraHeight = 0.92f;
 constexpr float kCameraCollisionRadius = 0.25f;
 // Negative orbit elevation lets the player tilt up toward the sky. The terrain sweep still limits the camera arm.
@@ -397,6 +398,7 @@ void PlayerController::update(
     PhysicsWorld& physics,
     bool keyboardCaptured,
     bool mouseCaptured,
+    const GamepadInput& gamepad,
     const std::array<bool, kPlayerSkillCount>& skillEnabled
 ) {
     if (!active_) {
@@ -408,7 +410,7 @@ void PlayerController::update(
     constexpr std::array skillKeys{Key::SkillQ, Key::SkillW, Key::SkillE, Key::SkillR};
     static_assert(skillKeys.size() == kPlayerSkillCount);
     for (std::size_t index = 0; index < skillKeys.size(); ++index) {
-        const bool down = keyPressed(window, skillKeys[index]);
+        const bool down = keyPressed(window, skillKeys[index]) || gamepad.pressed(skillKeys[index]);
         if (!keyboardCaptured && skillEnabled[index] && down && !skillWasDown_[index] &&
             triggeredSkill_ == PlayerSkill::None) {
             triggeredSkill_ = static_cast<PlayerSkill>(index);
@@ -425,6 +427,19 @@ void PlayerController::update(
         }
     }
 
+    const auto orbitCamera = [&](float yawDelta, float pitchUp) {
+        if (yawDelta == 0.0f && pitchUp == 0.0f) return;
+        if (cameraFollowDistance_ && !cameraOrbitOverridden_) {
+            // Begin orbiting from the displayed view, even while it is catching up.
+            const auto pose = followCameraPose_.value_or(desiredFollowCameraPose());
+            yawRadians_ = kPi - pose.yaw;
+            cameraElevationRadians_ = pose.elevation;
+            cameraOrbitOverridden_ = true;
+        }
+        yawRadians_ = std::remainder(yawRadians_ + yawDelta, 2.0f * kPi);
+        cameraElevationRadians_ = std::clamp(cameraElevationRadians_ - pitchUp,
+            kMinCameraElevation, kMaxCameraElevation);
+    };
     const bool lookDown = lookPressed(window);
     if (!lookDown) {
         lookDragging_ = false;
@@ -437,30 +452,19 @@ void PlayerController::update(
         double cursorX = 0.0;
         double cursorY = 0.0;
         cursorPosition(window, &cursorX, &cursorY);
-        if (cameraFollowDistance_ && !cameraOrbitOverridden_ &&
-            (cursorX != lastCursorX_ || cursorY != lastCursorY_)) {
-            // Begin orbiting from the displayed view, even while it is catching up.
-            const auto pose = followCameraPose_.value_or(desiredFollowCameraPose());
-            yawRadians_ = kPi - pose.yaw;
-            cameraElevationRadians_ = pose.elevation;
-            cameraOrbitOverridden_ = true;
-        }
-        yawRadians_ = std::remainder(
-            yawRadians_ - static_cast<float>(cursorX - lastCursorX_) * kMouseSensitivity,
-            2.0f * kPi
-        );
-        cameraElevationRadians_ = std::clamp(
-            cameraElevationRadians_ + static_cast<float>(cursorY - lastCursorY_) * kMouseSensitivity,
-            kMinCameraElevation,
-            kMaxCameraElevation
-        );
+        orbitCamera(static_cast<float>(lastCursorX_ - cursorX) * kMouseSensitivity,
+            static_cast<float>(lastCursorY_ - cursorY) * kMouseSensitivity);
         lastCursorX_ = cursorX;
         lastCursorY_ = cursorY;
     }
     lookWasDown_ = lookDown;
+    const bool stickLooking = !keyboardCaptured && (gamepad.lookRight != 0.0f || gamepad.lookUp != 0.0f);
+    if (stickLooking) {
+        orbitCamera(gamepad.lookRight * kGamepadLookSpeed * deltaSeconds,
+            gamepad.lookUp * kGamepadLookSpeed * deltaSeconds);
+    }
 
-    const bool jumpDown = window != nullptr &&
-        keyPressed(window, Key::Jump);
+    const bool jumpDown = keyPressed(window, Key::Jump) || gamepad.pressed(Key::Jump);
     if (!debugModeEnabled_ && !keyboardCaptured && jumpDown && !jumpWasDown_ && grounded_) {
         if (physics.jump(kJumpSpeed)) {
             grounded_ = false;
@@ -469,10 +473,12 @@ void PlayerController::update(
     jumpWasDown_ = jumpDown;
 
     glm::vec2 movementDirection2D(0.0f);
+    float movementStrength = 1.0f;
+    const bool stickMoving = !keyboardCaptured && gamepad.moving();
     float destinationDistance = 0.0f;
     bool arrived = false;
     std::optional<glm::vec2> activeDestination;
-    if (clickToMove_) {
+    if (clickToMove_ && !stickMoving) {
         if (moveDestination_ && !attacking() && !keyboardCaptured) {
             activeDestination = moveDestination_;
             const glm::vec3 position = physics.playerFootPosition();
@@ -482,23 +488,20 @@ void PlayerController::update(
             if (!arrived) movementDirection2D = offset / destinationDistance;
         }
     } else if (!attacking() && !keyboardCaptured && window != nullptr) {
-        const bool moveLeft =
-            keyPressed(window, Key::A) ||
-            keyPressed(window, Key::Left);
-        const bool moveRight =
-            keyPressed(window, Key::D) ||
-            keyPressed(window, Key::Right);
-        const bool moveForward =
-            (!skillEnabled[static_cast<std::size_t>(PlayerSkill::W)] && keyPressed(window, Key::W)) ||
-            keyPressed(window, Key::Up);
-        const bool moveBackward =
-            keyPressed(window, Key::S) ||
-            keyPressed(window, Key::Down);
-        const MovementInput analog = analogMovement(window);
-        const float horizontalInput = analog.right +
-            static_cast<float>(moveRight) - static_cast<float>(moveLeft);
-        const float forwardInput = analog.forward +
-            static_cast<float>(moveForward) - static_cast<float>(moveBackward);
+        MovementInput input = gamepad.movement;
+        if (stickMoving) {
+            movementStrength = std::min(1.0f, std::hypot(input.right, input.forward));
+        } else {
+            const bool moveLeft = keyPressed(window, Key::A) || keyPressed(window, Key::Left);
+            const bool moveRight = keyPressed(window, Key::D) || keyPressed(window, Key::Right);
+            const bool moveForward =
+                (!skillEnabled[static_cast<std::size_t>(PlayerSkill::W)] && keyPressed(window, Key::W)) ||
+                keyPressed(window, Key::Up);
+            const bool moveBackward = keyPressed(window, Key::S) || keyPressed(window, Key::Down);
+            input = analogMovement(window);
+            input.right += static_cast<float>(moveRight) - static_cast<float>(moveLeft);
+            input.forward += static_cast<float>(moveForward) - static_cast<float>(moveBackward);
+        }
         // Keep one input heading while a direction is held so the follow
         // camera turning with the player does not continuously steer it.
         if (cameraFollowDistance_ && !moving_ && !cameraOrbitOverridden_ && !lookDragging_) {
@@ -506,21 +509,21 @@ void PlayerController::update(
         }
         const glm::vec3 forward = horizontalForward();
         const glm::vec3 right = glm::vec3(-forward.z, 0.0f, forward.x);
-        const glm::vec3 inputDirection = forward * forwardInput + right * horizontalInput;
+        const glm::vec3 inputDirection = forward * input.forward + right * input.right;
         if (glm::length(inputDirection) > 0.001f) {
             movementDirection2D = glm::normalize(glm::vec2(inputDirection.x, inputDirection.z));
         }
     }
     moving_ = movementDirection2D != glm::vec2(0.0f);
     if (moving_) {
-        if (!clickToMove_ && !lookDragging_) cameraOrbitOverridden_ = false;
+        if (!clickToMove_ && !lookDragging_ && !stickLooking && !stickMoving) cameraOrbitOverridden_ = false;
         const float targetFacingYaw = std::atan2(movementDirection2D.x, movementDirection2D.y);
         const float facingDelta = std::remainder(targetFacingYaw - facingYawRadians_, 2.0f * kPi);
         const float maximumTurn = kPlayerTurnSpeed * deltaSeconds;
         facingYawRadians_ = std::remainder(facingYawRadians_ +
             std::clamp(facingDelta, -maximumTurn, maximumTurn), 2.0f * kPi);
     }
-    const float speedMultiplier = moveSpeedMultiplier_ *
+    const float speedMultiplier = moveSpeedMultiplier_ * movementStrength *
         (debugModeEnabled_ ? kDebugMovementSpeedMultiplier : 1.0f);
     const float targetSpeed = runGroundSpeed_ * speedMultiplier;
     if (moving_ && runCycleDurationSeconds_ > 0.0f) {
@@ -554,7 +557,7 @@ void PlayerController::update(
     position_ = physics.playerRenderFootPosition();
     velocity_ = physics.playerLinearVelocity();
     grounded_ = physics.playerGrounded();
-    if (cameraFollowDistance_) updateFollowCamera(physics, deltaSeconds);
+    if (cameraFollowDistance_) updateFollowCamera(physics, deltaSeconds, lookDragging_ || stickLooking);
 }
 
 PlayerController::FollowCameraPose PlayerController::desiredFollowCameraPose() const {
@@ -571,7 +574,7 @@ float PlayerController::followCameraClearance(const PhysicsWorld& physics, float
     );
 }
 
-void PlayerController::updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds) {
+void PlayerController::updateFollowCamera(const PhysicsWorld& physics, float deltaSeconds, bool orbitInputActive) {
     const auto desired = desiredFollowCameraPose();
     if (!followCameraPose_) {
         followCameraPose_ = desired;
@@ -580,7 +583,7 @@ void PlayerController::updateFollowCamera(const PhysicsWorld& physics, float del
     }
 
     auto& pose = *followCameraPose_;
-    if (lookDragging_ && cameraOrbitOverridden_) {
+    if (orbitInputActive && cameraOrbitOverridden_) {
         // Direct orbit input stays responsive.
         pose.yaw = desired.yaw;
         pose.elevation = desired.elevation;

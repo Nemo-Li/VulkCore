@@ -2,6 +2,7 @@
 
 #include "vulkcore/Platform/MovementInput.hpp"
 
+#include <array>
 #include <cstdint>
 #include <vulkan/vulkan.h>
 
@@ -20,8 +21,19 @@ using Window = GLFWwindow;
 enum class Key { A, D, W, S, Left, Right, Up, Down, Jump, SkillQ, SkillE, SkillR, Screenshot, SkillW, Count };
 using ResizeCallback = void (*)(Window*, int, int);
 
+struct GamepadInput {
+    MovementInput movement;
+    float lookRight = 0.0f;
+    float lookUp = 0.0f;
+    std::array<bool, static_cast<unsigned>(Key::Count)> buttons{};
+
+    bool moving() const { return movement.right != 0.0f || movement.forward != 0.0f; }
+    bool pressed(Key key) const { return buttons[static_cast<unsigned>(key)]; }
+};
+
 bool keyPressed(Window* window, Key key);
 MovementInput analogMovement(Window* window);
+GamepadInput readGamepad(Window* window);
 bool lookPressed(Window* window);
 void cursorPosition(Window* window, double* x, double* y);
 void framebufferSize(Window* window, int* width, int* height);
